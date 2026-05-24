@@ -591,6 +591,35 @@ describe("anyOf/oneOf resolution", () => {
 
 // ─── Hyphenated field names ──────────────────────────────────────
 
+describe("repairToolArguments: array element null omission", () => {
+  it("splices null elements from arrays instead of deleting the whole array", () => {
+    const schema: ToolParameterSchema = {
+      type: "object",
+      properties: {
+        tags: { type: "array", items: { type: "string" } },
+      },
+    };
+    const result = repairToolArguments("tool", { tags: [null, "a"] }, schema, defaultPolicy);
+    expect(result.changed).toBe(true);
+    expect(result.repaired.tags).toEqual(["a"]);
+    expect(result.repairs.some((r) => r.repairKind === "omit_optional_null")).toBe(true);
+  });
+});
+
+describe("repairToolArguments: JSON Schema type unions", () => {
+  it("accepts null for type: [string, null] fields", () => {
+    const schema: ToolParameterSchema = {
+      type: "object",
+      properties: {
+        note: { type: ["string", "null"] },
+      },
+    };
+    const result = repairToolArguments("tool", { note: null }, schema, defaultPolicy);
+    expect(result.changed).toBe(false);
+    expect(result.repaired.note).toBeNull();
+  });
+});
+
 describe("hyphenated field names with array indices", () => {
   it("repairs bare string in hyphenated array field", () => {
     const schema: ToolParameterSchema = {

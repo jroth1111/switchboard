@@ -53,6 +53,10 @@ describe("stripThinkingLeaks", () => {
   it("strips <inner_monologue> tags", () => {
     expect(stripThinkingLeaks("Reply<inner_monologue>hmm</inner_monologue>")).toBe("Reply");
   });
+
+  it("removes nested thinking blocks without leaving orphan close tags", () => {
+    expect(stripThinkingLeaks("<thinking>a<thinking>b</thinking>c</thinking>")).toBe("");
+  });
 });
 
 // ─── stripResponseReasoningFields ────────────────────────────────────
@@ -148,6 +152,10 @@ describe("repairRepetition", () => {
     const input = "hello\nworld\nhello\nworld\nhello";
     // No consecutive repetition, should return null
     expect(repairRepetition(input)).toBeNull();
+  });
+
+  it("does not treat the first line as a duplicate of an empty sentinel", () => {
+    expect(repairRepetition("\nonly\nonly\nonly")).toBe("\nonly\nonly");
   });
 });
 

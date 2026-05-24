@@ -7,12 +7,12 @@ export function repairRepetition(text: string): string | null {
 
   // Remove consecutively repeated lines (keep original + 1 duplicate max)
   const deduplicated: string[] = [];
-  let lastAdded = "";
+  let lastAdded: string | null = null;
   let consecutiveCount = 0;
 
   for (const line of lines) {
     const normalized = line.trim().toLowerCase();
-    if (normalized === lastAdded) {
+    if (lastAdded !== null && normalized === lastAdded) {
       consecutiveCount++;
       if (consecutiveCount <= 1) {
         deduplicated.push(line);

@@ -15,7 +15,7 @@ import {
   convertResponsesStreamChunk,
   validateResponsesContract,
 } from "../../src/providers/chatgpt-responses";
-import { buildProviderRequest } from "../../src/providers/base";
+import { buildProviderRequest, executeProviderRequest } from "../../src/providers/base";
 import type { Deployment } from "../../src/config/schema";
 
 function makeDeployment(overrides: Partial<Deployment> = {}): Deployment {
@@ -500,7 +500,7 @@ describe("OAuth token management", () => {
     const mockAccessor: OAuthAccountAccessor = {
       getToken: vi.fn()
         .mockResolvedValueOnce({ accessToken: "expired", expiresAt: Date.now() - 1000, refreshToken: "refresh-me" })
-        .mockResolvedValueOnce({ accessToken: "new-token", expiresAt: Date.now() + 3600000 }),
+        .mockResolvedValueOnce({ accessToken: "expired", expiresAt: Date.now() - 1000, refreshToken: "refresh-me" }),
       setToken: setTokenMock,
       acquireRefreshLock: vi.fn().mockResolvedValue(true),
       releaseRefreshLock: vi.fn(),
@@ -921,5 +921,36 @@ describe("Base provider request builder", () => {
     const body = { messages: [{ role: "user", content: "hi" }] };
     const req = buildProviderRequest(deploy, body, "sk-oai");
     expect(req.headers["Authorization"]).toBe("Bearer sk-oai");
+  });
+
+  it("normalizes trailing slashes on apiBase", () => {
+    const deploy = makeDeployment({
+      provider: "openai",
+      apiBase: "https://api.openai.com/v1/",
+    });
+    const body = { messages: [{ role: "user", content: "hi" }] };
+    const req = buildProviderRequest(deploy, body, "sk-test");
+    expect(req.url).toBe("https://api.openai.com/v1/chat/completions");
+  });
+});
+
+describe("executeProviderRequest", () => {
+  it("treats JSON array success bodies as non-object json", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("[]", {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const result = await executeProviderRequest(
+        { url: "https://example.test/v1/chat/completions", method: "POST", headers: {}, body: "{}" },
+        { signal: new AbortController().signal, timeoutMs: 5000 },
+      );
+      expect(result.status).toBe(200);
+      expect(result.json).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

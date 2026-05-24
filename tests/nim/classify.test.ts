@@ -17,6 +17,15 @@ const defaultConfig: SemanticValidationConfig = {
   repetitionMaxRatio: 0.4,
 };
 
+describe("input echo detection", () => {
+  it("does not false-positive when repeated response tokens collapse the overlap denominator", () => {
+    const input = "alpha beta";
+    const response = "alpha beta alpha beta alpha beta";
+    const result = classifySemanticIssue(response, defaultConfig, undefined, input);
+    expect(result).toBeNull();
+  });
+});
+
 describe("semantic classifier", () => {
   it("detects empty responses", () => {
     const result = classifySemanticIssue("", defaultConfig);

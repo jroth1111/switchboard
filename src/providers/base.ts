@@ -31,7 +31,7 @@ export function buildProviderRequest(
   body: Record<string, unknown>,
   apiKey: string,
 ): ProviderRequest {
-  const base = deployment.apiBase ?? "https://api.openai.com/v1";
+  const base = (deployment.apiBase ?? "https://api.openai.com/v1").replace(/\/+$/, "");
   const url = `${base}/chat/completions`;
 
   const headers: Record<string, string> = {
@@ -128,7 +128,10 @@ export async function executeProviderRequest(
 
     let json: Record<string, unknown> | null = null;
     try {
-      json = JSON.parse(bodyText);
+      const parsed: unknown = JSON.parse(bodyText);
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        json = parsed as Record<string, unknown>;
+      }
     } catch {
       // not JSON
     }
@@ -180,12 +183,13 @@ export async function executeStreamingProviderRequest(
       status: response.status,
       headers: response.headers,
     };
+  } catch (err) {
+    ctx.signal.removeEventListener("abort", onExternalAbort);
+    throw err;
   } finally {
     clearTimeout(timeoutId);
-    // Keep the external abort listener attached so the consumer of the
-    // response body can still be notified if the signal fires during
-    // streaming. Removing it here creates a gap between finally and the
-    // consumer reading the body. The listener is cheap and will be GC'd
-    // with the signal/response.
+    // On success, keep the external abort listener attached so the consumer
+    // of the response body can still be notified if the signal fires during
+    // streaming. Failed fetches remove the listener in the catch block.
   }
 }

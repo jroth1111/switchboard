@@ -229,7 +229,9 @@ function detectInputEcho(inputText: string, responseText: string, threshold = 0.
   let matchCount = 0;
   for (const t of responseTokens) { if (inputTokens.has(t)) matchCount++; }
   const uniqueResponseTokens = new Set(responseTokens).size;
-  const jaccard = matchCount / (inputTokens.size + uniqueResponseTokens - matchCount);
+  const unionSize = inputTokens.size + uniqueResponseTokens - matchCount;
+  if (unionSize <= 0) return null;
+  const jaccard = matchCount / unionSize;
   if (jaccard > threshold) {
     return { issue: "input_echo", confidence: jaccard, severity: "medium", details: `echo_ratio=${jaccard.toFixed(2)}` };
   }

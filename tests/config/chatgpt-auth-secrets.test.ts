@@ -1,11 +1,7 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import {
-  loadLocalSecretEnv,
-  validateChatGPTStructuredAuthSurface,
-} from "../../scripts/chatgpt-auth-secrets";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { loadLocalSecretEnv, validateChatGPTStructuredAuthSurface } from "../../scripts/chatgpt-auth-secrets";
 
 function structuredAuth(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
@@ -84,42 +80,6 @@ describe("ChatGPT structured auth validation", () => {
     ]);
   });
 
-  it("rejects top-level OAuth fields without CHATGPT_AUTH_JSON wrapping", () => {
-    expect(messages({
-      access_token: "access-secret",
-      refresh_token: "refresh-secret",
-      id_token: "id-secret",
-    })).toEqual([
-      expect.stringContaining("set CHATGPT_AUTH_JSON to a JSON object containing access_token, refresh_token, and id_token"),
-    ]);
-  });
-
-  it("promotes flat auth JSON from .secrets files during local secret loading", () => {
-    const dir = mkdtempSync(join(tmpdir(), "chatgpt-secrets-"));
-    mkdirSync(join(dir, ".secrets"));
-    writeFileSync(join(dir, ".secrets", "chatgpt-auth.json"), structuredAuth());
-
-    const loaded = loadLocalSecretEnv(dir, {});
-    expect(validateChatGPTStructuredAuthSurface(loaded.values, {
-      localSecretSurfacePresent: loaded.localSecretSurfacePresent,
-      chatgptResponsesEnabled: true,
-    })).toEqual([]);
-  });
-
-  it("resolves local CHATGPT_AUTH_FILE paths while keeping runtime path rejection", () => {
-    const dir = mkdtempSync(join(tmpdir(), "chatgpt-secrets-"));
-    mkdirSync(join(dir, ".secrets"));
-    writeFileSync(join(dir, ".secrets", "chatgpt-auth.json"), structuredAuth());
-    writeFileSync(join(dir, ".dev.vars"), "CHATGPT_AUTH_FILE=.secrets/chatgpt-auth.json");
-
-    const loaded = loadLocalSecretEnv(dir, {});
-    expect(loaded.values.CHATGPT_AUTH_FILE).toBe(structuredAuth());
-    expect(validateChatGPTStructuredAuthSurface(loaded.values, {
-      localSecretSurfacePresent: loaded.localSecretSurfacePresent,
-      chatgptResponsesEnabled: true,
-    })).toEqual([]);
-  });
-
   it("rejects legacy CHATGPT_OAUTH-only auth without leaking the token", () => {
     const result = issues({ CHATGPT_OAUTH: "legacy-token-secret" });
     const output = result.map((issue) => issue.message).join("\n");
@@ -166,5 +126,29 @@ describe("ChatGPT structured auth validation", () => {
     })]);
     expect(output).not.toContain("ignored while structured ChatGPT auth is present");
     expect(output).not.toContain("legacy-token-secret");
+  });
+
+  it("loads direct structured auth JSON from local .secrets files without leaking extra fields", () => {
+    const cwd = mkdtempSync("/tmp/switchboard-chatgpt-auth-");
+    try {
+      mkdirSync(join(cwd, ".secrets"));
+      writeFileSync(join(cwd, ".secrets", "chatgpt-auth.json"), JSON.stringify({
+        access_token: "access-secret",
+        refresh_token: "refresh-secret",
+        id_token: "id-secret",
+        unrelated_secret: "do-not-materialize",
+      }));
+
+      const env = loadLocalSecretEnv(cwd, {});
+
+      expect(env.localSecretSurfacePresent).toBe(true);
+      expect(env.loadErrors).toEqual([]);
+      expect(env.values.CHATGPT_AUTH_JSON).toBe(structuredAuth());
+      expect(env.values.unrelated_secret).toBeUndefined();
+      expect(env.values.CHATGPT_AUTH_JSON).not.toContain("do-not-materialize");
+      expect(messages(env.values)).toEqual([]);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 });

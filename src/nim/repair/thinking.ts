@@ -40,7 +40,19 @@ const THINKING_REGEX_PAIRS: Array<{
   };
 });
 
-const REASONING_FIELDS = ["reasoning", "reasoning_content", "thinking"];
+const REASONING_FIELDS = [
+  "reasoning",
+  "reasoning_content",
+  "thinking",
+  "scratchpad",
+  "chain_of_thought",
+  "internal_thought",
+  "inner_monologue",
+];
+const HIDDEN_REASONING_CONTENT_TYPES = new Set([
+  ...THINKING_TAG_NAMES,
+  "reasoning_content",
+]);
 
 export function stripThinkingLeaks(text: string): string {
   let result = text;
@@ -56,10 +68,11 @@ function stripThinkingLeaksOnce(text: string): string {
   let result = text;
 
   for (const { close, pairRe, pairNoGtRe, unclosedRe, closeTagPresentRe } of THINKING_REGEX_PAIRS) {
-    // Remove matched pairs (handles both <tag> and <tag without closing >)
+    // Remove matched pairs. The negative lookahead strips nested same-name tags
+    // from the inside out across stripThinkingLeaksOnce() passes.
     result = result.replace(pairRe, "");
 
-    // Also remove pairs where open tag lacks >
+    // Also remove pairs where the open tag is malformed and lacks ">".
     result = result.replace(pairNoGtRe, "");
 
     // Remove unclosed thinking tags only when no matching close tag exists.
@@ -92,7 +105,7 @@ export function stripResponseReasoningFields(
     const filtered = content.filter((item) => {
       if (!item || typeof item !== "object") return true;
       const type = String((item as Record<string, unknown>).type ?? "").toLowerCase();
-      return type !== "reasoning" && type !== "thinking";
+      return !HIDDEN_REASONING_CONTENT_TYPES.has(type);
     });
     if (filtered.length !== content.length) {
       next.content = filtered;

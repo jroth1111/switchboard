@@ -149,6 +149,7 @@ describe("buildHealthReport", () => {
       }),
       circuitBreakers: expect.any(Object),
       cooldowns: expect.any(Object),
+      dependencies: expect.any(Object),
     }));
     expect(json).toEqual(expect.objectContaining({
       requestShapes: expect.any(Object),
@@ -340,11 +341,44 @@ describe("buildHealthReport", () => {
     try {
       const report = await buildHealthReport(mockStateDo);
       const chat = report.aliasVisibility["nim-primary"].requestShapes.chat;
+      const nimPrimary = report.routeGroups["nim-primary"];
+      const nimPrimaryDeploymentCount = MANIFEST.deploymentsByGroup["nim-primary"].length;
+
+      expect(report.status).toBe("unhealthy");
+      expect(nimPrimary.available).toBe(false);
+      expect(nimPrimary.availableDeployments).toBe(0);
+      expect(nimPrimary.blockedDeployments).toBe(nimPrimaryDeploymentCount);
       expect(chat.dispatchable).toBe(false);
       expect(chat.rejectedCandidates.some((candidate) => candidate.reason === "key_rpm_exhausted")).toBe(true);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("returns a degraded safe report when health state dependencies are unavailable", async () => {
+    const mockStateDo = {
+      getHealth: async () => {
+        throw new Error("secret connection details");
+      },
+      getRecentReceipts: async () => {
+        throw new Error("receipt store token leaked");
+      },
+    };
+
+    const report = await buildHealthReport(mockStateDo);
+    const serialized = JSON.stringify(report);
+
+    expect(report.status).toBe("degraded");
+    expect(report.dependencies.controlPlaneState).toEqual({
+      status: "degraded",
+      reason: "health_snapshot_unavailable",
+    });
+    expect(report.dependencies.receiptHistory).toEqual({
+      status: "degraded",
+      reason: "recent_receipts_unavailable",
+    });
+    expect(serialized).not.toContain("secret connection details");
+    expect(serialized).not.toContain("receipt store token leaked");
   });
 
   it("includes per-deployment diagnostics from health state and recent outcomes", async () => {

@@ -489,6 +489,43 @@ describe("State engine end-to-end scenario", () => {
     expect(r2.rejected?.[0]?.reason).toBe("inflight_exhausted");
   });
 
+  it("does not erase outstanding reservations when entering half-open", () => {
+    const store = new InMemoryStorageAdapter();
+    const c = candidate("deploy-1", "key-1", 100, 2);
+
+    const active = admit(store, { requestId: "req-active", candidates: [c] });
+    expect(active.admitted).toBe(true);
+    store.setCircuit("deploy-1", {
+      state: "open",
+      failureCount: 5,
+      successCount: 0,
+      halfOpenAfter: Date.now() - 1000,
+      updatedAt: Date.now() - 1000,
+    });
+
+    const probe = admit(store, { requestId: "req-probe", candidates: [c] });
+    expect(probe.admitted).toBe(false);
+    expect(probe.rejected?.[0]?.reason).toBe("inflight_exhausted");
+  });
+
+  it("caps learned concurrency at the deployment maxParallel", () => {
+    const store = new InMemoryStorageAdapter();
+    const c = candidate("deploy-1", "key-1", 100, 1);
+    store.setLearnedLimit("deploy-1", {
+      maxParallel: 5,
+      reason: "learned:success",
+      expiresAt: Date.now() + 60_000,
+    });
+
+    const first = admit(store, { requestId: "req-learned-1", candidates: [c] });
+    const second = admit(store, { requestId: "req-learned-2", candidates: [c] });
+
+    expect(first.admitted).toBe(true);
+    expect(first.effectiveMaxParallel).toBe(1);
+    expect(second.admitted).toBe(false);
+    expect(second.rejected?.[0]?.reason).toBe("inflight_exhausted");
+  });
+
   it("enforces group-level RPM limit", () => {
     const store = new InMemoryStorageAdapter();
     const c1 = candidate("deploy-1", "test:key-1", 100, 10);

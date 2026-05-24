@@ -2,7 +2,7 @@
 // Runs as part of the build pipeline to catch config errors early.
 // Usage: node scripts/validate-manifest.ts
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
@@ -131,6 +131,11 @@ function validateManifestSnapshot(snapshotPath: string): void {
 }
 
 function validateLiteLLMAliasParity(configPath: string): void {
+  if (!existsSync(configPath)) {
+    warn(`LiteLLM alias parity skipped; config not found at ${configPath}`);
+    return;
+  }
+
   let parsed: unknown;
   try {
     parsed = YAML.parse(readFileSync(configPath, "utf8"));

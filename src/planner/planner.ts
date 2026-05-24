@@ -8,6 +8,11 @@ import type {
 } from "../config/schema";
 import { hasTypedContentNormalization, normalizeTypedContentParts } from "../nim/repair/content-parts";
 
+const MULTIMODAL_PART_TYPES = new Set(["image_url", "input_image", "image", "audio", "input_audio"]);
+const VISIBLE_TEXT_PART_TYPES = new Set(["text", "input_text", "output_text", "summary_text"]);
+const THINK_BLOCK_RE = /<think\b[^>]*>[\s\S]*?<\/think\s*>/gi;
+const THINK_SELF_CLOSING_RE = /<think\b[^>]*\/\s*>/gi;
+
 // ─── Request envelope ─────────────────────────────────────────────
 
 export interface RequestEnvelope {
@@ -34,8 +39,10 @@ export interface RequestClass {
   stream: boolean;
   hasTools: boolean;
   hasStrictTools: boolean;
+  isMultiTool: boolean;
   hasTypedContent: boolean;
   requiresJsonMode: boolean;
+  requiresReasoning: boolean;
   operation: Operation;
   surface: Surface;
 }
@@ -45,8 +52,10 @@ export function computeRequestClass(envelope: RequestEnvelope): RequestClass {
     stream: envelope.stream,
     hasTools: envelope.hasTools,
     hasStrictTools: envelope.hasStrictTools,
+    isMultiTool: Boolean(envelope.isMultiTool),
     hasTypedContent: envelope.hasTypedContent,
     requiresJsonMode: envelope.requiresJsonMode,
+    requiresReasoning: Boolean(envelope.requiresReasoning),
     operation: getOperation(envelope),
     surface: getSurface(envelope),
   };
@@ -108,6 +117,7 @@ export interface CandidateGroup {
   group: string;
   routeGroup: RouteGroup;
   policy: Policy;
+  deployments: Deployment[];
   score: number;
   rejectionReason?: string;
 }
@@ -172,6 +182,8 @@ function buildCandidate(
   envelope: RequestEnvelope,
 ): CandidateGroup {
   const policy = MANIFEST.policies[groupName] ?? MANIFEST.defaultPolicy;
+  const deployments = MANIFEST.deploymentsByGroup[groupName] ?? [];
+  const contentClass = detectContentClass(envelope);
   let score = baseScore;
   let rejectionReason: string | undefined;
 
@@ -190,7 +202,6 @@ function buildCandidate(
     }
 
     // Content class validation
-    const contentClass = detectContentClass(envelope);
     if (contentClass && !policy.request.allowedContentClasses.includes(contentClass)) {
       rejectionReason = rejectionReason ?? `content class ${contentClass} not allowed`;
     }
@@ -200,69 +211,118 @@ function buildCandidate(
     rejectionReason = rejectionReason ?? "streaming tools rejected by policy";
   }
 
-  // Deduct score for capability mismatches
-  const deployments = MANIFEST.deploymentsByGroup[groupName] ?? [];
-  if (deployments.length === 0) {
-    rejectionReason = rejectionReason ?? "no_deployments";
-  } else {
-    const d = deployments[0];
+  const compatibleDeployments: Deployment[] = [];
+  const deploymentRejectionReasons: string[] = [];
+  const requestedTokens = typeof envelope.body.max_tokens === "number" ? envelope.body.max_tokens : undefined;
 
-    // Hard rejection: streaming requested but deployment doesn't support it
-    if (envelope.stream && !d.supportsStreaming) {
-      rejectionReason = rejectionReason ?? "streaming not supported";
+  for (const deployment of deployments) {
+    const deploymentRejection = deploymentCapabilityRejectionReason(deployment, envelope, contentClass, requestedTokens);
+    if (deploymentRejection) {
+      deploymentRejectionReasons.push(deploymentRejection);
+    } else {
+      compatibleDeployments.push(deployment);
     }
-    if (envelope.hasTools && (d.capabilities.toolCalling === "broken" || d.capabilities.toolCalling === "none")) {
-      score -= 30;
-    }
-    if (envelope.stream && envelope.hasTools && (d.capabilities.streamingWithTools === "broken" || d.capabilities.streamingWithTools === "none")) {
-      score -= 25;
-    }
-    if (envelope.requiresJsonMode && (d.capabilities.jsonMode === "broken" || d.capabilities.jsonMode === "none")) {
-      score -= 20;
-    }
-    if (envelope.hasTypedContent && (d.capabilities.multimodal === "broken" || d.capabilities.multimodal === "none")) {
-      score -= 15;
-      rejectionReason = rejectionReason ?? "unsupported_multimodal";
-    }
-
-    // Hard rejection: reasoning requested but deployment lacks native reasoning
-    if (envelope.requiresReasoning && d.capabilities.reasoning !== "native") {
-      rejectionReason = rejectionReason ?? "unsupported_reasoning";
-    }
-
-    // Hard rejection: strict tools require native tool calling
-    if (envelope.hasStrictTools && d.capabilities.toolCalling !== "native") {
-      rejectionReason = rejectionReason ?? "non_native_strict_tools";
-    }
-
-    // Context window check: reject if requested max_tokens exceeds deployment context
-    const requestedTokens = envelope.body.max_tokens as number | undefined;
-    if (requestedTokens && d.contextWindow > 0 && requestedTokens > d.contextWindow) {
-      rejectionReason = rejectionReason ?? `max_tokens ${requestedTokens} exceeds context window ${d.contextWindow}`;
-    }
-
-    // Note: minRequestTokens is handled by raise_min_tokens transform, not rejection.
   }
 
-  return { group: groupName, routeGroup: rg, policy, score, rejectionReason };
+  if (deployments.length === 0) {
+    rejectionReason = rejectionReason ?? "no_deployments";
+  } else if (compatibleDeployments.length === 0) {
+    rejectionReason = rejectionReason ?? deploymentRejectionReasons[0] ?? "no_compatible_deployments";
+  }
+
+  return { group: groupName, routeGroup: rg, policy, deployments: compatibleDeployments, score, rejectionReason };
 }
 
 function detectContentClass(envelope: RequestEnvelope): ContentClass | undefined {
   const messages = envelope.body.messages as Array<Record<string, unknown>> | undefined;
-  if (!messages?.length) return undefined;
+  if (!messages?.length) return "empty";
+  let hasText = false;
+  let hasToolResult = false;
   for (const msg of messages) {
     const content = msg.content;
+    if (typeof content === "string") {
+      if (content.trim()) hasText = true;
+      continue;
+    }
     if (Array.isArray(content)) {
       for (const part of content) {
         if (typeof part === "object" && part !== null) {
-          const type = (part as Record<string, unknown>).type;
-          if (type === "image_url" || type === "input_image" || type === "image" || type === "audio" || type === "input_audio") return "multimodal";
-          if (type === "tool_result") return "tool_result";
+          const type = typedPartType(part);
+          if (MULTIMODAL_PART_TYPES.has(type)) return "multimodal";
+          if (type === "tool_result") hasToolResult = true;
+          if (VISIBLE_TEXT_PART_TYPES.has(type) && typedPartText(part) !== undefined) hasText = true;
         }
       }
     }
   }
+  if (hasToolResult) return "tool_result";
+  if (hasText) return "text";
+  return "empty";
+}
+
+function deploymentCapabilityRejectionReason(
+  deployment: Deployment,
+  envelope: RequestEnvelope,
+  contentClass: ContentClass | undefined,
+  requestedTokens: number | undefined,
+): string | undefined {
+  if (envelope.stream && !deployment.supportsStreaming) return "streaming not supported";
+  if (envelope.hasTools && capabilityUnavailable(deployment.capabilities.toolCalling)) return "tool calling not supported";
+  if (envelope.stream && envelope.hasTools && capabilityUnavailable(deployment.capabilities.streamingWithTools)) return "streaming tools not supported";
+  if (envelope.requiresJsonMode && capabilityUnavailable(deployment.capabilities.jsonMode)) return "json mode not supported";
+  if (contentClass === "multimodal" && capabilityUnavailable(deployment.capabilities.multimodal)) return "unsupported_multimodal";
+  if (envelope.requiresReasoning && deployment.capabilities.reasoning !== "native") return "unsupported_reasoning";
+  if (envelope.hasStrictTools && deployment.capabilities.toolCalling !== "native") return "non_native_strict_tools";
+  if (requestedTokens && deployment.contextWindow > 0 && requestedTokens > deployment.contextWindow) {
+    return `max_tokens ${requestedTokens} exceeds context window ${deployment.contextWindow}`;
+  }
   return undefined;
+}
+
+function capabilityUnavailable(level: Deployment["capabilities"][keyof Deployment["capabilities"]]): boolean {
+  return level === "broken" || level === "none";
+}
+
+function typedPartType(part: unknown): string {
+  if (typeof part !== "object" || part === null) return "";
+  const raw = (part as Record<string, unknown>).type;
+  return typeof raw === "string" ? raw.trim().toLowerCase() : "";
+}
+
+function typedPartText(part: unknown): string | undefined {
+  if (typeof part !== "object" || part === null) return undefined;
+  const record = part as Record<string, unknown>;
+  for (const field of ["text", "input_text", "output_text", "summary_text"]) {
+    const value = record[field];
+    if (typeof value === "string") return value;
+  }
+  return undefined;
+}
+
+function stripReasoningFromTextPart(part: unknown): void {
+  if (typeof part !== "object" || part === null) return;
+  const record = part as Record<string, unknown>;
+  for (const field of ["text", "input_text", "output_text", "summary_text"]) {
+    const value = record[field];
+    if (typeof value === "string") {
+      record[field] = stripUserReasoningText(value);
+    }
+  }
+}
+
+function hasUserReasoningContent(msg: Record<string, unknown>): boolean {
+  if (msg.role !== "user") return false;
+  if (typeof msg.content === "string") return /<think\b/i.test(msg.content);
+  if (!Array.isArray(msg.content)) return false;
+  return msg.content.some((part) => VISIBLE_TEXT_PART_TYPES.has(typedPartType(part)) && /<think\b/i.test(typedPartText(part) ?? ""));
+}
+
+function stripUserReasoningText(text: string): string {
+  return text
+    .replace(THINK_BLOCK_RE, "")
+    .replace(THINK_SELF_CLOSING_RE, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
 }
 
 // ─── Operation / surface helpers ──────────────────────────────────
@@ -329,6 +389,7 @@ export interface PlanReceiptDraft {
 
 export function planRequest(
   envelope: RequestEnvelope,
+  now = Date.now(),
 ): ExecutionPlan | null {
   const canon = canonicalize(envelope.originalModel);
   if (!canon.isManaged) return null;
@@ -338,14 +399,13 @@ export function planRequest(
   // Sort non-rejected candidates by score descending (health-aware: higher score = healthier)
   const viable = candidates
     .filter((c) => !c.rejectionReason)
-    .filter((c) => (MANIFEST.deploymentsByGroup[c.group]?.length ?? 0) > 0)
     .sort((a, b) => b.score - a.score);
 
   const selected = viable[0];
   if (!selected) return null;
 
-  const selectedDeployments = MANIFEST.deploymentsByGroup[selected.group] ?? [];
-  if (selectedDeployments.length === 0) return null;
+  const selectedDeployments = selected.deployments;
+  if (selected.deployments.length === 0) return null;
 
   // Build fallback sequence from remaining viable candidates (sorted by score)
   const fallbackSequence = viable
@@ -353,7 +413,7 @@ export function planRequest(
     .map((c) => ({
       group: c.group,
       policy: c.policy,
-      deployments: MANIFEST.deploymentsByGroup[c.group] ?? [],
+      deployments: c.deployments,
     }))
     .filter((f) => f.deployments.length > 0);
 
@@ -370,8 +430,10 @@ export function planRequest(
       stream: requestClass.stream,
       hasTools: requestClass.hasTools,
       hasStrictTools: requestClass.hasStrictTools,
+      isMultiTool: requestClass.isMultiTool,
       hasTypedContent: requestClass.hasTypedContent,
       requiresJsonMode: requestClass.requiresJsonMode,
+      requiresReasoning: requestClass.requiresReasoning,
       operation: requestClass.operation,
       surface: requestClass.surface,
     },
@@ -384,7 +446,7 @@ export function planRequest(
       viable: !candidate.rejectionReason,
       rejectionReason: candidate.rejectionReason,
       hidden: candidate.routeGroup.hidden,
-      deploymentCount: MANIFEST.deploymentsByGroup[candidate.group]?.length ?? 0,
+      deploymentCount: candidate.deployments.length,
     })),
     transforms: transforms.map((transform) => ({ ...transform })),
   };
@@ -401,7 +463,7 @@ export function planRequest(
     routeDecision,
     receipt: {
       requestId: envelope.requestId,
-      timestamp: Date.now(),
+      timestamp: now,
       originalModel: envelope.originalModel,
       canonicalTarget: canon.canonicalTarget,
       selectedGroup: selected.group,
@@ -458,7 +520,7 @@ function buildTransforms(envelope: RequestEnvelope, policy: Policy, deployments:
     const messages = envelope.body.messages as Array<Record<string, unknown>> | undefined;
     if (messages) {
       for (const msg of messages) {
-        if (msg.role === "user" && typeof msg.content === "string" && /<think/i.test(msg.content as string)) {
+        if (hasUserReasoningContent(msg)) {
           transforms.push({ type: "strip_user_reasoning", param: "__user_reasoning__" });
           break;
         }
@@ -508,9 +570,16 @@ export function applyTransforms(
       const messages = result.messages as Array<Record<string, unknown>> | undefined;
       if (messages) {
         for (const msg of messages) {
-          if (msg.role === "user" && typeof msg.content === "string") {
-            // Remove <think/>...</think/> blocks
-            msg.content = (msg.content as string).replace(/<think[^>]*>[\s\S]*?<\/think\s*>/g, "").trim();
+          if (msg.role === "user") {
+            if (typeof msg.content === "string") {
+              msg.content = stripUserReasoningText(msg.content);
+            } else if (Array.isArray(msg.content)) {
+              for (const part of msg.content) {
+                if (VISIBLE_TEXT_PART_TYPES.has(typedPartType(part))) {
+                  stripReasoningFromTextPart(part);
+                }
+              }
+            }
           }
         }
       }

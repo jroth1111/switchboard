@@ -116,6 +116,40 @@ describe("sanitizeClientMetadata", () => {
     expect(result.safe_extra).toBe(42);
   });
 
+  it("drops prototype-polluting keys from top-level request fields", () => {
+    const protoKey = ["__", "proto__"].join("");
+    const body: Record<string, unknown> = Object.create(null);
+    body.model = "glm-5.1";
+    body.messages = [];
+    body[protoKey] = { polluted: true };
+    body.constructor = { prototype: { polluted: true } };
+    body.prototype = { polluted: true };
+
+    const result = sanitizeClientMetadata(body);
+
+    expect(Object.prototype.hasOwnProperty.call(result, protoKey)).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(result, "constructor")).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(result, "prototype")).toBe(false);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(result.model).toBe("glm-5.1");
+  });
+
+  it("strips internal-prefixed top-level fields even without extra_body", () => {
+    const body = {
+      model: "glm-5.1",
+      messages: [],
+      "x-control-route": "client-forged-route",
+      "X-Nim-Signature": "client-forged-signature",
+      safe: true,
+    };
+
+    const result = sanitizeClientMetadata(body);
+
+    expect(result["x-control-route"]).toBeUndefined();
+    expect(result["X-Nim-Signature"]).toBeUndefined();
+    expect(result.safe).toBe(true);
+  });
+
   it("handles body without metadata or extra_body", () => {
     const body = { model: "glm-5.1", messages: [] };
     const result = sanitizeClientMetadata(body);
@@ -143,5 +177,14 @@ describe("metadata signing", () => {
     const payload = { requestId: "req_123" };
     const sig = await signMetadata(payload, "key-a");
     expect(await verifyMetadataSignature(payload, sig, "key-b")).toBe(false);
+  });
+
+  it("fails closed for empty signing keys and malformed signatures", async () => {
+    const payload = { requestId: "req_123" };
+
+    await expect(signMetadata(payload, "   ")).rejects.toThrow("Metadata signing key is required");
+    await expect(verifyMetadataSignature(payload, "not-base64!!!", "key-a")).resolves.toBe(false);
+    await expect(verifyMetadataSignature(payload, "A".repeat(4096), "key-a")).resolves.toBe(false);
+    await expect(verifyMetadataSignature(payload, "A".repeat(43) + "=", "")).resolves.toBe(false);
   });
 });

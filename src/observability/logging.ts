@@ -1,5 +1,7 @@
 // Structured logging for the control plane.
 
+import { redact, sanitizeReceipt } from "./receipt";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 let currentLevel: LogLevel = "info";
@@ -28,15 +30,25 @@ export interface LogEntry {
 }
 
 function formatLog(entry: LogEntry): string {
-  return JSON.stringify(entry);
+  try {
+    return JSON.stringify(entry);
+  } catch (error) {
+    return JSON.stringify({
+      level: "error",
+      message: "log_format_failed",
+      timestamp: new Date().toISOString(),
+      error: sanitizeReceipt(error),
+    });
+  }
 }
 
 export function log(level: LogLevel, message: string, data?: Record<string, unknown>): void {
   if (!shouldLog(level)) return;
+  const sanitizedData = data ? sanitizeReceipt(data) as Record<string, unknown> : undefined;
   const entry: LogEntry = {
-    ...data,
+    ...sanitizedData,
     level,
-    message,
+    message: redact(message),
     timestamp: new Date().toISOString(),
   };
   console.log(formatLog(entry));

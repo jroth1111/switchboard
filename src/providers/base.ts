@@ -1,7 +1,7 @@
 // Provider adapters: execute requests against LLM providers.
 // Replaces litellm_logic's LiteLLM provider layer.
 
-import type { Deployment } from "../config/schema";
+import type { Deployment, ProviderType } from "../config/schema";
 
 export interface ProviderRequest {
   url: string;
@@ -26,35 +26,22 @@ export interface ProviderExecutionContext {
 
 // ─── Build provider request ───────────────────────────────────────
 
+type ChatCompletionsProvider = Extract<ProviderType, "nvidia_nim" | "openai">;
+
 export function buildProviderRequest(
   deployment: Deployment,
   body: Record<string, unknown>,
   apiKey: string,
 ): ProviderRequest {
-  const base = (deployment.apiBase ?? "https://api.openai.com/v1").replace(/\/+$/, "");
+  assertChatCompletionsDeployment(deployment);
+
+  const base = normalizeApiBase(deployment.apiBase ?? "https://api.openai.com/v1");
   const url = `${base}/chat/completions`;
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    "Authorization": `Bearer ${apiKey}`,
   };
-
-  switch (deployment.provider) {
-    case "nvidia_nim":
-      headers["Authorization"] = `Bearer ${apiKey}`;
-      break;
-    case "openai":
-      headers["Authorization"] = `Bearer ${apiKey}`;
-      break;
-    case "anthropic_subscription":
-      headers["x-api-key"] = apiKey;
-      headers["anthropic-version"] = "2023-06-01";
-      break;
-    case "chatgpt":
-      headers["Authorization"] = `Bearer ${apiKey}`;
-      break;
-    default:
-      headers["Authorization"] = `Bearer ${apiKey}`;
-  }
 
   // Set model name and deployment-level overrides
   const requestBody: Record<string, unknown> = {
@@ -65,7 +52,7 @@ export function buildProviderRequest(
   // Merge deployment params (don't overwrite client values)
   if (deployment.params) {
     for (const [k, v] of Object.entries(deployment.params)) {
-      if (!(k in requestBody) && v !== null) {
+      if (!(k in requestBody) && v !== null && v !== undefined) {
         requestBody[k] = v;
       }
     }
@@ -74,14 +61,14 @@ export function buildProviderRequest(
   // Merge deployment extraBody (don't overwrite client values)
   if (deployment.extraBody) {
     for (const [k, v] of Object.entries(deployment.extraBody)) {
-      if (!(k in requestBody) && v !== null) {
+      if (!(k in requestBody) && v !== null && v !== undefined) {
         requestBody[k] = v;
       }
     }
   }
 
   // Apply deployment reasoning effort only when client didn't specify one
-  if (deployment.reasoningEffort && !requestBody.reasoning_effort) {
+  if (deployment.reasoningEffort && !Object.prototype.hasOwnProperty.call(requestBody, "reasoning_effort")) {
     requestBody.reasoning_effort = deployment.reasoningEffort;
   }
 
@@ -93,6 +80,33 @@ export function buildProviderRequest(
   };
 }
 
+function assertChatCompletionsDeployment(
+  deployment: Deployment,
+): asserts deployment is Deployment & { provider: ChatCompletionsProvider } {
+  if (deployment.provider !== "nvidia_nim" && deployment.provider !== "openai") {
+    throw new Error(`${deployment.provider} provider does not use the chat-completions base adapter`);
+  }
+  if (deployment.mode !== undefined) {
+    throw new Error(`${deployment.provider} provider does not support mode='${deployment.mode}'`);
+  }
+}
+
+function normalizeApiBase(apiBase: string): string {
+  return apiBase.replace(/\/+$/, "");
+}
+
+function parseJsonObject(bodyText: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(bodyText);
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // not JSON
+  }
+  return null;
+}
+
 // ─── Execute provider request ─────────────────────────────────────
 
 export async function executeProviderRequest(
@@ -102,13 +116,14 @@ export async function executeProviderRequest(
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), ctx.timeoutMs);
 
-  // Link external signal
-  if (ctx.signal.aborted) {
-    clearTimeout(timeoutId);
-    throw new DOMException("Aborted", "AbortError");
-  }
+  // Link external signal — attach listener first to avoid race
   const onExternalAbort = () => controller.abort();
   ctx.signal.addEventListener("abort", onExternalAbort, { once: true });
+  if (ctx.signal.aborted) {
+    clearTimeout(timeoutId);
+    ctx.signal.removeEventListener("abort", onExternalAbort);
+    throw new DOMException("Aborted", "AbortError");
+  }
 
   try {
     const response = await fetch(req.url, {
@@ -126,15 +141,7 @@ export async function executeProviderRequest(
       }
     });
 
-    let json: Record<string, unknown> | null = null;
-    try {
-      const parsed: unknown = JSON.parse(bodyText);
-      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-        json = parsed as Record<string, unknown>;
-      }
-    } catch {
-      // not JSON
-    }
+    const json = parseJsonObject(bodyText);
 
     return {
       status: response.status,
@@ -163,12 +170,13 @@ export async function executeStreamingProviderRequest(
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), ctx.timeoutMs);
 
-  if (ctx.signal.aborted) {
-    clearTimeout(timeoutId);
-    throw new DOMException("Aborted", "AbortError");
-  }
   const onExternalAbort = () => controller.abort();
   ctx.signal.addEventListener("abort", onExternalAbort, { once: true });
+  if (ctx.signal.aborted) {
+    clearTimeout(timeoutId);
+    ctx.signal.removeEventListener("abort", onExternalAbort);
+    throw new DOMException("Aborted", "AbortError");
+  }
 
   try {
     const response = await fetch(req.url, {
@@ -183,13 +191,12 @@ export async function executeStreamingProviderRequest(
       status: response.status,
       headers: response.headers,
     };
-  } catch (err) {
-    ctx.signal.removeEventListener("abort", onExternalAbort);
-    throw err;
   } finally {
     clearTimeout(timeoutId);
-    // On success, keep the external abort listener attached so the consumer
-    // of the response body can still be notified if the signal fires during
-    // streaming. Failed fetches remove the listener in the catch block.
+    // Keep the external abort listener attached so the consumer of the
+    // response body can still be notified if the signal fires during
+    // streaming. Removing it here creates a gap between finally and the
+    // consumer reading the body. The listener is cheap and will be GC'd
+    // with the signal/response.
   }
 }

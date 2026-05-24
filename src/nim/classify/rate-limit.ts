@@ -175,9 +175,10 @@ export function classifyRetryAfterHeader(value?: string): {
   const numeric = Number(trimmed);
   if (Number.isFinite(numeric)) {
     if (numeric <= 0) return null;
-    return numeric >= RETRY_AFTER_QUOTA_THRESHOLD_SECONDS
-      ? { bucket: "quota_window", seconds: numeric, reason: "retry_after_quota_window" }
-      : { bucket: "concurrency", seconds: numeric, reason: "retry_after_short_window" };
+    const rounded = Math.round(numeric);
+    return rounded >= RETRY_AFTER_QUOTA_THRESHOLD_SECONDS
+      ? { bucket: "quota_window", seconds: rounded, reason: "retry_after_quota_window" }
+      : { bucket: "concurrency", seconds: rounded, reason: "retry_after_short_window" };
   }
 
   const timestamp = Date.parse(trimmed);
@@ -195,14 +196,13 @@ export function classifyRetryAfterHeader(value?: string): {
 }
 
 export function parseGlmResetTimestamp(body: string): number | null {
-  const resetMentioned = /\breset\b/i.test(body);
   const match = body.match(/\breset(?:s|ting)?(?:\s+\w+){0,3}\s+(?:at|on)\s+(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)/i)
     ?? body.match(/\bwill\s+reset\s+at\s+(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)/i);
   if (match) {
     let timestamp = match[1].replace(" ", "T");
     if (!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(timestamp)) {
       timestamp = `${timestamp}+08:00`;
-    } else {
+    } else if (!/(?:Z|[+-]\d{2}:\d{2})$/i.test(timestamp)) {
       timestamp = timestamp.replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
     }
     const ts = new Date(timestamp).getTime();
@@ -210,7 +210,6 @@ export function parseGlmResetTimestamp(body: string): number | null {
       return Math.max(0, Math.round((ts - Date.now()) / 1000));
     }
   }
-  if (resetMentioned) return DEFAULT_OVERLOAD_COOLDOWN_SECONDS;
   return null;
 }
 

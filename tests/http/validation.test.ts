@@ -420,6 +420,18 @@ describe("Content-Type validation", () => {
     expect(result.error?.code).toBe("invalid_content_type");
   });
 
+  it("rejects POST when application/json only appears in a parameter", () => {
+    const result = validateContentType(mockRequest("POST", "text/plain; application/json"));
+    expect(result.valid).toBe(false);
+    expect(result.error?.code).toBe("invalid_content_type");
+  });
+
+  it("rejects POST with application/json lookalike media types", () => {
+    const result = validateContentType(mockRequest("POST", "application/jsonp"));
+    expect(result.valid).toBe(false);
+    expect(result.error?.code).toBe("invalid_content_type");
+  });
+
   it("accepts GET regardless of Content-Type", () => {
     const result = validateContentType(mockRequest("GET", null));
     expect(result.valid).toBe(true);

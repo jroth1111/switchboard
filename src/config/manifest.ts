@@ -36,7 +36,7 @@ const DEFAULT_POLICY: Policy = {
     semanticMinPrintableRatio: 0.8,
     enableSchemaAwareRepair: false,
     repairPolicy: {
-      allowDestructiveByDefault: true,
+      allowDestructiveByDefault: false,
       conservativeToolPatterns: [],
       enumAliases: {},
       toolNameAliases: {},

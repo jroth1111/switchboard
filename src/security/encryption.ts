@@ -3,19 +3,21 @@
 
 const ALGORITHM = "AES-GCM";
 const IV_LENGTH = 12;
-const TAG_LENGTH = 128; // bits; GCM auth tag is 16 bytes
-const GCM_TAG_BYTES = TAG_LENGTH / 8;
-const ENCRYPTION_PREFIX = "enc:v1:";
-const MIN_ENCRYPTED_BYTES = IV_LENGTH + GCM_TAG_BYTES;
+const TAG_LENGTH = 128;
+const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
 
-let cachedKeyMaterial: { id: string; key: CryptoKey } | null = null;
+const keyCache = new Map<string, CryptoKey>();
 
 async function deriveKey(encryptionKey: string): Promise<CryptoKey> {
-  if (cachedKeyMaterial?.id === encryptionKey) return cachedKeyMaterial.key;
+  if (encryptionKey.trim().length === 0) {
+    throw new Error("Encryption key is required");
+  }
+  const cached = keyCache.get(encryptionKey);
+  if (cached) return cached;
   const encoder = new TextEncoder();
   const keyMaterial = await crypto.subtle.digest("SHA-256", encoder.encode(encryptionKey));
   const key = await crypto.subtle.importKey("raw", keyMaterial, { name: ALGORITHM }, false, ["encrypt", "decrypt"]);
-  cachedKeyMaterial = { id: encryptionKey, key };
+  keyCache.set(encryptionKey, key);
   return key;
 }
 
@@ -47,14 +49,17 @@ export async function encrypt(plaintext: string, encryptionKey: string): Promise
 export async function decrypt(encoded: string, encryptionKey: string): Promise<string> {
   const payload = encoded.startsWith(ENCRYPTION_PREFIX) ? encoded.slice(ENCRYPTION_PREFIX.length) : encoded;
   const key = await deriveKey(encryptionKey);
+  if (!BASE64_RE.test(payload) || payload.length % 4 !== 0) {
+    throw new Error("Invalid ciphertext: malformed base64");
+  }
   let combined: Uint8Array;
   try {
     combined = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
   } catch {
-    throw new Error("Invalid encrypted payload");
+    throw new Error("Invalid ciphertext: malformed base64");
   }
-  if (combined.length < MIN_ENCRYPTED_BYTES) {
-    throw new Error("Invalid encrypted payload");
+  if (combined.length < IV_LENGTH + 16) {
+    throw new Error("Invalid ciphertext: too short");
   }
 
   const iv = combined.slice(0, IV_LENGTH);
@@ -68,6 +73,8 @@ export async function decrypt(encoded: string, encryptionKey: string): Promise<s
 
   return new TextDecoder().decode(plaintext);
 }
+
+const ENCRYPTION_PREFIX = "enc:v1:";
 
 export function isEncrypted(value: string): boolean {
   return value.startsWith(ENCRYPTION_PREFIX);

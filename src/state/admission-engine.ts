@@ -2,7 +2,7 @@
 // admission, circuit breaking, health scoring, and rate budgeting.
 // Delegates storage to StorageAdapter (SQL in production, Maps in tests).
 
-import type { StorageAdapter, HealthScoreRow, CircuitRow, RecentOutcome } from "./storage-adapter";
+import type { StorageAdapter, HealthScoreRow, RecentOutcome } from "./storage-adapter";
 import type { FailureClass } from "../config/schema";
 import { RESERVATION_TTL_MS, LEARNED_CONCURRENCY_TTL_MS } from "../config/constants";
 
@@ -102,6 +102,7 @@ export interface AdmissionResponse {
 export interface RecordSuccessOptions {
   firstByteLatencyMs?: number;
   inflightAtDispatch?: number;
+  maxParallelCap?: number;
 }
 
 export interface RecordFailureOptions {
@@ -163,10 +164,9 @@ export function admit(
       } else if (circuit.state === "open") {
         circuit = { ...circuit, state: "half_open", successCount: 0, updatedAt: now };
         store.setCircuit(candidate.deploymentId, circuit);
-        // Zero out stale unconfirmed inflight — confirmed reservations will decrement via
-        // release() which clamps to 0, so this doesn't lose active request tracking.
-        // Unconfirmed reservations that expired will be reaped by reapExpired.
-        store.setInflight(candidate.deploymentId, 0, now);
+        // Preserve durable reservations that are still outstanding. The half-open
+        // probe limit must not erase active long-running requests and over-admit.
+        store.setInflight(candidate.deploymentId, store.countReservations(candidate.deploymentId), now);
       }
     }
 
@@ -184,7 +184,10 @@ export function admit(
 
     // Check learned concurrency limit
     const learned = store.getLearnedLimit(candidate.deploymentId, now);
-    let effectiveMaxParallel = (learned !== null && learned !== undefined) ? learned.maxParallel : candidate.maxParallel;
+    let effectiveMaxParallel = candidate.maxParallel;
+    if ((learned !== null && learned !== undefined)) {
+      effectiveMaxParallel = Math.min(candidate.maxParallel, learned.maxParallel);
+    }
 
     // Apply policy-level max parallel override
     if (req.maxParallelOverride && req.maxParallelOverride > 0) {
@@ -197,9 +200,9 @@ export function admit(
     let effectiveMax = effectiveMaxParallel;
     if (isHalfOpen) {
       // Half-open allows exactly 1 concurrent probe request
-      effectiveMax = 1;
+      effectiveMax = Math.min(1, effectiveMaxParallel);
     } else if (isSuspect && req.suspectMaxParallelDivisor && req.suspectMaxParallelDivisor > 0) {
-      effectiveMax = Math.max(1, Math.floor(effectiveMaxParallel / req.suspectMaxParallelDivisor));
+      effectiveMax = Math.min(effectiveMaxParallel, Math.max(1, Math.floor(effectiveMaxParallel / req.suspectMaxParallelDivisor)));
     }
 
     // Check inflight
@@ -373,7 +376,10 @@ export function recordSuccess(
   if (learnedConcurrencyEnabled) {
     const learned = store.getLearnedLimit(deploymentId, now);
     if ((learned !== null && learned !== undefined)) {
-      const newLimit = learned.maxParallel + 1;
+      const uncapped = learned.maxParallel + 1;
+      const newLimit = (options.maxParallelCap !== null && options.maxParallelCap !== undefined)
+        ? Math.min(uncapped, options.maxParallelCap)
+        : uncapped;
       store.setLearnedLimit(deploymentId, {
         maxParallel: newLimit, reason: "learned:success",
         expiresAt: now + learnedConcurrencyTtlSeconds * 1000,
@@ -685,7 +691,7 @@ function recordCircuitFailure(
       state: "open", failureCount: nextFailureCount, successCount: 0,
       openedAt: now, halfOpenAfter: now + circuitDurationSeconds * 1000, updatedAt: now,
     });
-  } else if (nextFailureCount >= circuitThreshold) {
+  } else if (currentState !== "open" && nextFailureCount >= circuitThreshold) {
     store.setCircuit(deploymentId, {
       state: "open", failureCount: nextFailureCount, successCount: 0,
       openedAt: now, halfOpenAfter: now + circuitDurationSeconds * 1000, updatedAt: now,

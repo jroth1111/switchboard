@@ -19,19 +19,27 @@ export interface RouteReceipt {
   canonicalTarget: string;
   selectedGroup: string;
   fallbackGroups: string[];
-  attempts: Array<{
-    group: string;
-    deploymentId?: string;
-    failureClass?: string;
-    failureMessage?: string;
-    durationMs?: number;
-    firstByteLatencyMs?: number;
-    action: string;
-    tokenUsage?: TokenUsage;
-  }>;
+  attempts: ReceiptAttempt[];
   finalOutcome: "success" | "repaired_success" | "client_error" | "exhausted";
   stream: boolean;
   totalDurationMs?: number;
+}
+
+export interface ReceiptAttempt {
+  group: string;
+  deploymentId?: string;
+  model?: string;
+  failureClass?: string;
+  failureMessage?: string;
+  durationMs?: number;
+  firstByteLatencyMs?: number;
+  inflightAtDispatch?: number;
+  action: string;
+  attemptIndex?: number;
+  statusCode?: number;
+  retryable?: boolean;
+  fallbackStoppedReason?: string;
+  tokenUsage?: TokenUsage;
 }
 
 export interface RouteDecision {
@@ -90,6 +98,7 @@ const SECRET_FIELD_NAMES = new Set([
 ]);
 
 const SECRET_VALUE_PREFIXES = ["sk-", "sk_", "bearer ", "basic "];
+const CIRCULAR_REFERENCE = "[Circular]";
 
 const DIAGNOSTIC_DETAIL_FIELD_NAMES = new Set([
   "error_body", "issue_detail", "provider_error_body",
@@ -113,9 +122,22 @@ function isPrivatePathLike(value: string): boolean {
   return PRIVATE_PATH_PREFIXES.some((p) => value.startsWith(p));
 }
 
+function redactPrivatePathSegments(value: string): string {
+  return value.replace(/(?:\/Users|\/users|\/private|\/tmp|\/var\/folders)\/[^\s"'`),;]+/g, REDACTED);
+}
+
 function redactDiagnosticDetail(value: unknown): Record<string, unknown> {
   if ((value === null || value === undefined)) return { redacted: true, fingerprint: "", length: 0 };
-  const text = String(value);
+  let text: string;
+  if (typeof value === "object") {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      text = String(value);
+    }
+  } else {
+    text = String(value);
+  }
   if (!text) return { redacted: true, fingerprint: "", length: 0 };
   // Non-crypto sync fingerprint for diagnostic deduplication.
   // Uses FNV-1a with avalanche mixing — not cryptographic but sufficient
@@ -143,13 +165,28 @@ export function redact(text: string): string {
   result = result.replace(/api_key\s*=\s*["']?sk[_-][\w-]+["']?/gi, "api_key=\"***REDACTED***\"");
   // Redact Authorization: ... headers
   result = result.replace(/Authorization:\s*.+/gi, "Authorization: ***REDACTED***");
-  return result;
+  return redactPrivatePathSegments(result);
 }
 
 export function sanitizeReceipt(value: unknown): unknown {
+  return sanitizeReceiptValue(value, new WeakSet<object>());
+}
+
+function sanitizeReceiptValue(value: unknown, seen: WeakSet<object>): unknown {
   if (value === null || value === undefined) return value;
 
   if (typeof value === "object" && !Array.isArray(value)) {
+    if (seen.has(value)) return CIRCULAR_REFERENCE;
+    seen.add(value);
+    if (value instanceof Error) {
+      const errorResult = {
+        name: value.name,
+        message: sanitizeReceiptValue(value.message, seen),
+        stack: sanitizeReceiptValue(value.stack, seen),
+      };
+      seen.delete(value);
+      return errorResult;
+    }
     const result: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
       const keyText = String(key);
@@ -158,14 +195,19 @@ export function sanitizeReceipt(value: unknown): unknown {
       } else if (isDiagnosticDetailField(keyText)) {
         result[keyText] = redactDiagnosticDetail(item);
       } else {
-        result[keyText] = sanitizeReceipt(item);
+        result[keyText] = sanitizeReceiptValue(item, seen);
       }
     }
+    seen.delete(value);
     return result;
   }
 
   if (Array.isArray(value)) {
-    return value.map((item) => sanitizeReceipt(item));
+    if (seen.has(value)) return CIRCULAR_REFERENCE;
+    seen.add(value);
+    const result = value.map((item) => sanitizeReceiptValue(item, seen));
+    seen.delete(value);
+    return result;
   }
 
   if (typeof value === "string") {
@@ -178,6 +220,10 @@ export function sanitizeReceipt(value: unknown): unknown {
       return REDACTED;
     }
     return redact(value);
+  }
+
+  if (typeof value === "bigint") {
+    return value.toString();
   }
 
   return value;

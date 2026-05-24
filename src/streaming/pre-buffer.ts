@@ -3,9 +3,10 @@
 
 import type { SSEEvent } from "./sse-parser";
 import { parseSSEStream, extractDelta, extractUsage } from "./sse-parser";
-import { createSSEStream, SSEEmitter } from "./sse-emitter";
-import { StreamEvaluator, type StreamEvaluatorConfig } from "./stream-evaluator";
+import { createSSEStream } from "./sse-emitter";
+import { StreamEvaluator } from "./stream-evaluator";
 import type { TokenUsage } from "../observability/token-usage";
+import { logWarn } from "../observability/logging";
 
 const MAX_BUFFERED_EVENTS = 100;
 
@@ -87,7 +88,6 @@ export function executeStreamWithPreBuffer(
     let abortReason: string | undefined;
     let finishReason: string | undefined;
     const bufferedEvents: SSEEvent[] = [];
-    const streamStart = Date.now();
     let committed = false;
     let firstChunkReceived = false;
     let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
@@ -99,6 +99,7 @@ export function executeStreamWithPreBuffer(
     // Internal abort controller for the SSE reader — allows abortStream()
     // to break the for-await loop without calling cancel() on a locked body.
     const readerAbort = new AbortController();
+    let configAbortHandler: (() => void) | undefined;
 
     const clearTimers = () => {
       if (heartbeatTimer) {
@@ -138,6 +139,15 @@ export function executeStreamWithPreBuffer(
       finishDone({ finishReason, totalChunks, wasAborted, abortReason, usage: buildStreamUsage(streamPromptTokens, streamCompletionTokens) });
     };
 
+    if (config.signal) {
+      configAbortHandler = () => abortStream("client_abort");
+      if (config.signal.aborted) {
+        configAbortHandler();
+      } else {
+        config.signal.addEventListener("abort", configAbortHandler, { once: true });
+      }
+    }
+
     const resetIdleTimer = () => {
       if (idleTimer) clearTimeout(idleTimer);
       if (config.maxSilenceMs > 0) {
@@ -148,6 +158,8 @@ export function executeStreamWithPreBuffer(
     };
 
     try {
+      if (wasAborted) return;
+
       if (!upstream.body || upstream.status >= 400) {
         // Non-success upstream — signal abort
         wasAborted = true;
@@ -211,8 +223,12 @@ export function executeStreamWithPreBuffer(
 
         const delta = extractDelta(evt.data);
         if (!delta) {
-          // Non-data events (e.g. provider pings) — pass through only after commit.
-          // Do not buffer them: many keepalives can hit MAX_BUFFERED_EVENTS before content.
+          const abortForPayload = classifyUnusableStreamPayload(evt);
+          if (abortForPayload) {
+            abortStream(abortForPayload);
+            break;
+          }
+          // Non-data event (e.g. ping) — pass through if committed
           if (committed) {
             await emitter.send(evt.data, evt.event, evt.id);
           }
@@ -229,7 +245,16 @@ export function executeStreamWithPreBuffer(
             committed = true;
             finishReady({ committed: true });
             for (const bEvt of bufferedEvents) {
-              await emitBufferedEvent(emitter, evaluator, bEvt);
+              const bDelta = extractDelta(bEvt.data);
+              if (bDelta?.content) {
+                const processed = evaluator.processContent(bDelta.content);
+                if (processed !== bDelta.content) {
+                  const modifiedData = rebuildDeltaData(bEvt.data, processed);
+                  await emitter.send(modifiedData, bEvt.event, bEvt.id);
+                  continue;
+                }
+              }
+              await emitter.send(bEvt.data, bEvt.event, bEvt.id);
             }
           }
           await emitter.sendDone();
@@ -262,7 +287,17 @@ export function executeStreamWithPreBuffer(
             finishReady({ committed: true });
             // Replay buffered events with content processing
             for (const bEvt of bufferedEvents) {
-              await emitBufferedEvent(emitter, evaluator, bEvt);
+              const bDelta = extractDelta(bEvt.data);
+              if (bDelta?.content) {
+                const processed = evaluator.processContent(bDelta.content);
+                if (processed !== bDelta.content) {
+                  // Content was modified — rebuild the SSE event
+                  const modifiedData = rebuildDeltaData(bEvt.data, processed);
+                  await emitter.send(modifiedData, bEvt.event, bEvt.id);
+                  continue;
+                }
+              }
+              await emitter.send(bEvt.data, bEvt.event, bEvt.id);
             }
             bufferedEvents.length = 0;
           }
@@ -287,16 +322,23 @@ export function executeStreamWithPreBuffer(
         abortReason = err instanceof Error ? err.message : "stream_error";
       }
     } finally {
+      if (configAbortHandler) {
+        config.signal?.removeEventListener("abort", configAbortHandler);
+      }
       clearTimers();
       // Cancel upstream body to release resources
       if (upstream.body) {
         try { await upstream.body.cancel(); } catch { /* already consumed */ }
       }
-      finishReady({ committed, abortReason });
+      if (!readyResolved) {
+        finishReady({ committed: committed && !wasAborted, abortReason });
+      }
       await emitter.close();
       finishDone({ finishReason, totalChunks, wasAborted, abortReason, usage: buildStreamUsage(streamPromptTokens, streamCompletionTokens) });
     }
-  })();
+  })().catch((err) => {
+    logWarn("pre_buffer_unhandled_error", { error: String(err) });
+  });
 
   return { readable, ready, done };
 }
@@ -317,24 +359,6 @@ function buildStreamUsage(
   return { kind: "unknown", source: "streaming" };
 }
 
-/** Emit one buffered SSE event, applying stream-evaluator content processing. */
-async function emitBufferedEvent(
-  emitter: SSEEmitter,
-  evaluator: StreamEvaluator,
-  bEvt: SSEEvent,
-): Promise<void> {
-  const bDelta = extractDelta(bEvt.data);
-  if (bDelta?.content) {
-    const processed = evaluator.processContent(bDelta.content);
-    if (!processed) return;
-    if (processed !== bDelta.content) {
-      await emitter.send(rebuildDeltaData(bEvt.data, processed), bEvt.event, bEvt.id);
-      return;
-    }
-  }
-  await emitter.send(bEvt.data, bEvt.event, bEvt.id);
-}
-
 /** Rebuild SSE data payload with modified content. */
 function rebuildDeltaData(originalData: string, newContent: string): string {
   if (originalData === "[DONE]") return originalData;
@@ -349,4 +373,35 @@ function rebuildDeltaData(originalData: string, newContent: string): string {
   } catch {
     return originalData;
   }
+}
+
+function classifyUnusableStreamPayload(evt: SSEEvent): string | null {
+  const data = evt.data.trim();
+  if (!data || data === "[DONE]") return null;
+
+  const eventName = evt.event?.toLowerCase();
+  if (eventName && eventName !== "message") {
+    return eventName === "error" ? "stream_error_event" : null;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data);
+  } catch {
+    return "malformed_stream_json";
+  }
+
+  if (isRecord(parsed) && parsed.error !== undefined) {
+    return "stream_error_payload";
+  }
+
+  if (isRecord(parsed) && parsed.type === "ping") {
+    return null;
+  }
+
+  return "unrecognized_stream_payload";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

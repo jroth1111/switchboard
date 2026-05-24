@@ -18,6 +18,8 @@ export class SqlStorageAdapter implements StorageAdapter {
 
   pruneKeyWindows(olderThan: number): void {
     this.sql.exec("DELETE FROM key_windows WHERE window_start < ?", olderThan);
+    this.sql.exec("DELETE FROM group_windows WHERE window_start < ?", olderThan);
+    this.sql.exec("DELETE FROM key_token_windows WHERE window_start < ?", olderThan);
   }
 
   getKeyRpm(keyRef: string, since: number): number {
@@ -78,6 +80,14 @@ export class SqlStorageAdapter implements StorageAdapter {
     this.sql.exec("DELETE FROM reservations WHERE reservation_id = ?", reservationId);
     if (rows.length === 0) return null;
     return { deploymentId: rows[0].deployment_id as string };
+  }
+
+  countReservations(deploymentId: string): number {
+    const rows = this.sql.exec(
+      "SELECT COUNT(*) AS count FROM reservations WHERE deployment_id = ?",
+      deploymentId,
+    ).toArray();
+    return Number(rows[0]?.count ?? 0);
   }
 
   pruneStaleInflight(olderThan: number): void {
@@ -238,13 +248,13 @@ function parseHealthRow(r: Record<string, unknown>): HealthScoreRow {
   let firstByteLatencyHistoryMs: number[] = [];
   let totalLatencyHistoryMs: number[] = [];
   if (r.recent_outcomes_json) {
-    try { recentOutcomes = JSON.parse(r.recent_outcomes_json as string) as RecentOutcome[]; } catch { /* ignore */ }
+    try { recentOutcomes = JSON.parse(r.recent_outcomes_json as string) as RecentOutcome[]; } catch (e) { console.error("Failed to parse recent_outcomes_json:", e); }
   }
   if (r.first_byte_latency_history_json) {
-    try { firstByteLatencyHistoryMs = JSON.parse(r.first_byte_latency_history_json as string) as number[]; } catch { /* ignore */ }
+    try { firstByteLatencyHistoryMs = JSON.parse(r.first_byte_latency_history_json as string) as number[]; } catch (e) { console.error("Failed to parse first_byte_latency_history_json:", e); }
   }
   if (r.total_latency_history_json) {
-    try { totalLatencyHistoryMs = JSON.parse(r.total_latency_history_json as string) as number[]; } catch { /* ignore */ }
+    try { totalLatencyHistoryMs = JSON.parse(r.total_latency_history_json as string) as number[]; } catch (e) { console.error("Failed to parse total_latency_history_json:", e); }
   }
   return {
     score: r.score as number,

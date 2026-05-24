@@ -16,6 +16,8 @@ function makeEnvelope(overrides: Partial<RequestEnvelope> = {}): RequestEnvelope
     hasStrictTools: false,
     hasTypedContent: false,
     requiresJsonMode: false,
+    requiresReasoning: false,
+    isMultiTool: false,
     ...overrides,
   };
 }
@@ -73,10 +75,32 @@ describe("Request class computation", () => {
     const cls = computeRequestClass(env);
     expect(cls.requiresJsonMode).toBe(true);
   });
+
+  it("keeps multi-tool and reasoning flags in request class receipts", () => {
+    const env = makeEnvelope({
+      hasTools: true,
+      isMultiTool: true,
+      requiresReasoning: true,
+      body: {
+        model: "glm-5.1",
+        messages: [{ role: "user", content: "use tools and reason" }],
+        tools: [
+          { type: "function", function: { name: "one" } },
+          { type: "function", function: { name: "two" } },
+        ],
+        reasoning_effort: "high",
+      },
+    });
+
+    const cls = computeRequestClass(env);
+
+    expect(cls.isMultiTool).toBe(true);
+    expect(cls.requiresReasoning).toBe(true);
+  });
 });
 
 describe("Capability-aware routing", () => {
-  it("deducts score for broken tool calling", () => {
+  it("routes tool requests through the dedicated tool lane before general fallbacks", () => {
     const env = makeEnvelope({
       originalModel: "glm-5.1",
       hasTools: true,
@@ -87,8 +111,12 @@ describe("Capability-aware routing", () => {
       },
     });
     const candidates = selectCandidateGroups("smart-route-worker", env);
-    // Candidates should exist; those with broken tool support get lower scores
-    expect(candidates.length).toBeGreaterThan(0);
+    expect(candidates[0].group).toBe("nim-tool-primary");
+    expect(candidates[0].score).toBe(100);
+
+    const plan = planRequest(env);
+    expect(plan).not.toBeNull();
+    expect(plan!.selectedGroup).toBe("nim-tool-primary");
   });
 
   it("routes tool requests to dedicated tool lane when available", () => {
@@ -103,10 +131,14 @@ describe("Capability-aware routing", () => {
     });
     const plan = planRequest(env);
     expect(plan).not.toBeNull();
-    expect(plan!.selectedGroup).toBeDefined();
+    expect(plan!.selectedGroup).toBe("nim-tool-primary");
+    expect(plan!.routeDecision.candidates[0]).toMatchObject({
+      group: "nim-tool-primary",
+      viable: true,
+    });
   });
 
-  it("plans streaming with tools", () => {
+  it("keeps streaming tool requests off the non-streaming dedicated tool lane", () => {
     const env = makeEnvelope({
       originalModel: "glm-5.1",
       stream: true,
@@ -120,7 +152,11 @@ describe("Capability-aware routing", () => {
     });
     const plan = planRequest(env);
     expect(plan).not.toBeNull();
-    expect(plan!.selectedGroup).toBeDefined();
+    expect(plan!.selectedGroup).toBe("smart-route-worker");
+    expect(plan!.routeDecision.candidates.find((candidate) => candidate.group === "nim-tool-primary")).toMatchObject({
+      viable: false,
+      rejectionReason: "operation tool_stream not supported",
+    });
   });
 
   it("handles json mode requests", () => {
@@ -135,6 +171,29 @@ describe("Capability-aware routing", () => {
     });
     const plan = planRequest(env);
     expect(plan).not.toBeNull();
+  });
+
+  it("routes direct NIM json-mode requests away from deployments with broken json mode", () => {
+    const env = makeEnvelope({
+      originalModel: "nim-primary",
+      requiresJsonMode: true,
+      body: {
+        model: "nim-primary",
+        messages: [{ role: "user", content: "json please" }],
+        response_format: { type: "json_object" },
+      },
+    });
+
+    const plan = planRequest(env);
+
+    expect(plan).not.toBeNull();
+    expect(plan!.selectedGroup).toBe("zai-glm-5.1-terminal-fallback");
+    expect(plan!.selectedDeployments.every((deployment) => deployment.capabilities.jsonMode !== "broken")).toBe(true);
+    expect(plan!.routeDecision.candidates.find((candidate) => candidate.group === "nim-primary")).toMatchObject({
+      viable: false,
+      rejectionReason: "json mode not supported",
+      deploymentCount: 0,
+    });
   });
 
   it("handles multimodal content requests", () => {
@@ -164,5 +223,15 @@ describe("Capability-aware routing", () => {
     });
     const plan = planRequest(env);
     expect(plan).not.toBeNull();
+  });
+
+  it("can produce deterministic plans when the caller injects the timestamp", () => {
+    const env = makeEnvelope();
+
+    const first = planRequest(env, 1234567890);
+    const second = planRequest(env, 1234567890);
+
+    expect(first).toEqual(second);
+    expect(first!.receipt.timestamp).toBe(1234567890);
   });
 });

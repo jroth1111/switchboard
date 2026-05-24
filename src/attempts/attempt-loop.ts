@@ -18,7 +18,7 @@ import { evaluateResponse, type ResponseEvaluationConfig } from "../nim/evaluate
 import { classifyRateLimit } from "../nim/classify/rate-limit";
 import { wrapSubscriptionStream, type SubscriptionStreamFormat } from "../streaming/format-converter";
 import { classifyProviderFailure, classifyThrownError, SubscriptionTokenError, type ProviderFailureClassification } from "../nim/classify/provider-failure";
-import { loadConfiguredPatterns } from "../nim/repair/aliases";
+import { buildConfiguredPatterns } from "../nim/repair/aliases";
 import { executeStreamWithPreBuffer, type PreBufferConfig, type StreamDone } from "../streaming/pre-buffer";
 import { logInfo, logWarn } from "../observability/logging";
 import { applyDeploymentRuntimeOverrides } from "../config/runtime-overrides";
@@ -1354,13 +1354,11 @@ function emitUnknownUsage(stateObj: AttemptStateAccessor, params: {
 
 function buildRepairPolicy(policy: Policy): import("../nim/repair/schema-aware").RepairPolicyConfig {
   const rp = policy.response.repairPolicy;
-  // Wire manifest conservativeToolPatterns into the module-level alias set so
-  // isDestructiveToolName reflects per-policy configuration.
-  loadConfiguredPatterns(rp.conservativeToolPatterns ?? []);
   return {
     allowDestructive: rp.allowDestructiveByDefault,
     enumAliases: rp.enumAliases,
     toolNameAliases: rp.toolNameAliases,
     relationalDefaults: rp.relationalDefaults,
+    configuredPatterns: buildConfiguredPatterns(rp.conservativeToolPatterns ?? []),
   };
 }

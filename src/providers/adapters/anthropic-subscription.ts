@@ -3,6 +3,7 @@
 
 import type { ProviderAdapter, ProviderBuildContext } from "../adapter";
 import type { ProviderRequest } from "../base";
+import type { FailureClass } from "../../config/schema";
 import { SubscriptionTokenError, classifyProviderFailure } from "../../nim/classify/provider-failure";
 import type { ProviderFailureClassification } from "../../nim/classify/provider-failure";
 import { classifyAnthropicFailure } from "../anthropic-failure";
@@ -22,21 +23,30 @@ export const anthropicSubscriptionAdapter: ProviderAdapter = {
       throw new SubscriptionTokenError("anthropic_oauth_not_configured", "oauth_session_failure");
     }
 
-    const tokenResult = await getValidAnthropicToken(
-      `anthropic:${ctx.deployment.id}`,
-      ctx.requestId,
-      ctx.subscriptionCtx.anthropicOAuth.accessor,
-      {
-        clientId: ctx.subscriptionCtx.anthropicOAuth.clientId,
-        clientSecret: ctx.subscriptionCtx.anthropicOAuth.clientSecret,
-      },
-    );
+    let lastError: { error: string; failureClass: FailureClass } | null = null;
+    for (const accountId of anthropicOAuthAccountCandidates(ctx.apiKey, ctx.deployment.id)) {
+      const tokenResult = await getValidAnthropicToken(
+        accountId,
+        ctx.requestId,
+        ctx.subscriptionCtx.anthropicOAuth.accessor,
+        {
+          clientId: ctx.subscriptionCtx.anthropicOAuth.clientId,
+          clientSecret: ctx.subscriptionCtx.anthropicOAuth.clientSecret,
+        },
+      );
 
-    if ("error" in tokenResult) {
-      throw new SubscriptionTokenError(tokenResult.error, tokenResult.failureClass);
+      if ("token" in tokenResult) {
+        return buildAnthropicSubscriptionRequest(ctx.deployment, ctx.body, tokenResult.token);
+      }
+
+      lastError = tokenResult;
+      if (tokenResult.error !== "no_token_stored") break;
     }
 
-    return buildAnthropicSubscriptionRequest(ctx.deployment, ctx.body, tokenResult.token);
+    throw new SubscriptionTokenError(
+      lastError?.error ?? "no_token_stored",
+      lastError?.failureClass ?? "oauth_session_failure",
+    );
   },
 
   classifyFailure(status: number, body: string): ProviderFailureClassification {
@@ -55,3 +65,11 @@ export const anthropicSubscriptionAdapter: ProviderAdapter = {
     return convertAnthropicStreamChunk(event as { type: string; [key: string]: unknown }, requestId, model);
   },
 };
+
+function anthropicOAuthAccountCandidates(configuredAccountId: string, deploymentId: string): string[] {
+  const candidates: string[] = [];
+  const configured = configuredAccountId.trim();
+  if (configured) candidates.push(configured);
+  candidates.push(`anthropic:${deploymentId}`);
+  return Array.from(new Set(candidates));
+}

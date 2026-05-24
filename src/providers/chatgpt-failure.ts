@@ -62,7 +62,7 @@ export function classifyChatGPTFailure(
     };
   }
 
-  // OAuth/token validation on 400 (before generic fallback maps bare "token" → context length)
+  // OAuth/token validation on 400, before generic Responses API errors.
   if (status === 400 && isChatGPTTokenAuthError(bodyLower)) {
     return {
       failureClass: "oauth_session_failure",
@@ -73,8 +73,18 @@ export function classifyChatGPTFailure(
     };
   }
 
+  if (status === 404 || (status === 400 && /model.*(?:not\s*found|does\s*not\s*exist|is\s*invalid|not\s*available|not\s*supported|unavailable)/i.test(bodyLower))) {
+    return {
+      failureClass: "invalid_model",
+      cooldownSeconds: 300,
+      affectsHealth: false,
+      affectsAccount: false,
+      details: `chatgpt_invalid_model_${status}`,
+    };
+  }
+
   // Responses API specific errors
-  if (status === 422 || (status === 400 && bodyLower.includes("responses"))) {
+  if (status === 422 || status === 400) {
     return {
       failureClass: "responses_api_error",
       cooldownSeconds: 0,

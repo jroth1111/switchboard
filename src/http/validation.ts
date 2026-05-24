@@ -33,19 +33,16 @@ export function validateChatRequest(body: Record<string, unknown>): ValidationRe
   }
 
   for (let i = 0; i < messages.length; i++) {
-    const raw = messages[i];
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-      return {
-        valid: false,
-        error: { message: `messages[${i}] must be an object`, type: "invalid_request", code: "invalid_messages" },
-      };
+    const msg = messages[i];
+    if (msg === null || msg === undefined || typeof msg !== "object" || Array.isArray(msg)) {
+      return { valid: false, error: { message: `messages[${i}] must be an object`, type: "invalid_request", code: "invalid_messages" } };
     }
-    const msg = raw as Record<string, unknown>;
-    if (!msg.role || typeof msg.role !== "string") {
+    const msgObj = msg as Record<string, unknown>;
+    if (!msgObj.role || typeof msgObj.role !== "string") {
       return { valid: false, error: { message: `messages[${i}].role is required`, type: "invalid_request", code: "invalid_messages" } };
     }
-    if (!["system", "user", "assistant", "tool"].includes(msg.role as string)) {
-      return { valid: false, error: { message: `messages[${i}].role '${msg.role}' is not supported`, type: "invalid_request", code: "invalid_messages" } };
+    if (!["system", "developer", "user", "assistant", "tool"].includes(msgObj.role as string)) {
+      return { valid: false, error: { message: `messages[${i}].role '${msgObj.role}' is not supported`, type: "invalid_request", code: "invalid_messages" } };
     }
   }
 
@@ -58,8 +55,11 @@ export function validateChatRequest(body: Record<string, unknown>): ValidationRe
       return { valid: false, error: { message: `too many tools (max ${MAX_TOOLS})`, type: "invalid_request", code: "invalid_tools" } };
     }
     for (let i = 0; i < (body.tools as unknown[]).length; i++) {
-      const tool = (body.tools as Record<string, unknown>[])[i];
-      const fn = tool?.function as Record<string, unknown> | undefined;
+      const tool = (body.tools as unknown[])[i];
+      if (!tool || typeof tool !== "object") {
+        return { valid: false, error: { message: `tools[${i}] must be an object`, type: "invalid_request", code: "invalid_tools" } };
+      }
+      const fn = (tool as Record<string, unknown>)?.function as Record<string, unknown> | undefined;
       if (fn?.name && typeof fn.name === "string" && fn.name.length > MAX_TOOL_NAME_LENGTH) {
         return { valid: false, error: { message: `tools[${i}].function.name too long (max ${MAX_TOOL_NAME_LENGTH})`, type: "invalid_request", code: "invalid_tools" } };
       }
@@ -88,13 +88,13 @@ export function validateChatRequest(body: Record<string, unknown>): ValidationRe
     }
   }
   if (body.max_tokens !== undefined && body.max_tokens !== null) {
-    if (typeof body.max_tokens !== "number" || !Number.isFinite(body.max_tokens) || body.max_tokens < 1 || body.max_tokens > 1000000) {
-      return { valid: false, error: { message: "max_tokens must be between 1 and 1000000", type: "invalid_request", code: "invalid_parameter" } };
+    if (typeof body.max_tokens !== "number" || !Number.isInteger(body.max_tokens) || body.max_tokens < 1 || body.max_tokens > 1000000) {
+      return { valid: false, error: { message: "max_tokens must be an integer between 1 and 1000000", type: "invalid_request", code: "invalid_parameter" } };
     }
   }
   if (body.n !== undefined && body.n !== null) {
-    if (typeof body.n !== "number" || !Number.isFinite(body.n) || body.n < 1 || body.n > 10) {
-      return { valid: false, error: { message: "n must be between 1 and 10", type: "invalid_request", code: "invalid_parameter" } };
+    if (typeof body.n !== "number" || !Number.isInteger(body.n) || body.n < 1 || body.n > 10) {
+      return { valid: false, error: { message: "n must be an integer between 1 and 10", type: "invalid_request", code: "invalid_parameter" } };
     }
   }
 
@@ -202,10 +202,14 @@ export function validateResponsesRequest(body: Record<string, unknown>): Validat
       return { valid: false, error: { message: `too many tools (max ${MAX_TOOLS})`, type: "invalid_request", code: "invalid_tools" } };
     }
     for (let i = 0; i < (body.tools as unknown[]).length; i++) {
-      const tool = (body.tools as Record<string, unknown>[])[i];
-      const name = typeof tool?.name === "string"
-        ? tool.name
-        : (tool?.function as Record<string, unknown> | undefined)?.name;
+      const tool = (body.tools as unknown[])[i];
+      if (!tool || typeof tool !== "object") {
+        return { valid: false, error: { message: `tools[${i}] must be an object`, type: "invalid_request", code: "invalid_tools" } };
+      }
+      const toolObj = tool as Record<string, unknown>;
+      const name = typeof toolObj?.name === "string"
+        ? toolObj.name
+        : (toolObj?.function as Record<string, unknown> | undefined)?.name;
       if (typeof name === "string" && name.length > MAX_TOOL_NAME_LENGTH) {
         return { valid: false, error: { message: `tools[${i}].name too long (max ${MAX_TOOL_NAME_LENGTH})`, type: "invalid_request", code: "invalid_tools" } };
       }
@@ -220,8 +224,8 @@ export function validateResponsesRequest(body: Record<string, unknown>): Validat
   }
 
   if (body.max_output_tokens !== undefined && body.max_output_tokens !== null) {
-    if (typeof body.max_output_tokens !== "number" || !Number.isFinite(body.max_output_tokens) || body.max_output_tokens < 1 || body.max_output_tokens > 1000000) {
-      return { valid: false, error: { message: "max_output_tokens must be between 1 and 1000000", type: "invalid_request", code: "invalid_parameter" } };
+    if (typeof body.max_output_tokens !== "number" || !Number.isInteger(body.max_output_tokens) || body.max_output_tokens < 1 || body.max_output_tokens > 1000000) {
+      return { valid: false, error: { message: "max_output_tokens must be an integer between 1 and 1000000", type: "invalid_request", code: "invalid_parameter" } };
     }
   }
 
@@ -236,15 +240,15 @@ export function validateContentType(request: Request): ValidationResult {
   if (!ct) {
     return { valid: false, error: { message: "Content-Type header is required for POST requests", type: "invalid_request", code: "missing_content_type" } };
   }
-  // Accept any content-type that includes "application/json" (handles charset suffixes)
-  if (!ct.toLowerCase().includes("application/json")) {
+  const mediaType = ct.split(";", 1)[0]?.trim().toLowerCase();
+  if (mediaType !== "application/json") {
     return { valid: false, error: { message: "Content-Type must be application/json", type: "invalid_request", code: "invalid_content_type" } };
   }
   return { valid: true };
 }
 
 export function validateBodySize(contentLength: number | null): ValidationResult {
-  if (contentLength !== null && contentLength > MAX_BODY_SIZE) {
+  if (contentLength !== null && (contentLength < 0 || contentLength > MAX_BODY_SIZE)) {
     return { valid: false, error: { message: `request body too large (max ${MAX_BODY_SIZE / 1024 / 1024}MB)`, type: "invalid_request", code: "body_too_large" } };
   }
   return { valid: true };

@@ -4,11 +4,16 @@
 const encoder = new TextEncoder();
 
 export function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
   const aa = encoder.encode(a);
   const bb = encoder.encode(b);
-  let diff = aa.length ^ bb.length;
-  const maxLength = Math.max(aa.length, bb.length);
-  for (let i = 0; i < maxLength; i++) {
+  if (aa.length !== bb.length) {
+    return false;
+  }
+  let diff = 0;
+  for (let i = 0; i < aa.length; i++) {
     diff |= (aa[i] ?? 0) ^ (bb[i] ?? 0);
   }
   return diff === 0;

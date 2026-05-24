@@ -2,22 +2,34 @@
 // Usage: node scripts/bundle-size.ts
 // Fails if the Worker bundle exceeds size limits.
 
-import { readFileSync } from "fs";
-import { execSync } from "child_process";
-import { gzipSync } from "zlib";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 
 const MAX_RAW_KB = 512;
 const MAX_GZIP_KB = 128;
 const BUNDLE_PATH = ".wrangler/build/index.js";
+const WRANGLER_BIN = process.platform === "win32" ? "wrangler.cmd" : "wrangler";
+const WRANGLER_PATH = join("node_modules", ".bin", WRANGLER_BIN);
+const WRANGLER_ARGS = ["deploy", "--dry-run", "--outdir=.wrangler/build", "--config", "wrangler.jsonc"];
 
 // Build the bundle first
 console.log("Building bundle...");
-try {
-  execSync("npx wrangler deploy --dry-run --outdir=.wrangler/build --config wrangler.jsonc", {
-    stdio: "pipe",
-  });
-} catch (e) {
-  console.error("Build failed");
+if (!existsSync(WRANGLER_PATH)) {
+  console.error(`Build failed: local Wrangler binary not found at ${WRANGLER_PATH}; install project dependencies before running bundle-size.`);
+  process.exit(1);
+}
+
+const build = spawnSync(WRANGLER_PATH, WRANGLER_ARGS, {
+  encoding: "utf8",
+  stdio: "pipe",
+});
+if (build.error || build.status !== 0) {
+  console.error(`Build failed${build.status === null ? "" : ` with exit code ${build.status}`}`);
+  if (build.error) console.error(build.error.message);
+  const details = [tail(build.stdout), tail(build.stderr)].filter(Boolean).join("\n");
+  if (details) console.error(details);
   process.exit(1);
 }
 
@@ -48,6 +60,12 @@ try {
 
   process.exit(failed ? 1 : 0);
 } catch (e) {
-  console.error(`Could not read bundle at ${BUNDLE_PATH}`);
+  console.error(`Could not read bundle at ${BUNDLE_PATH}: ${(e as Error).message}`);
   process.exit(1);
+}
+
+function tail(value: string | null | undefined): string {
+  if (!value) return "";
+  const lines = value.trim().split(/\r?\n/u);
+  return lines.slice(-20).join("\n");
 }

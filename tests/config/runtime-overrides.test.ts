@@ -67,6 +67,33 @@ describe("runtime deployment overrides", () => {
     }).apiBase).toBe("https://fixture.example/all");
   });
 
+  it("normalizes accepted API base override URLs", () => {
+    const resolved = applyDeploymentRuntimeOverrides(deployment(), {
+      PROVIDER_API_BASE_NIM_PRIMARY_KEY_1: " https://fixture.example/provider/v1/ ",
+    });
+
+    expect(resolved.apiBase).toBe("https://fixture.example/provider/v1");
+  });
+
+  it("ignores unsafe API base override URLs and falls through", () => {
+    const original = deployment();
+
+    expect(applyDeploymentRuntimeOverrides(original, {
+      PROVIDER_API_BASE_NIM_PRIMARY_KEY_1: "javascript:alert(1)",
+      PROVIDER_API_BASE_GROUP_NIM_PRIMARY: "http://fixture.example/insecure",
+      PROVIDER_API_BASE_PROVIDER_NVIDIA_NIM: "https://user:pass@fixture.example/secret",
+      PROVIDER_API_BASE_ALL: "https://fixture.example/all",
+    }).apiBase).toBe("https://fixture.example/all");
+  });
+
+  it("allows localhost HTTP overrides for local fixtures", () => {
+    const resolved = applyDeploymentRuntimeOverrides(deployment(), {
+      PROVIDER_API_BASE_NIM_PRIMARY_KEY_1: "http://localhost:8787/v1",
+    });
+
+    expect(resolved.apiBase).toBe("http://localhost:8787/v1");
+  });
+
   it("documents deterministic override key order", () => {
     expect(providerApiBaseOverrideKeys(deployment())).toEqual([
       "PROVIDER_API_BASE_NIM_PRIMARY_KEY_1",

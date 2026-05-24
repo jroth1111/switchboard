@@ -87,7 +87,7 @@ export class StreamEvaluator {
         let printable = 0;
         for (const ch of this.contentBuffer) {
           const cp = ch.charCodeAt(0);
-          if ((cp >= 32 && cp <= 126) || cp > 127 && cp !== 0xFEFF) printable++;
+          if ((cp >= 32 && cp <= 126) || (cp >= 160 && cp !== 0xFEFF)) printable++;
         }
         const printableRatio = printable / this.contentBuffer.length;
         if (printableRatio < 0.6) {
@@ -106,7 +106,7 @@ export class StreamEvaluator {
     }
 
     // If we've passed pre-buffer and haven't found issues, commit to client
-    if (!isPreBuffer && !this.hasSentToClient) {
+    if (!isPreBuffer && !this.hasSentToClient && this.firstContentSeen) {
       this.hasSentToClient = true;
     }
 

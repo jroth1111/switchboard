@@ -7,6 +7,7 @@ import {
   convertResponsesStreamChunk,
   convertResponsesToOpenAI,
   normalizeChatGPTResponsesInput,
+  resolveChatGPTSubscriptionAuth,
   validateResponsesContract,
 } from "../../src/providers/chatgpt-responses";
 import type { Deployment } from "../../src/config/schema";
@@ -19,7 +20,7 @@ function deployment(overrides: Partial<Deployment> = {}): Deployment {
     mode: "responses",
     model: "gpt-5.5",
     providerModel: "gpt-5.5",
-    keyRef: "CHATGPT_OAUTH",
+    keyRef: "CHATGPT_AUTH_JSON",
     rpm: 100,
     maxParallelRequests: 1,
     timeout: 30,
@@ -37,6 +38,15 @@ function deployment(overrides: Partial<Deployment> = {}): Deployment {
     hidden: true,
     ...overrides,
   };
+}
+
+function structuredAuth(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    access_token: "access-secret",
+    refresh_token: "refresh-secret",
+    id_token: "id-secret",
+    ...overrides,
+  });
 }
 
 // ─── ChatGPT/Codex Responses contract ────────────────────────────────
@@ -213,6 +223,54 @@ describe("validateResponsesContract", () => {
     const body = JSON.parse(req.body) as Record<string, unknown>;
 
     expect(body).not.toHaveProperty("metadata");
+  });
+
+  it("accepts structured subscription auth and sends only the access token upstream", () => {
+    const req = buildChatGPTResponsesRequest(
+      deployment(),
+      { model: "gpt-5.5", input: "OK" },
+      structuredAuth(),
+    );
+
+    expect(req.headers.Authorization).toBe("Bearer access-secret");
+    expect(req.body).not.toContain("refresh-secret");
+    expect(req.body).not.toContain("id-secret");
+    expect(resolveChatGPTSubscriptionAuth(structuredAuth()).source).toBe("structured");
+  });
+
+  it("rejects structured auth missing refresh_token or id_token without echoing secrets", () => {
+    let thrown: Error | undefined;
+    try {
+      buildChatGPTResponsesRequest(
+        deployment(),
+        { model: "gpt-5.5", input: "OK" },
+        structuredAuth({ refresh_token: "", id_token: undefined }),
+      );
+    } catch (error) {
+      thrown = error as Error;
+    }
+
+    expect(thrown).toBeDefined();
+    expect(thrown!.message).toContain("missing required fields: refresh_token, id_token");
+    expect(thrown!.message).not.toContain("access-secret");
+    expect(thrown!.message).not.toContain("refresh-secret");
+    expect(thrown!.message).not.toContain("id-secret");
+  });
+
+  it("rejects OpenAI API-key shaped access tokens inside structured auth", () => {
+    expect(() => buildChatGPTResponsesRequest(
+      deployment(),
+      { model: "gpt-5.5", input: "OK" },
+      structuredAuth({ access_token: "sk-test-openai-key" }),
+    )).toThrow(/subscription OAuth/);
+  });
+
+  it("keeps legacy CHATGPT_OAUTH access-token fallback weaker and explicit", () => {
+    expect(() => resolveChatGPTSubscriptionAuth("legacy-oauth-token")).toThrow(/must be structured JSON/);
+    expect(resolveChatGPTSubscriptionAuth("legacy-oauth-token", { allowLegacyAccessToken: true })).toEqual({
+      accessToken: "legacy-oauth-token",
+      source: "legacy",
+    });
   });
 });
 

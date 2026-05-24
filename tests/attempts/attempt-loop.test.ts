@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { executeAttemptLoop } from "../../src/attempts/attempt-loop";
 import {
   admit,
   release,
@@ -68,6 +69,14 @@ function makeDeployment(overrides: Partial<Deployment> = {}): Deployment {
     hidden: false,
     ...overrides,
   };
+}
+
+function structuredChatGPTAuth(): string {
+  return JSON.stringify({
+    access_token: "access-secret",
+    refresh_token: "refresh-secret",
+    id_token: "id-secret",
+  });
 }
 
 // ─── Provider request building ────────────────────────────────────
@@ -462,6 +471,113 @@ describe("Provider format conversion integration", () => {
     const openai = convertResponsesToOpenAI(responsesApi, "req-1");
     expect(openai.choices[0].message.content).toBe("Hi!");
     expect(openai.usage.total_tokens).toBe(11);
+  });
+});
+
+describe("ChatGPT Responses auth resolution in the attempt loop", () => {
+  function makeResponsesEnvelope(): RequestEnvelope {
+    return {
+      requestId: "req-chatgpt-auth",
+      originalModel: "gpt-5.5",
+      surface: "responses",
+      body: { model: "gpt-5.5", input: "Hello" },
+      stream: false,
+      hasTools: false,
+      hasStrictTools: false,
+      isMultiTool: false,
+      hasTypedContent: false,
+      requiresJsonMode: false,
+      requiresReasoning: false,
+    };
+  }
+
+  function makeAttemptState() {
+    let reservation = 0;
+    return {
+      admit: vi.fn(async (req: { candidates: Array<{ deploymentId: string; keyRef: string }> }) => {
+        const candidate = req.candidates[0];
+        if (!candidate) return { admitted: false, rejected: [] };
+        reservation += 1;
+        return {
+          admitted: true,
+          deploymentId: candidate.deploymentId,
+          keyRef: candidate.keyRef,
+          reservationId: `res-chatgpt-${reservation}`,
+          inflightAtDispatch: 0,
+          effectiveMaxParallel: 1,
+        };
+      }),
+      confirm: vi.fn(async () => {}),
+      recordSuccess: vi.fn(async () => {}),
+      recordFailure: vi.fn(async () => {}),
+      recordTokenUsage: vi.fn(async () => {}),
+      release: vi.fn(async () => {}),
+      getHealth: vi.fn(async () => ({ healthScores: {}, circuits: {} })),
+      recordRouteDispatch: vi.fn(async () => {}),
+      storeUsageEvent: vi.fn(async () => {}),
+    };
+  }
+
+  it("uses CHATGPT_AUTH_JSON as the primary auth material and sends only access_token upstream", async () => {
+    const envelope = makeResponsesEnvelope();
+    const plan = planRequest(envelope)!;
+    const state = makeAttemptState();
+    const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string>;
+      expect(headers.Authorization).toBe("Bearer access-secret");
+      expect(String(init?.body)).not.toContain("refresh-secret");
+      expect(String(init?.body)).not.toContain("id-secret");
+      return new Response(JSON.stringify({
+        id: "resp_structured_auth",
+        model: "gpt-5.5",
+        output: [{ type: "message", content: [{ type: "output_text", text: "Structured auth produced a complete successful response." }] }],
+        usage: { input_tokens: 2, output_tokens: 8 },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const result = await executeAttemptLoop(
+        envelope,
+        plan,
+        state as unknown as Parameters<typeof executeAttemptLoop>[2],
+        { CHATGPT_AUTH_JSON: structuredChatGPTAuth(), CHATGPT_OAUTH: "legacy-token" },
+        AbortSignal.timeout(5_000),
+      );
+
+      expect(result.success).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(state.admit.mock.calls[0][0].candidates[0].keyRef).toBe("CHATGPT_AUTH_JSON");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("rejects CHATGPT_AUTH_FILE path strings before they can become bearer tokens", async () => {
+    const envelope = makeResponsesEnvelope();
+    const plan = planRequest(envelope)!;
+    const state = makeAttemptState();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const result = await executeAttemptLoop(
+        envelope,
+        plan,
+        state as unknown as Parameters<typeof executeAttemptLoop>[2],
+        { CHATGPT_AUTH_FILE: ".secrets/chatgpt-auth.json", CHATGPT_OAUTH: "legacy-token" },
+        AbortSignal.timeout(5_000),
+      );
+
+      expect(result.success).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(result.attempts[0].failureClass).toBe("oauth_session_failure");
+      expect(result.attempts[0].failureMessage).toContain("CHATGPT_AUTH_FILE must contain structured ChatGPT subscription auth JSON");
+      expect(result.attempts[0].failureMessage).not.toContain(".secrets/chatgpt-auth.json");
+      expect(result.attempts[0].failureMessage).not.toContain("legacy-token");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

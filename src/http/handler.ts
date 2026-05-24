@@ -530,15 +530,10 @@ function addVersionHeaders(headers: Headers, client: ClientIdentity): void {
 }
 
 export async function handleAdminHealth(
-  request: Request,
+  _request: Request,
   env: Env,
 ): Promise<Response> {
-  // Auth check
-  const healthToken = healthAuthToken(env);
-  if (!healthToken || !verifyHealthAuth(request, healthToken)) {
-    return jsonResponse({ error: "unauthorized" }, 401);
-  }
-
+  // /admin/* routes are already gated by verifyAdminAuth in the worker entrypoint.
   const stateId = env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME);
   const stateDo = env.CONTROL_PLANE_STATE.get(stateId);
   const report = await buildHealthReport(stateDo);
@@ -570,10 +565,9 @@ export async function handleAdminClientRequests(
   const url = new URL(request.url);
   const clientId = url.searchParams.get("client_id") ?? undefined;
   const appId = url.searchParams.get("app_id") ?? undefined;
-  const sinceParam = Number(url.searchParams.get("since"));
-  const untilParam = Number(url.searchParams.get("until"));
-  const limitParam = Number(url.searchParams.get("limit"));
-  const limit = Math.min(1000, Math.max(1, Number.isFinite(limitParam) ? limitParam : 100));
+  const since = parseOptionalIntParam(url.searchParams.get("since"));
+  const until = parseOptionalIntParam(url.searchParams.get("until"));
+  const limit = parseBoundedIntParam(url.searchParams.get("limit"), 100, 1, 1000);
 
   const stateDo = env.CONTROL_PLANE_STATE.get(
     env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME),
@@ -581,8 +575,8 @@ export async function handleAdminClientRequests(
   const requests = await stateDo.queryClientRequests({
     clientId,
     appId,
-    since: Number.isFinite(sinceParam) ? sinceParam : undefined,
-    until: Number.isFinite(untilParam) ? untilParam : undefined,
+    since,
+    until,
     limit,
   });
   return jsonResponse({ requests, total: requests.length });
@@ -674,8 +668,7 @@ export async function handleAdminCanaryResults(
   env: Env,
 ): Promise<Response> {
   const url = new URL(request.url);
-  const limitParam = Number(url.searchParams.get("limit"));
-  const limit = Math.min(100, Math.max(1, Number.isFinite(limitParam) ? limitParam : 50));
+  const limit = parseBoundedIntParam(url.searchParams.get("limit"), 50, 1, 100);
   const stateDo = env.CONTROL_PLANE_STATE.get(
     env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME),
   ) as unknown as ControlPlaneStateDO;
@@ -767,6 +760,23 @@ async function computeUsageRollupsForWindow(
   for (let hour = firstHour; hour <= lastHour; hour += HOUR_MS) {
     await stateDo.computeHourlyRollups(hour);
   }
+}
+
+function parseOptionalIntParam(raw: string | null): number | undefined {
+  if (raw === null) return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseBoundedIntParam(
+  raw: string | null,
+  defaultValue: number,
+  min: number,
+  max: number,
+): number {
+  const parsed = parseOptionalIntParam(raw);
+  if (parsed === undefined) return defaultValue;
+  return Math.min(max, Math.max(min, parsed));
 }
 
 function parseWindow(window: string): number {
@@ -1109,7 +1119,8 @@ function positiveNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.ceil(value) : undefined;
 }
 
-function estimatePromptTokens(messages: unknown): number {
-  if (!Array.isArray(messages)) return 0;
-  return Math.ceil(JSON.stringify(messages).length / 4);
+function estimatePromptTokens(content: unknown): number {
+  if (typeof content === "string") return Math.ceil(content.length / 4);
+  if (!Array.isArray(content)) return 0;
+  return Math.ceil(JSON.stringify(content).length / 4);
 }

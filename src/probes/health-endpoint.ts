@@ -47,6 +47,43 @@ export interface CircuitState {
   halfOpenAfter?: number;
 }
 
+const CIRCUIT_STATE_RANK: Record<string, number> = {
+  closed: 0,
+  suspect: 1,
+  half_open: 2,
+  open: 3,
+};
+
+function isDeploymentBlocked(
+  deploymentId: string,
+  now: number,
+  circuits?: Record<string, CircuitState>,
+  cooldowns?: Record<string, { reason: string; until: number }>,
+): boolean {
+  const circuit = circuits?.[deploymentId];
+  const onCooldown = Boolean(cooldowns?.[deploymentId] && cooldowns[deploymentId].until > now);
+  const isCircuitBlocked = circuit?.state === "open"
+    && (!circuit.halfOpenAfter || now < circuit.halfOpenAfter);
+  return isCircuitBlocked || onCooldown;
+}
+
+function groupCircuitState(
+  deploymentIds: string[],
+  circuits?: Record<string, CircuitState>,
+): string {
+  let worst = "closed";
+  let worstRank = CIRCUIT_STATE_RANK.closed;
+  for (const deploymentId of deploymentIds) {
+    const state = circuits?.[deploymentId]?.state ?? "closed";
+    const rank = CIRCUIT_STATE_RANK[state] ?? 0;
+    if (rank > worstRank) {
+      worst = state;
+      worstRank = rank;
+    }
+  }
+  return worst;
+}
+
 export async function buildHealthReport(stateDo: HealthProvider): Promise<HealthReport> {
   const health = await stateDo.getHealth();
   const now = Date.now();
@@ -66,28 +103,24 @@ export async function buildHealthReport(stateDo: HealthProvider): Promise<Health
     let blocked = 0;
 
     for (const d of deployments) {
-      const circuit = circuits?.[d.id];
-      const onCooldown = cooldownsMap?.[d.id] && cooldownsMap[d.id].until > now;
-      const isCircuitBlocked = circuit?.state === "open" && (!circuit.halfOpenAfter || now < circuit.halfOpenAfter);
-      const isBlocked = isCircuitBlocked || onCooldown;
+      const isBlocked = isDeploymentBlocked(d.id, now, circuits, cooldownsMap);
       if (isBlocked) blocked++;
 
       const hs = healthScores?.[d.id];
-      if (hs) {
+      if (hs && !isBlocked) {
         totalScore += hs.score;
         scoreCount++;
       }
     }
 
     const available = deployments.length - blocked;
-    const hasOpenCircuit = deployments.some((d) => circuits?.[d.id]?.state === "open");
 
     routeGroups[groupName] = {
       available: available > 0,
       deployments: deployments.length,
       availableDeployments: available,
       blockedDeployments: blocked,
-      circuitState: hasOpenCircuit ? "open" : "closed",
+      circuitState: groupCircuitState(deployments.map((d) => d.id), circuits),
       avgHealthScore: scoreCount > 0 ? totalScore / scoreCount : undefined,
     };
   }

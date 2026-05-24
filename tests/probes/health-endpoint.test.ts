@@ -141,4 +141,41 @@ describe("buildHealthReport", () => {
       expect(group.availableDeployments + group.blockedDeployments).toBe(group.deployments);
     }
   });
+
+  it("omits avgHealthScore when all deployments are blocked", async () => {
+    const { MANIFEST } = await import("../../src/config/manifest");
+    const groupName = "nim-primary";
+    const deployments = MANIFEST.deploymentsByGroup[groupName] ?? [];
+    const circuits: Record<string, unknown> = {};
+    const healthScores: Record<string, { score: number }> = {};
+    for (const d of deployments) {
+      circuits[d.id] = { state: "open", failureCount: 5, successCount: 0 };
+      healthScores[d.id] = { score: 95 };
+    }
+
+    const report = await buildHealthReport({
+      getHealth: async () => ({ circuits, healthScores, cooldowns: {} }),
+    } as any);
+
+    expect(report.routeGroups[groupName].available).toBe(false);
+    expect(report.routeGroups[groupName].avgHealthScore).toBeUndefined();
+  });
+
+  it("reports half_open circuitState when deployments are recovering", async () => {
+    const { MANIFEST } = await import("../../src/config/manifest");
+    const groupName = "nim-primary";
+    const deployment = MANIFEST.deploymentsByGroup[groupName]?.[0];
+    expect(deployment).toBeDefined();
+
+    const report = await buildHealthReport({
+      getHealth: async () => ({
+        circuits: { [deployment!.id]: { state: "half_open", failureCount: 1, successCount: 0 } },
+        healthScores: {},
+        cooldowns: {},
+      }),
+    } as any);
+
+    expect(report.routeGroups[groupName].circuitState).toBe("half_open");
+    expect(report.routeGroups[groupName].available).toBe(true);
+  });
 });

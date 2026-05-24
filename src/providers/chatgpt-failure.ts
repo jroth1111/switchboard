@@ -2,7 +2,6 @@
 // Health-neutral: auth/session failures should not affect provider health,
 // only account availability.
 
-import type { FailureClass } from "../config/schema";
 import type { ProviderFailureClassification } from "../nim/classify/provider-failure";
 
 export function classifyChatGPTFailure(
@@ -53,18 +52,24 @@ export function classifyChatGPTFailure(
 
   // Context length exceeded (check before Responses API errors — context errors with
   // "responses" in the body should be classified as context_length, not responses_api_error)
-  if (status === 400 && (
-    bodyLower.includes("context") ||
-    bodyLower.includes("max_tokens") ||
-    bodyLower.includes("too many tokens") ||
-    bodyLower.includes("maximum context")
-  )) {
+  if (status === 400 && isChatGPTContextLengthError(bodyLower)) {
     return {
       failureClass: "context_length_exceeded",
       cooldownSeconds: 0,
       affectsHealth: false,
       affectsAccount: false,
       details: "chatgpt_context_length",
+    };
+  }
+
+  // OAuth/token validation on 400 (before generic fallback maps bare "token" → context length)
+  if (status === 400 && isChatGPTTokenAuthError(bodyLower)) {
+    return {
+      failureClass: "oauth_session_failure",
+      cooldownSeconds: 60,
+      affectsHealth: false,
+      affectsAccount: true,
+      details: "chatgpt_token_invalid",
     };
   }
 
@@ -98,4 +103,19 @@ export function classifyChatGPTFailure(
     affectsAccount: false,
     details: `chatgpt_unclassified_${status}`,
   };
+}
+
+export function isChatGPTContextLengthError(bodyLower: string): boolean {
+  return bodyLower.includes("context")
+    || bodyLower.includes("max_tokens")
+    || bodyLower.includes("too many tokens")
+    || bodyLower.includes("maximum context");
+}
+
+function isChatGPTTokenAuthError(bodyLower: string): boolean {
+  if (!bodyLower.includes("token")) return false;
+  return bodyLower.includes("invalid")
+    || bodyLower.includes("expired")
+    || bodyLower.includes("malformed")
+    || bodyLower.includes("unauthorized");
 }

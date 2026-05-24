@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { chatgptResponsesAdapter } from "../../src/providers/adapters/chatgpt-responses";
+import { classifyChatGPTFailure } from "../../src/providers/chatgpt-failure";
 import {
   CHATGPT_RESPONSES_BACKEND_PATH,
   CHATGPT_RESPONSES_ENCRYPTED_REASONING_INCLUDE,
@@ -267,6 +269,27 @@ describe("validateResponsesContract", () => {
 
   it("rejects legacy bare access-token auth by default", () => {
     expect(() => resolveChatGPTSubscriptionAuth("legacy-oauth-token")).toThrow(/must be structured JSON/);
+  });
+});
+
+// ─── ChatGPT failure classification (adapter path) ───────────────────
+
+describe("ChatGPT Responses failure classification", () => {
+  it("classifies 400 invalid token as oauth_session_failure", () => {
+    const result = classifyChatGPTFailure(400, "invalid token");
+    expect(result.failureClass).toBe("oauth_session_failure");
+    expect(result.affectsAccount).toBe(true);
+  });
+
+  it("does not map 400 invalid token to context_length via adapter fallback", () => {
+    const result = chatgptResponsesAdapter.classifyFailure(400, "invalid token");
+    expect(result.failureClass).toBe("oauth_session_failure");
+    expect(result.failureClass).not.toBe("context_length_exceeded");
+  });
+
+  it("still classifies context length before responses_api_error", () => {
+    const result = classifyChatGPTFailure(400, "responses error: maximum context length exceeded");
+    expect(result.failureClass).toBe("context_length_exceeded");
   });
 });
 

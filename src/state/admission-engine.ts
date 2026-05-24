@@ -353,6 +353,11 @@ export function recordSuccess(
       store.setCircuit(deploymentId, {
         state: "closed", failureCount: 0, successCount: newSuccessCount, updatedAt: now,
       });
+    } else if (circuit.state === "half_open") {
+      // Probe successes below threshold: count progress only; do not decay failureCount.
+      store.setCircuit(deploymentId, {
+        ...circuit, successCount: newSuccessCount, updatedAt: now,
+      });
     } else {
       // In closed state, decrement failureCount by 1 (floor 0) rather than zeroing it.
       // Zeroing on every success lets a flaky endpoint (4 failures, 1 success) avoid

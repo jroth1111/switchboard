@@ -9,12 +9,14 @@
     "deploy": "wrangler deploy",
     "deploy:staging": "wrangler deploy --config wrangler.dev.jsonc",
     "deploy:fixture": "wrangler deploy --config wrangler.provider-fixture.jsonc",
-    "live:smoke": "tsx scripts/live-smoke.ts",
+    "live:smoke": "node scripts/live-smoke.ts",
     "test": "vitest run",
     "test:watch": "vitest watch",
     "tsc": "tsc --noEmit",
-    "validate": "tsx scripts/validate-manifest.ts",
-    "bundle-size": "tsx scripts/bundle-size.ts"
+    "validate": "node scripts/check-secret-permissions.ts && node scripts/validate-manifest.ts",
+    "snapshot": "node scripts/write-manifest-snapshot.ts",
+    "bundle-size": "node scripts/bundle-size.ts",
+    "failures": "node scripts/failures.ts"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.12.20",

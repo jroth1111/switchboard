@@ -68,19 +68,22 @@ export class OAuthAccountDO extends DurableObject {
   async acquireRefreshLock(accountId: string, requestId: string, ttlMs: number = 30000): Promise<boolean> {
     this.ensureSchema();
     const now = Date.now();
-    const existing = this.ctx.storage.sql
-      .exec("SELECT locked_until, request_id FROM refresh_locks WHERE account_id = ?", accountId)
-      .toArray();
-
-    if (existing.length > 0 && (existing[0].locked_until as number) > now) {
-      return false;
-    }
-
+    const lockedUntil = now + ttlMs;
     this.ctx.storage.sql.exec(
-      "INSERT OR REPLACE INTO refresh_locks (account_id, locked_until, request_id) VALUES (?, ?, ?)",
-      accountId, now + ttlMs, requestId,
+      `INSERT OR REPLACE INTO refresh_locks (account_id, locked_until, request_id)
+       SELECT ?, ?, ?
+       WHERE NOT EXISTS (
+         SELECT 1 FROM refresh_locks WHERE account_id = ? AND locked_until > ?
+       )`,
+      accountId, lockedUntil, requestId, accountId, now,
     );
-    return true;
+
+    const rows = this.ctx.storage.sql
+      .exec("SELECT request_id, locked_until FROM refresh_locks WHERE account_id = ?", accountId)
+      .toArray();
+    return rows.length > 0
+      && rows[0].request_id === requestId
+      && rows[0].locked_until === lockedUntil;
   }
 
   async releaseRefreshLock(accountId: string, requestId: string): Promise<void> {

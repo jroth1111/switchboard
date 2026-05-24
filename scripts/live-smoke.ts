@@ -36,13 +36,13 @@ interface SmokeReport {
 
 const args = new Set(process.argv.slice(2));
 if (args.has("--help") || args.has("-h")) {
-  console.log(`Usage: CONTROL_PLANE_URL=https://... [PROXY_API_KEY=...] [ADMIN_API_KEY=...] npm run live:smoke
+  console.log(`Usage: CONTROL_PLANE_URL=https://... [SWITCHBOARD_API_KEY=...] [ADMIN_API_KEY=...] npm run live:smoke
 
 Environment:
   CONTROL_PLANE_URL or LIVE_BASE_URL   Deployed control-plane Worker URL.
   LIVE_SMOKE_MODE                      surface | provider | fixture. Default: surface.
   LIVE_SMOKE_MODEL                     Model alias to exercise. Default: nim-primary.
-  PROXY_API_KEY                        Required for provider/fixture chat probes.
+  SWITCHBOARD_API_KEY                        Enables authenticated model catalog; required for provider/fixture chat probes.
   ADMIN_API_KEY or NIM_HEALTH_TOKEN     Enables authorized health, receipts, and cooldown cleanup.
   LIVE_SMOKE_REPORT                    Optional JSON report path.
   FIXTURE_WORKER_URL                   Optional fixture worker URL for subscription format probes.
@@ -55,7 +55,7 @@ usually via PROVIDER_API_BASE_* vars in its staging Worker configuration.`);
 const baseUrl = trimTrailingSlash(requiredEnv("CONTROL_PLANE_URL", "LIVE_BASE_URL"));
 const mode = (process.env.LIVE_SMOKE_MODE ?? "surface").trim().toLowerCase();
 const model = process.env.LIVE_SMOKE_MODEL ?? "nim-primary";
-const proxyKey = process.env.PROXY_API_KEY;
+const switchboardApiKey = process.env.SWITCHBOARD_API_KEY;
 const adminKey = process.env.ADMIN_API_KEY ?? process.env.NIM_HEALTH_TOKEN;
 const reportPath = process.env.LIVE_SMOKE_REPORT;
 const fixtureWorkerUrl = process.env.FIXTURE_WORKER_URL?.trim() ? trimTrailingSlash(process.env.FIXTURE_WORKER_URL.trim()) : undefined;
@@ -74,7 +74,7 @@ await run("ping", "GET", "/ping", undefined, async (resp, body) => {
   if (data.status !== "ok") throw new Error(`expected status=ok body, got: ${body.slice(0, 200)}`);
 });
 
-await run("models list", "GET", "/models", undefined, async (resp, body) => {
+await run("models list", "GET", "/models", switchboardApiKey ? { headers: bearer(switchboardApiKey) } : undefined, async (resp, body) => {
   assertStatus(resp, 200);
   const data = expectJson(body) as Record<string, unknown>;
   if (!Array.isArray(data.data)) throw new Error("models response missing data array");
@@ -104,8 +104,8 @@ if (adminKey) {
 }
 
 if (mode !== "surface") {
-  if (!proxyKey) {
-    skip("provider chat completion", "POST", "/v1/chat/completions", "PROXY_API_KEY not set");
+  if (!switchboardApiKey) {
+    skip("provider chat completion", "POST", "/v1/chat/completions", "SWITCHBOARD_API_KEY not set");
     markRequiredProviderFailure();
   } else {
     const healthBefore = await fetchHealth();
@@ -131,8 +131,8 @@ if (mode !== "surface") {
 }
 
 if (mode === "fixture") {
-  if (!proxyKey) {
-    skip("fixture failure classification", "POST", "/v1/chat/completions", "PROXY_API_KEY not set");
+  if (!switchboardApiKey) {
+    skip("fixture failure classification", "POST", "/v1/chat/completions", "SWITCHBOARD_API_KEY not set");
   } else {
     await chatProbe("fixture rate-limit classification", "fixture:rate_limit", false, 502, [429, 502]);
     await chatProbe("fixture empty-response handling", "fixture:empty", false, 502);
@@ -189,7 +189,7 @@ async function chatProbe(
   let capturedRequestId: string | undefined;
   let streamEventCount: number | undefined;
   await run(name, "POST", "/v1/chat/completions", {
-    headers: { ...bearer(proxyKey!), "Content-Type": "application/json" },
+    headers: { ...bearer(switchboardApiKey!), "Content-Type": "application/json" },
     body: JSON.stringify(chatBody(scenario, stream)),
   }, async (resp, body) => {
     if (!acceptedStatuses.includes(resp.status)) {
@@ -270,7 +270,7 @@ async function subscriptionStreamProbe(name: string, fixturePath: string): Promi
   if (!fixtureWorkerUrl) return;
   const url = fixturePath.startsWith("http") ? fixturePath : `${fixtureWorkerUrl}${fixturePath}`;
   await run(name, "POST", url, {
-    headers: { ...bearer(proxyKey!), "Content-Type": "application/json" },
+    headers: { ...bearer(switchboardApiKey!), "Content-Type": "application/json" },
     body: JSON.stringify({ model, stream: true, messages: [{ role: "user", content: "fixture:stream" }], max_tokens: 16 }),
   }, async (resp, body) => {
     assertStatus(resp, 200);
@@ -466,7 +466,7 @@ function markRequiredProviderFailure(): void {
       url: baseUrl,
       startedAt: new Date().toISOString(),
       durationMs: 0,
-      error: "PROXY_API_KEY is required when LIVE_SMOKE_MODE is provider or fixture",
+      error: "SWITCHBOARD_API_KEY is required when LIVE_SMOKE_MODE is provider or fixture",
     });
   }
 }

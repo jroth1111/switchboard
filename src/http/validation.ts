@@ -159,6 +159,68 @@ export function validateChatRequest(body: Record<string, unknown>): ValidationRe
   return { valid: true };
 }
 
+export function validateResponsesRequest(body: Record<string, unknown>): ValidationResult {
+  const model = body.model;
+  if (!model || typeof model !== "string") {
+    return { valid: false, error: { message: "model is required and must be a string", type: "invalid_request", code: "invalid_model" } };
+  }
+  if (model.length > 256) {
+    return { valid: false, error: { message: "model name too long (max 256 chars)", type: "invalid_request", code: "invalid_model" } };
+  }
+
+  if ("messages" in body) {
+    return { valid: false, error: { message: "messages is not supported on /v1/responses; use input", type: "invalid_request", code: "unsupported_messages" } };
+  }
+
+  const input = body.input;
+  if (input === undefined || input === null) {
+    return { valid: false, error: { message: "input is required for /v1/responses", type: "invalid_request", code: "missing_input" } };
+  }
+  if (typeof input !== "string" && !Array.isArray(input)) {
+    return { valid: false, error: { message: "input must be a string or array", type: "invalid_request", code: "invalid_input" } };
+  }
+  if (Array.isArray(input) && input.length > MAX_MESSAGES) {
+    return { valid: false, error: { message: `too many input items (max ${MAX_MESSAGES})`, type: "invalid_request", code: "invalid_input" } };
+  }
+
+  if (body.stream !== undefined && typeof body.stream !== "boolean") {
+    return { valid: false, error: { message: "stream must be a boolean", type: "invalid_request", code: "invalid_parameter" } };
+  }
+
+  if (body.tools) {
+    if (!Array.isArray(body.tools)) {
+      return { valid: false, error: { message: "tools must be an array", type: "invalid_request", code: "invalid_tools" } };
+    }
+    if ((body.tools as unknown[]).length > MAX_TOOLS) {
+      return { valid: false, error: { message: `too many tools (max ${MAX_TOOLS})`, type: "invalid_request", code: "invalid_tools" } };
+    }
+    for (let i = 0; i < (body.tools as unknown[]).length; i++) {
+      const tool = (body.tools as Record<string, unknown>[])[i];
+      const name = typeof tool?.name === "string"
+        ? tool.name
+        : (tool?.function as Record<string, unknown> | undefined)?.name;
+      if (typeof name === "string" && name.length > MAX_TOOL_NAME_LENGTH) {
+        return { valid: false, error: { message: `tools[${i}].name too long (max ${MAX_TOOL_NAME_LENGTH})`, type: "invalid_request", code: "invalid_tools" } };
+      }
+    }
+  }
+
+  if (body.tool_choice !== undefined && body.tool_choice !== null) {
+    const tc = body.tool_choice;
+    if (typeof tc !== "string" && (typeof tc !== "object" || Array.isArray(tc))) {
+      return { valid: false, error: { message: "tool_choice must be a string or object", type: "invalid_request", code: "invalid_parameter" } };
+    }
+  }
+
+  if (body.max_output_tokens !== undefined && body.max_output_tokens !== null) {
+    if (typeof body.max_output_tokens !== "number" || !Number.isFinite(body.max_output_tokens) || body.max_output_tokens < 1 || body.max_output_tokens > 1000000) {
+      return { valid: false, error: { message: "max_output_tokens must be between 1 and 1000000", type: "invalid_request", code: "invalid_parameter" } };
+    }
+  }
+
+  return { valid: true };
+}
+
 export function validateContentType(request: Request): ValidationResult {
   const method = request.method.toUpperCase();
   if (method !== "POST") return { valid: true };

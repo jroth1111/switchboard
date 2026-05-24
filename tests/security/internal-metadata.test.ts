@@ -47,6 +47,48 @@ describe("sanitizeClientMetadata", () => {
     expect(result.new_param).toBe(true);
   });
 
+  it("strips internal-prefixed fields hoisted from extra_body", () => {
+    const body = {
+      model: "glm-5.1",
+      messages: [],
+      extra_body: {
+        "x-nim-signature": "client-forged-signature",
+        "x-route-group": "client-forged-group",
+        allowed_param: true,
+      },
+    };
+    const result = sanitizeClientMetadata(body);
+    expect(result["x-nim-signature"]).toBeUndefined();
+    expect(result["x-route-group"]).toBeUndefined();
+    expect(result.allowed_param).toBe(true);
+  });
+
+  it("drops prototype-polluting keys from metadata and extra_body", () => {
+    const protoKey = ["__", "proto__"].join("");
+    const metadata: Record<string, unknown> = Object.create(null);
+    metadata[protoKey] = { polluted: true };
+    metadata.constructor = { prototype: { polluted: true } };
+    metadata.safe = "value";
+    const extraBody: Record<string, unknown> = Object.create(null);
+    extraBody[protoKey] = { polluted: true };
+    extraBody.prototype = { polluted: true };
+    extraBody.safe_extra = 42;
+    const body = {
+      model: "glm-5.1",
+      messages: [],
+      metadata,
+      extra_body: extraBody,
+    };
+
+    const result = sanitizeClientMetadata(body);
+
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect((result.metadata as Record<string, unknown>).safe).toBe("value");
+    expect(Object.prototype.hasOwnProperty.call(result.metadata, protoKey)).toBe(false);
+    expect(result.prototype).toBeUndefined();
+    expect(result.safe_extra).toBe(42);
+  });
+
   it("handles body without metadata or extra_body", () => {
     const body = { model: "glm-5.1", messages: [] };
     const result = sanitizeClientMetadata(body);

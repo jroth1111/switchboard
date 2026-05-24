@@ -32,7 +32,7 @@ const THINKING_REGEX_PAIRS: Array<{
     open,
     close,
     pairRe: new RegExp(open + "\\b[^>]*>[\\s\\S]*?" + close + "\\b[^>]*>", "gi"),
-    pairNoGtRe: new RegExp(open + "\\b[^>]*>[\\s\\S]{0,4096}?" + close + "[\\s\\S]*?(?=>|$)", "gi"),
+    pairNoGtRe: new RegExp(open + "\\b[^>]*>[\\s\\S]{0,4096}?" + close + "[^>]*>", "gi"),
     unclosedRe: new RegExp(open + "\\b[^>]*>?", "gi"),
     closeTagPresentRe: new RegExp(close + "\\b", "i"),
   };

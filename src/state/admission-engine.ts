@@ -677,6 +677,11 @@ export function toHealthSnapshot(row: import("./storage-adapter").HealthScoreRow
   };
 }
 
+// Self-healing decay for idle deployments: health scores gradually recover
+// toward 100 when no requests are processed, allowing transient failures to
+// age out. Called by reapExpired() on each maintenance cycle. Skips deployments
+// updated within the last second or already at max health (100). Uses the same
+// exponential decay formula as decayedScore() in scoring.ts.
 export function decayIdleHealthScores(store: StorageAdapter, now = Date.now()): number {
   let changed = 0;
   for (const { deploymentId, score } of store.listHealthScores()) {

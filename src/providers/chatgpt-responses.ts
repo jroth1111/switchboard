@@ -1,30 +1,105 @@
-// ChatGPT Responses contract: transforms OpenAI chat format to Responses API.
-// Ports behavior from litellm_logic/routing/provider_contract.py.
+// ChatGPT subscription Responses contract.
+// Mirrors the audited LiteLLM ChatGPT/Codex provider contract rather than the
+// generic OpenAI Platform Responses API.
 
 import type { Deployment } from "../config/schema";
 import type { ProviderRequest } from "./base";
 
 // ─── Responses API request shape ───────────────────────────────────
 
+export const CHATGPT_RESPONSES_BACKEND_PATH = "/backend-api/codex/responses";
+export const DEFAULT_CHATGPT_RESPONSES_BASE_URL = "https://chatgpt.com";
+export const CHATGPT_RESPONSES_ENCRYPTED_REASONING_INCLUDE = "reasoning.encrypted_content";
+export const CHATGPT_DEFAULT_INSTRUCTIONS_SENTINEL = "<litellm_chatgpt_default_instructions>";
+
+const CHATGPT_RESPONSES_ALLOWED_BODY_FIELDS = new Set([
+  "model",
+  "input",
+  "instructions",
+  "stream",
+  "store",
+  "include",
+  "tools",
+  "tool_choice",
+  "reasoning",
+  "previous_response_id",
+  "truncation",
+]);
+
+const CHATGPT_RESPONSES_FORBIDDEN_REQUEST_FIELDS = new Set([
+  "api_base",
+  "api_key",
+  "background",
+  "client_metadata",
+  "extra_body",
+  "frequency_penalty",
+  "include_reasoning",
+  "logit_bias",
+  "logprobs",
+  "max_output_tokens",
+  "max_tokens",
+  "messages",
+  "n",
+  "parallel_tool_calls",
+  "presence_penalty",
+  "prompt",
+  "prompt_cache_key",
+  "reasoning",
+  "reasoning_effort",
+  "response_format",
+  "seed",
+  "service_tier",
+  "stop",
+  "stream_options",
+  "temperature",
+  "text",
+  "thinking",
+  "top_k",
+  "top_logprobs",
+  "top_p",
+  "user",
+]);
+
+const CHATGPT_RESPONSES_FORBIDDEN_METADATA_FIELDS = new Set([
+  "access_token",
+  "account_id",
+  "api_key",
+  "authorization",
+  "client_metadata",
+  "cookie",
+  "file_path",
+  "id_token",
+  "path",
+  "private_path",
+  "prompt",
+  "refresh_token",
+  "session_id",
+]);
+
+const CHATGPT_RESPONSES_ALLOWED_REASONING_EFFORTS = new Set([
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+]);
+
 export interface ResponsesAPIRequest {
   model: string;
-  input: string | Array<ResponseInputItem>;
+  input: Array<ResponseInputItem>;
   instructions?: string;
+  stream: true;
+  store: false;
+  include: unknown[];
   tools?: Array<Record<string, unknown>>;
-  stream?: boolean;
-  temperature?: number;
-  top_p?: number;
-  max_output_tokens?: number;
-  metadata?: Record<string, unknown>;
   reasoning?: { effort: string };
+  tool_choice?: unknown;
+  previous_response_id?: unknown;
+  truncation?: unknown;
 }
 
-export type ResponseInputItem =
-  | { role: "user"; content: string | Array<Record<string, unknown>> }
-  | { role: "assistant"; content: string | Array<Record<string, unknown>> }
-  | { role: "system"; content: string }
-  | { type: "function_call"; id: string; call_id: string; name: string; arguments: string }
-  | { type: "function_call_output"; call_id: string; output: string };
+export type ResponseInputItem = Record<string, unknown>;
 
 // ─── Build ChatGPT Responses request ───────────────────────────────
 
@@ -33,55 +108,35 @@ export function buildChatGPTResponsesRequest(
   body: Record<string, unknown>,
   accessToken: string,
 ): ProviderRequest {
-  const base = deployment.apiBase ?? "https://api.openai.com";
-  const url = `${base}/v1/responses`;
+  const bodyContract = validateResponsesContract(body);
+  if (!bodyContract.valid) {
+    throw new Error(`Responses contract violation: ${bodyContract.reason}`);
+  }
+  validateDeploymentContract(deployment, accessToken);
+
+  const url = buildChatGPTResponsesUrl(deployment);
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "Authorization": `Bearer ${accessToken}`,
   };
 
-  const messages = (body.messages as Array<Record<string, unknown>>) ?? [];
-  const input = convertMessagesToResponsesInput(messages);
-
   const responsesBody: ResponsesAPIRequest = {
     model: deployment.providerModel,
-    input,
+    instructions: typeof body.instructions === "string"
+      ? body.instructions
+      : CHATGPT_DEFAULT_INSTRUCTIONS_SENTINEL,
+    input: normalizeChatGPTResponsesInput(body.input),
+    stream: true,
+    store: false,
+    include: includeWithEncryptedReasoning(body.include),
+    reasoning: { effort: deployment.reasoningEffort! },
   };
 
-  // Extract system message as instructions
-  const systemMsg = messages.find((m) => m.role === "system");
-  if (systemMsg) {
-    responsesBody.instructions = typeof systemMsg.content === "string" ? systemMsg.content : JSON.stringify(systemMsg.content);
-  }
-
-  // Convert tools to Responses format
-  if (body.tools) {
-    responsesBody.tools = convertToolsForResponses(body.tools as Array<Record<string, unknown>>);
-  }
-
-  // Copy parameters
-  if (body.stream) responsesBody.stream = true;
-  if (body.temperature !== undefined && body.temperature !== null) responsesBody.temperature = body.temperature as number;
-  if (body.top_p !== undefined && body.top_p !== null) responsesBody.top_p = body.top_p as number;
-  if (body.max_tokens !== undefined) responsesBody.max_output_tokens = body.max_tokens as number;
-
-  // Merge deployment params and reasoning effort — don't overwrite client values
-  if (deployment.reasoningEffort && !responsesBody.reasoning) responsesBody.reasoning = { effort: deployment.reasoningEffort };
-  if (deployment.params) {
-    for (const [k, v] of Object.entries(deployment.params)) {
-      if (v !== null && !(k in responsesBody)) {
-        (responsesBody as unknown as Record<string, unknown>)[k] = v;
-      }
-    }
-  }
-  if (deployment.extraBody) {
-    for (const [k, v] of Object.entries(deployment.extraBody)) {
-      if (v !== null && !(k in responsesBody)) {
-        (responsesBody as unknown as Record<string, unknown>)[k] = v;
-      }
-    }
-  }
+  copyIfPresent(responsesBody, body, "tools");
+  copyIfPresent(responsesBody, body, "tool_choice");
+  copyIfPresent(responsesBody, body, "previous_response_id");
+  copyIfPresent(responsesBody, body, "truncation");
 
   return {
     url,
@@ -263,131 +318,237 @@ export function convertResponsesStreamChunk(
 export interface ResponsesContractResult {
   valid: boolean;
   reason?: string;
-  strippedParams?: string[];
+  forbiddenFields?: string[];
 }
 
 export function validateResponsesContract(body: Record<string, unknown>): ResponsesContractResult {
-  const stripped: string[] = [];
+  if (!hasOwn(body, "input") || body.input === null || body.input === undefined) {
+    return { valid: false, reason: "input is required for ChatGPT Responses lanes" };
+  }
 
-  // Responses API doesn't support these chat-specific params
-  const unsupportedParams = [
-    "frequency_penalty",
-    "presence_penalty",
-    "logprobs",
-    "top_logprobs",
-    "n",
-    "stop",
-    "user",
-  ];
+  const invalidInput = validateInput(body.input);
+  if (invalidInput) {
+    return { valid: false, reason: invalidInput };
+  }
 
-  for (const param of unsupportedParams) {
-    if (param in body) {
-      stripped.push(param);
+  const forbiddenFields = presentForbiddenFields(body);
+  if (forbiddenFields.length > 0) {
+    return {
+      valid: false,
+      reason: `unsupported ChatGPT Responses request fields: ${forbiddenFields.join(", ")}`,
+      forbiddenFields,
+    };
+  }
+
+  for (const [field, value] of Object.entries(body)) {
+    if (value === null || value === undefined) continue;
+    if (field === "metadata") continue;
+    if (!CHATGPT_RESPONSES_ALLOWED_BODY_FIELDS.has(field)) {
+      return {
+        valid: false,
+        reason: `unsupported ChatGPT Responses request fields: ${field}`,
+        forbiddenFields: [field],
+      };
     }
   }
 
-  // Check for unsupported features
-  if (body.n && (body.n as number) > 1) {
-    return { valid: false, reason: "n > 1 not supported by Responses API" };
+  if (body.include !== undefined && body.include !== null && !Array.isArray(body.include)) {
+    return { valid: false, reason: "include must be an array when provided" };
   }
-
-  if (body.response_format) {
-    return { valid: false, reason: "response_format not supported by Responses API" };
+  if (body.tools !== undefined && body.tools !== null && !Array.isArray(body.tools)) {
+    return { valid: false, reason: "tools must be an array when provided" };
   }
-
-  if (body.seed !== undefined) {
-    stripped.push("seed");
+  if (body.stream !== undefined && body.stream !== null && typeof body.stream !== "boolean") {
+    return { valid: false, reason: "stream must be a boolean when provided" };
   }
-
-  // Check messages have supported roles
-  const messages = body.messages as Array<Record<string, unknown>> | undefined;
-  if (messages) {
-    for (const msg of messages) {
-      const role = msg.role as string;
-      if (!["system", "user", "assistant", "tool"].includes(role)) {
-        return { valid: false, reason: `unsupported message role: ${role}` };
-      }
+  if (body.store !== undefined && body.store !== null && typeof body.store !== "boolean") {
+    return { valid: false, reason: "store must be a boolean when provided" };
+  }
+  if (body.instructions !== undefined && body.instructions !== null && typeof body.instructions !== "string") {
+    return { valid: false, reason: "instructions must be a string when provided" };
+  }
+  if (body.metadata !== undefined && body.metadata !== null) {
+    const metadata = body.metadata;
+    if (typeof metadata !== "object" || Array.isArray(metadata)) {
+      return { valid: false, reason: "metadata must be an object when provided" };
     }
   }
 
-  return {
-    valid: true,
-    strippedParams: stripped.length > 0 ? stripped : undefined,
-  };
+  return { valid: true };
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────
 
-function convertMessagesToResponsesInput(messages: Array<Record<string, unknown>>): Array<ResponseInputItem> {
-  const input: Array<ResponseInputItem> = [];
-
-  for (const msg of messages) {
-    const role = msg.role as string;
-    const content = msg.content;
-
-    // Convert content: preserve arrays (multimodal), stringify non-string scalars
-    // Skip null/undefined content entirely (e.g. assistant messages with only tool_calls).
-    const normalizedContent: string | Array<Record<string, unknown>> | null =
-      (content === null || content === undefined)
-        ? null
-        : typeof content === "string"
-          ? content
-          : Array.isArray(content)
-            ? content as Array<Record<string, unknown>>
-            : JSON.stringify(content);
-
-    switch (role) {
-      case "system":
-        // System goes to top-level instructions, skip here
-        break;
-      case "user":
-        input.push({ role: "user", content: normalizedContent ?? "" });
-        break;
-      case "assistant": {
-        // Emit function_call items for any tool calls on this assistant message
-        if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
-          for (const tc of msg.tool_calls as Array<Record<string, unknown>>) {
-            input.push({
-              type: "function_call",
-              id: tc.id as string,
-              call_id: tc.id as string,
-              name: (tc.function as Record<string, unknown>).name as string,
-              arguments: (tc.function as Record<string, unknown>).arguments as string,
-            });
-          }
-        }
-        if (normalizedContent) {
-          input.push({ role: "assistant", content: normalizedContent });
-        }
-        break;
-      }
-      case "tool": {
-        // Tool result → function_call_output
-        const toolCallId = msg.tool_call_id as string;
-        const outputText = typeof normalizedContent === "string"
-          ? normalizedContent
-          : JSON.stringify(normalizedContent);
-        input.push({
-          type: "function_call_output",
-          call_id: toolCallId,
-          output: outputText,
-        });
-        break;
-      }
-    }
-  }
-
-  return input;
+export function chatgptResponsesTextInput(text: string): Array<ResponseInputItem> {
+  return [{
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text }],
+  }];
 }
 
-function convertToolsForResponses(tools: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
-  return tools.map((t) => {
-    const fn = t.function as Record<string, unknown>;
-    return {
-      type: "function",
-      name: fn.name,
-      description: fn.description ?? "",
-      parameters: fn.parameters ?? { type: "object", properties: {} },
-    };
-  });
+export function normalizeChatGPTResponsesInput(value: unknown): Array<ResponseInputItem> {
+  if (typeof value === "string") {
+    return chatgptResponsesTextInput(value);
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("input must be a string or array for ChatGPT Responses lanes");
+  }
+  return value.map((item) => normalizeInputItem(item));
+}
+
+function normalizeInputItem(item: unknown): ResponseInputItem {
+  if (typeof item === "string") {
+    return chatgptResponsesTextInput(item)[0];
+  }
+  if (!isPlainRecord(item)) {
+    throw new Error("input array items must be strings or objects");
+  }
+  const normalized = cloneValue(item);
+  if (hasOwn(normalized, "role") && hasOwn(normalized, "content")) {
+    normalized.type ??= "message";
+    normalized.content = normalizeMessageContent(normalized.content);
+  }
+  return normalized;
+}
+
+function normalizeMessageContent(content: unknown): unknown {
+  if (typeof content === "string") {
+    return [{ type: "input_text", text: content }];
+  }
+  if (Array.isArray(content)) {
+    return content.map((item) => (
+      typeof item === "string"
+        ? { type: "input_text", text: item }
+        : cloneValue(item)
+    ));
+  }
+  return cloneValue(content);
+}
+
+function includeWithEncryptedReasoning(value: unknown): unknown[] {
+  const include = Array.isArray(value) ? value.map((item) => cloneValue(item)) : [];
+  if (!include.includes(CHATGPT_RESPONSES_ENCRYPTED_REASONING_INCLUDE)) {
+    include.push(CHATGPT_RESPONSES_ENCRYPTED_REASONING_INCLUDE);
+  }
+  return include;
+}
+
+function copyIfPresent(
+  target: ResponsesAPIRequest,
+  source: Record<string, unknown>,
+  field: "tools" | "tool_choice" | "previous_response_id" | "truncation",
+): void {
+  const value = source[field];
+  if (value !== null && value !== undefined) {
+    (target as unknown as Record<string, unknown>)[field] = cloneValue(value);
+  }
+}
+
+function validateDeploymentContract(deployment: Deployment, accessToken: string): void {
+  if (deployment.provider !== "chatgpt" || deployment.mode !== "responses") {
+    throw new Error("ChatGPT Responses provider requires provider='chatgpt' and mode='responses'");
+  }
+  if (!deployment.reasoningEffort) {
+    throw new Error("ChatGPT Responses deployments require reasoningEffort");
+  }
+  if (!CHATGPT_RESPONSES_ALLOWED_REASONING_EFFORTS.has(deployment.reasoningEffort)) {
+    throw new Error(`Unsupported ChatGPT Responses reasoningEffort: ${deployment.reasoningEffort}`);
+  }
+  const configuredParams = nonNullKeys(deployment.params);
+  const configuredExtraBody = nonNullKeys(deployment.extraBody);
+  if (configuredParams.length > 0 || configuredExtraBody.length > 0) {
+    throw new Error(
+      "ChatGPT Responses deployments must not configure provider body params or extraBody: "
+      + [...configuredParams, ...configuredExtraBody.map((key) => `extraBody.${key}`)].join(", "),
+    );
+  }
+  const token = accessToken.trim();
+  if (!token) {
+    throw new Error("ChatGPT Responses deployments require an OAuth access token");
+  }
+  if (/^sk-[A-Za-z0-9]/.test(token)) {
+    throw new Error("ChatGPT Responses deployments require subscription OAuth, not an OpenAI API key");
+  }
+}
+
+function buildChatGPTResponsesUrl(deployment: Deployment): string {
+  const base = (deployment.apiBase ?? DEFAULT_CHATGPT_RESPONSES_BASE_URL).trim().replace(/\/+$/, "");
+  const url = new URL(base);
+  if (url.hostname === "api.openai.com") {
+    throw new Error("ChatGPT Responses deployments must not use generic OpenAI API Platform base URLs");
+  }
+  if (base.endsWith(CHATGPT_RESPONSES_BACKEND_PATH)) {
+    return base;
+  }
+  return `${base}${CHATGPT_RESPONSES_BACKEND_PATH}`;
+}
+
+function validateInput(value: unknown): string | null {
+  if (typeof value === "string") return null;
+  if (!Array.isArray(value)) {
+    return "input must be a string or array for ChatGPT Responses lanes";
+  }
+  for (let i = 0; i < value.length; i++) {
+    const item = value[i];
+    if (typeof item === "string") continue;
+    if (!isPlainRecord(item)) {
+      return `input[${i}] must be a string or object`;
+    }
+  }
+  return null;
+}
+
+function presentForbiddenFields(body: Record<string, unknown>): string[] {
+  const present: string[] = [];
+  for (const field of Array.from(CHATGPT_RESPONSES_FORBIDDEN_REQUEST_FIELDS).sort()) {
+    if (!hasOwn(body, field)) continue;
+    const value = body[field];
+    if (value === null || value === undefined) continue;
+    present.push(field);
+  }
+
+  const metadata = body.metadata;
+  if (isPlainRecord(metadata)) {
+    for (const [key, value] of Object.entries(metadata)) {
+      const normalized = key.trim().toLowerCase();
+      if (normalized.startsWith("nim_")) continue;
+      if (CHATGPT_RESPONSES_FORBIDDEN_METADATA_FIELDS.has(normalized) || looksLikePrivatePath(value)) {
+        present.push(`metadata.${normalized}`);
+        continue;
+      }
+      present.push(`metadata.${normalized}`);
+    }
+  }
+  return present;
+}
+
+function looksLikePrivatePath(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const stripped = value.trim();
+  return stripped.startsWith("/")
+    || stripped.startsWith("~/")
+    || stripped.includes("/.secrets/")
+    || stripped.includes("\\");
+}
+
+function nonNullKeys(record: Record<string, unknown> | undefined): string[] {
+  if (!record) return [];
+  return Object.entries(record)
+    .filter(([, value]) => value !== null && value !== undefined)
+    .map(([key]) => key)
+    .sort();
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function cloneValue<T>(value: T): T {
+  if (value === null || typeof value !== "object") return value;
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function hasOwn(record: Record<string, unknown>, field: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, field);
 }

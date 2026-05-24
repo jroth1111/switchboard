@@ -11,7 +11,17 @@ declare namespace Cloudflare {
 		OAUTH_ACCOUNT: DurableObjectNamespace<import("./src/index").OAuthAccountDO>;
 	}
 }
-interface Env extends Cloudflare.Env {}
+interface Env extends Cloudflare.Env {
+	CLIENT_KEYS_JSON?: string;
+	CLIENT_USER_CLAIM_SECRET?: string;
+	PROXY_API_KEY?: string;
+	ADMIN_API_KEY: string;
+	NIM_HEALTH_TOKEN?: string;
+	LITELLM_MASTER_KEY?: string;
+	METADATA_SIGNING_KEY?: string;
+	ANTHROPIC_CLIENT_ID?: string;
+	ANTHROPIC_CLIENT_SECRET?: string;
+}
 
 // Begin runtime types
 /*! *****************************************************************************

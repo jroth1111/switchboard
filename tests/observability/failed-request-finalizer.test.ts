@@ -51,7 +51,11 @@ describe("failedRequestSummaryFromReceipt", () => {
 
     expect(summary).not.toBeNull();
     expect(summary!.requestId).toBe("req-finalize-1");
+    expect(summary!.route).toBe("nim-primary");
     expect(summary!.finalOutcome).toBe("exhausted");
+    expect(summary!.selectedModel).toBe("nim-deepseek-v4-pro-key-1");
+    expect(summary!.selectedDeploymentId).toBe("nim-deepseek-v4-pro-key-1");
+    expect(summary!.requestSource).toBe("unknown");
     expect(summary!.failureClass).toBe("exhausted");
     expect(summary!.issueCode).toBe("all_groups_exhausted");
     expect(summary!.attemptsCount).toBe(2);
@@ -114,6 +118,16 @@ describe("failedRequestSummaryFromReceipt", () => {
     const summary = failedRequestSummaryFromReceipt(receipt);
     expect(summary!.stream).toBe(true);
   });
+
+  it("derives request source from app id before client id", () => {
+    const receipt = makeReceipt({
+      finalOutcome: "exhausted",
+      appId: "hermes",
+      clientId: "hermes-alice",
+    });
+    const summary = failedRequestSummaryFromReceipt(receipt);
+    expect(summary!.requestSource).toBe("hermes");
+  });
 });
 
 describe("finalizeFailedRequest", () => {
@@ -145,10 +159,11 @@ describe("finalizeFailedRequest", () => {
       }],
     });
     const result = finalizeFailedRequest(receipt);
-    // The sanitized receipt is processed by sanitizeReceipt
-    expect(result!.sanitizedReceipt).toBeDefined();
     const sanitized = result!.sanitizedReceipt as Record<string, unknown>;
-    // requestId should still be visible (not a secret field)
     expect(sanitized.requestId).toBe("req-finalize-1");
+    const attempts = sanitized.attempts as Array<Record<string, unknown>>;
+    const failureMessage = attempts[0].failureMessage as Record<string, unknown>;
+    expect(failureMessage.redacted).toBe(true);
+    expect(JSON.stringify(sanitized)).not.toContain("database connection failed");
   });
 });

@@ -8,6 +8,14 @@ export interface RouteReceipt {
   requestId: string;
   timestamp: number;
   originalModel: string;
+  clientId?: string;
+  appId?: string;
+  userHash?: string;
+  policyId?: string;
+  policyVersion?: string;
+  routeVersion?: string;
+  denialReason?: string;
+  routeDecision?: RouteDecision;
   canonicalTarget: string;
   selectedGroup: string;
   fallbackGroups: string[];
@@ -24,6 +32,27 @@ export interface RouteReceipt {
   finalOutcome: "success" | "repaired_success" | "client_error" | "exhausted";
   stream: boolean;
   totalDurationMs?: number;
+}
+
+export interface RouteDecision {
+  canonicalization: {
+    requestedModel: string;
+    canonicalTarget: string;
+    reason: string;
+  };
+  requestClass: Record<string, unknown>;
+  selectedGroup: string;
+  selectedReason: string;
+  fallbackGroups: string[];
+  candidates: Array<{
+    group: string;
+    score: number;
+    viable: boolean;
+    rejectionReason?: string;
+    hidden?: boolean;
+    deploymentCount: number;
+  }>;
+  transforms: Array<{ type: string; param: string; value?: unknown }>;
 }
 
 // In-memory fallback for tests and non-DO contexts
@@ -65,6 +94,7 @@ const SECRET_VALUE_PREFIXES = ["sk-", "sk_", "bearer ", "basic "];
 const DIAGNOSTIC_DETAIL_FIELD_NAMES = new Set([
   "error_body", "issue_detail", "provider_error_body",
   "provider_response_body", "raw_body", "response_body",
+  "failure_message", "failuremessage",
 ]);
 
 const PRIVATE_PATH_PREFIXES = ["/users/", "/private/", "/tmp/", "/var/folders/"];
@@ -152,4 +182,3 @@ export function sanitizeReceipt(value: unknown): unknown {
 
   return value;
 }
-

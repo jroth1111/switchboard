@@ -107,7 +107,14 @@ export async function* parseSSEStream(
         yield evt;
       }
     }
-    // Flush remaining
+    // Flush any incomplete UTF-8 sequence held by the decoder
+    const trailing = decoder.decode();
+    if (trailing) {
+      for (const evt of parser.feed(trailing)) {
+        yield evt;
+      }
+    }
+    // Flush remaining SSE framing in the parser buffer
     for (const evt of parser.flush()) {
       yield evt;
     }

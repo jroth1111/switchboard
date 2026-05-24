@@ -13,7 +13,7 @@ import { logInfo, logWarn } from "../observability/logging";
 import { buildHealthReport, verifyHealthAuth } from "../probes/health-endpoint";
 import { finalizeFailedRequest } from "../observability/failed-request-finalizer";
 import { runCanaryProbes, type CanaryHealthSnapshot, type CanaryHistoryRow } from "../probes/canary";
-import { hasHiddenOnlyTypedContent } from "../nim/repair/content-parts";
+import { hasHiddenOnlyResponsesInput, hasHiddenOnlyTypedContent } from "../nim/repair/content-parts";
 import type { OAuthAccountAccessor } from "../providers/anthropic-subscription";
 import type { ControlPlaneStateDO } from "../state/control-plane-state";
 import { applyClientPolicyToPlan, authorizeModelForClient, type ClientIdentity } from "./client-policy";
@@ -144,6 +144,14 @@ export async function handleResponses(
   }
 
   body = sanitizeClientMetadata(body);
+  if (hasHiddenOnlyResponsesInput(body)) {
+    return errorResponse({
+      message: "typed content contains only hidden reasoning or metadata",
+      type: "invalid_request",
+      code: "hidden_only_typed_content",
+    }, 400, requestId, client);
+  }
+
   return handlePreparedModelRequest({ body, env, client, requestId, surface: "responses" });
 }
 
@@ -459,6 +467,25 @@ function persistDenialReceipt(env: Env, receipt: RouteReceipt): void {
     env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME),
   );
   receiptDo.storeReceipt(receipt).catch((e) => logWarn("receipt_store_failed", { error: String(e) }));
+  const finalized = finalizeFailedRequest(receipt);
+  if (finalized) {
+    receiptDo.storeFailedRequest?.({
+      requestId: finalized.summary.requestId,
+      timestamp: finalized.summary.timestamp,
+      originalModel: finalized.summary.originalModel,
+      route: finalized.summary.route,
+      canonicalTarget: finalized.summary.canonicalTarget,
+      selectedGroup: finalized.summary.selectedGroup,
+      selectedModel: finalized.summary.selectedModel,
+      finalOutcome: finalized.summary.finalOutcome,
+      failureClass: finalized.summary.failureClass,
+      issueCode: finalized.summary.issueCode,
+      requestSource: finalized.summary.requestSource,
+      attemptsCount: finalized.summary.attemptsCount,
+      summaryJson: JSON.stringify(finalized.summary),
+      receiptJson: JSON.stringify(finalized.sanitizedReceipt),
+    }).catch((e) => logWarn("failed_request_store_failed", { error: String(e) }));
+  }
   receiptDo.storeClientRequest?.({
     requestId: receipt.requestId,
     timestamp: receipt.timestamp,
@@ -1025,11 +1052,13 @@ function buildSubscriptionContext(env: Env) {
   const oauthDo = env.OAUTH_ACCOUNT.get(
     env.OAUTH_ACCOUNT.idFromName("anthropic-subscription"),
   ) as unknown as OAuthAccountAccessor;
+  const tokenUrl = (env as { ANTHROPIC_OAUTH_TOKEN_URL?: string }).ANTHROPIC_OAUTH_TOKEN_URL;
   return {
     anthropicOAuth: {
       accessor: oauthDo,
       clientId: anthropicClientId,
       clientSecret: env.ANTHROPIC_CLIENT_SECRET,
+      ...(tokenUrl ? { tokenUrl } : {}),
     },
   };
 }

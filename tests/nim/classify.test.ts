@@ -232,4 +232,9 @@ describe("provider failure classifier", () => {
     const result = classifyProviderFailure(400, "maximum context length exceeded", "openai");
     expect(result.failureClass).toBe("context_length_exceeded");
   });
+
+  it("does not classify invalid token 400 as context length", () => {
+    const result = classifyProviderFailure(400, '{"error":"invalid token"}', "openai");
+    expect(result.failureClass).toBe("client_4xx_bad_request");
+  });
 });

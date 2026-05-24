@@ -29,6 +29,7 @@ export const anthropicSubscriptionAdapter: ProviderAdapter = {
       {
         clientId: ctx.subscriptionCtx.anthropicOAuth.clientId,
         clientSecret: ctx.subscriptionCtx.anthropicOAuth.clientSecret,
+        tokenUrl: ctx.subscriptionCtx.anthropicOAuth.tokenUrl,
       },
     );
 

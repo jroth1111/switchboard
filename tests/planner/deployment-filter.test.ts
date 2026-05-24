@@ -146,6 +146,26 @@ describe("Deployment pre-routing filter", () => {
     expect(result.passed).toHaveLength(1);
   });
 
+  it("rejects quarantined deployments when health and circuit failures exceed threshold", () => {
+    const state = createEmptyFilterState();
+    state.healthScores.set("deploy-1", { consecutiveFailureCount: 5 });
+    state.circuits.set("deploy-1", { state: "closed", failureCount: 3 });
+    const candidates = [makeDeployment()];
+    const result = filterCandidates(candidates, state, Date.now(), { quarantineFailureThreshold: 5 });
+    expect(result.passed).toHaveLength(0);
+    expect(result.rejected[0].reason).toBe("quarantine");
+  });
+
+  it("caps suspect deployments to reduced parallel capacity", () => {
+    const state = createEmptyFilterState();
+    state.circuits.set("deploy-1", { state: "suspect" });
+    state.inflight.set("deploy-1", 2);
+    const candidates = [makeDeployment({ maxParallelRequests: 4 })];
+    const result = filterCandidates(candidates, state, Date.now(), { suspectMaxParallelDivisor: 2 });
+    expect(result.passed).toHaveLength(0);
+    expect(result.rejected[0].reason).toBe("inflight_exhausted");
+  });
+
   it("filters mixed candidate list", () => {
     const state = createEmptyFilterState();
     state.cooldowns.set("deploy-1", { until: Date.now() + 30000 });

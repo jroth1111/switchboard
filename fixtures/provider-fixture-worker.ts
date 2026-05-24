@@ -39,8 +39,7 @@ function scenarioFromBody(body: Record<string, unknown>): FixtureScenario {
   return "success";
 }
 
-function openAiCompletion(body: Record<string, unknown>, scenario: FixtureScenario): Response {
-  const model = String(body.model ?? "fixture-model");
+function fixtureErrorResponse(scenario: FixtureScenario, streamRequested: boolean): Response | null {
   if (scenario === "rate_limit") {
     return json({ error: { message: "rate limit exceeded", type: "rate_limit" } }, 429, {
       "Retry-After": "1",
@@ -55,7 +54,19 @@ function openAiCompletion(body: Record<string, unknown>, scenario: FixtureScenar
   if (scenario === "empty") {
     return new Response("", { status: 200, headers: { "Content-Type": "application/json" } });
   }
-  if (scenario === "stream" || body.stream === true || scenario === "slow_first_token" || scenario === "never_first_token") {
+  if (streamRequested || scenario === "slow_first_token" || scenario === "never_first_token") {
+    return null;
+  }
+  return null;
+}
+
+function openAiCompletion(body: Record<string, unknown>, scenario: FixtureScenario): Response {
+  const model = String(body.model ?? "fixture-model");
+  const streamRequested = scenario === "stream" || body.stream === true
+    || scenario === "slow_first_token" || scenario === "never_first_token";
+  const errorResponse = fixtureErrorResponse(scenario, streamRequested);
+  if (errorResponse) return errorResponse;
+  if (streamRequested) {
     return openAiStream(model, scenario);
   }
 
@@ -128,7 +139,10 @@ function openAiCompletion(body: Record<string, unknown>, scenario: FixtureScenar
 
 function responsesCompletion(body: Record<string, unknown>, scenario: FixtureScenario): Response {
   const model = String(body.model ?? "fixture-responses-model");
-  if (scenario === "stream" || body.stream === true) {
+  const streamRequested = scenario === "stream" || body.stream === true;
+  const errorResponse = fixtureErrorResponse(scenario, streamRequested);
+  if (errorResponse) return errorResponse;
+  if (streamRequested) {
     return responsesStream(model);
   }
   return json({
@@ -144,7 +158,10 @@ function responsesCompletion(body: Record<string, unknown>, scenario: FixtureSce
 
 function anthropicCompletion(body: Record<string, unknown>, scenario: FixtureScenario): Response {
   const model = String(body.model ?? "fixture-anthropic-model");
-  if (scenario === "stream" || body.stream === true) {
+  const streamRequested = scenario === "stream" || body.stream === true;
+  const errorResponse = fixtureErrorResponse(scenario, streamRequested);
+  if (errorResponse) return errorResponse;
+  if (streamRequested) {
     return anthropicStream(model);
   }
   return json({

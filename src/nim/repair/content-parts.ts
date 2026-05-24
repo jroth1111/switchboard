@@ -90,6 +90,39 @@ export function hasTypedContentNormalization(data: Record<string, unknown>): boo
   return false;
 }
 
+function hiddenOnlyInContentParts(parts: unknown[]): boolean {
+  let sawHidden = false;
+  for (const part of parts) {
+    const action = typedContentPartAction(part);
+    if (action === "strip_hidden_reasoning" || action === "strip_metadata") {
+      sawHidden = true;
+      continue;
+    }
+    return false;
+  }
+  return sawHidden;
+}
+
+export function hasHiddenOnlyResponsesInput(data: Record<string, unknown>): boolean {
+  const input = data.input;
+  if (!Array.isArray(input) || input.length === 0) return false;
+
+  let sawHidden = false;
+  for (const item of input) {
+    if (!isPlainObject(item)) return false;
+    const content = item.content;
+    if ((content === null || content === undefined) || content === "") continue;
+    if (typeof content === "string") {
+      if (content.trim()) return false;
+      continue;
+    }
+    if (!Array.isArray(content)) return false;
+    if (!hiddenOnlyInContentParts(content)) return false;
+    sawHidden = true;
+  }
+  return sawHidden;
+}
+
 export function hasHiddenOnlyTypedContent(data: Record<string, unknown>): boolean {
   const messages = data.messages;
   if (!Array.isArray(messages) || messages.length === 0) return false;

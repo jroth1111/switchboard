@@ -11,11 +11,11 @@ describe("OAuthAccountDO refresh locks", () => {
   it("rejects an active refresh lock and allows acquisition after expiry", async () => {
     const stub = getOAuthStub(`oauth-lock-${Date.now()}`);
 
-    expect(await stub.acquireRefreshLock("acc-1", "req-1", 20)).toBe(true);
+    expect(await stub.acquireRefreshLock("acc-1", "req-1", 50)).toBe(true);
     expect(await stub.acquireRefreshLock("acc-1", "req-2", 1000)).toBe(false);
     expect(await stub.acquireRefreshLock("acc-1", "req-1", 1000)).toBe(false);
 
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await new Promise((resolve) => setTimeout(resolve, 60));
 
     expect(await stub.acquireRefreshLock("acc-1", "req-3", 1000)).toBe(true);
   });

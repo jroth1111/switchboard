@@ -58,13 +58,14 @@ function withCors(response: Response): Response {
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
-    const path = url.pathname;
-
     // CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: CORS_HEADERS });
     }
+
+    try {
+    const url = new URL(request.url);
+    const path = url.pathname;
 
     let response: Response;
 
@@ -142,6 +143,13 @@ export default {
     }
 
     return withCors(response);
+    } catch (err) {
+      console.error("fetch handler error", err);
+      return withCors(new Response(JSON.stringify({ error: "internal_error" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      }));
+    }
   },
 
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {

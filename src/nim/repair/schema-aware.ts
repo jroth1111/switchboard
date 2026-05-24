@@ -304,6 +304,13 @@ function validateNode(
 }
 
 function resolveSchemaForValue(value: unknown, schema: ToolParameterSchema): ToolParameterSchema {
+  if (Array.isArray(schema.type)) {
+    for (const t of schema.type) {
+      if (typeMatches(value, t)) return { ...schema, type: t };
+    }
+    const fallback = schema.type.find((t) => t !== "null") ?? schema.type[0];
+    return { ...schema, type: fallback };
+  }
   if (schema.type) return schema;
 
   const alternatives = schema.anyOf ?? schema.oneOf;
@@ -317,12 +324,16 @@ function resolveSchemaForValue(value: unknown, schema: ToolParameterSchema): Too
   return alternatives[0] ?? schema;
 }
 
-function typeMatches(value: unknown, type: string): boolean {
+function typeMatches(value: unknown, type: string | string[]): boolean {
+  if (Array.isArray(type)) {
+    return type.some((t) => typeMatches(value, t));
+  }
   switch (type) {
     case "object": return isPlainObject(value);
     case "array": return Array.isArray(value);
     case "string": return typeof value === "string";
-    case "number": case "integer": return typeof value === "number";
+    case "number": return typeof value === "number" && Number.isFinite(value);
+    case "integer": return typeof value === "number" && Number.isInteger(value);
     case "boolean": return typeof value === "boolean";
     case "null": return value === null;
     default: return false;

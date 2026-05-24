@@ -1,0 +1,6 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "llm-control-plane-provider-fixture",
+  "main": "fixtures/provider-fixture-worker.ts",
+  "compatibility_date": "2025-11-17"
+}

@@ -21,6 +21,13 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.12.20",
     "@types/node": "^22.15.0",
+    "@vitest/expect": "3.2.4",
+    "@vitest/mocker": "3.2.4",
+    "@vitest/pretty-format": "3.2.4",
+    "@vitest/runner": "3.2.4",
+    "@vitest/snapshot": "3.2.4",
+    "@vitest/spy": "3.2.4",
+    "@vitest/utils": "3.2.4",
     "tsx": "^4.19.0",
     "typescript": "^5.9.3",
     "vite": "^6.3.0",

@@ -53,6 +53,20 @@ describe("ControlPlaneStateDO with real SQLite", () => {
     expect(circuit.state).toBe("open");
   });
 
+  it("includes route dispatch memory in getHealth snapshots", async () => {
+    const stub = getDoStub();
+    const canonicalTarget = `dispatch-target-${Date.now()}`;
+
+    await stub.recordRouteDispatch(canonicalTarget, "chat", "nim-primary");
+
+    const health = await stub.getHealth();
+    const routeDispatchMemory = health.routeDispatchMemory as Record<string, Record<string, Record<string, unknown>>>;
+    expect(routeDispatchMemory[canonicalTarget]?.chat).toMatchObject({
+      group: "nim-primary",
+    });
+    expect(typeof routeDispatchMemory[canonicalTarget]?.chat?.dispatchedAt).toBe("number");
+  });
+
   it("stores and retrieves a receipt with totalDurationMs", async () => {
     const stub = getDoStub();
     const requestId = `req_receipt_${Date.now()}`;

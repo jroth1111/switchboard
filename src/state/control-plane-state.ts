@@ -410,11 +410,41 @@ export class ControlPlaneStateDO extends DurableObject {
 
   async getHealth(): Promise<Record<string, unknown>> {
     this.ensureSchema();
+    const now = Date.now();
+    const windowCutoff = now - 60_000;
     const scoreRows = this.store!.listHealthScores();
     const circuits = this.ctx.storage.sql.exec("SELECT * FROM circuits").toArray();
     const cooldowns = this.ctx.storage.sql.exec("SELECT * FROM cooldowns").toArray();
     const inflight = this.ctx.storage.sql.exec("SELECT * FROM inflight").toArray();
     const learnedLimits = this.ctx.storage.sql.exec("SELECT * FROM learned_limits").toArray();
+    const keyWindows = this.ctx.storage.sql.exec(
+      "SELECT key_ref, MIN(window_start) AS window_start, SUM(count) AS count FROM key_windows WHERE window_start >= ? GROUP BY key_ref",
+      windowCutoff,
+    ).toArray();
+    const groupWindows = this.ctx.storage.sql.exec(
+      "SELECT group_name, MIN(window_start) AS window_start, SUM(count) AS count FROM group_windows WHERE window_start >= ? GROUP BY group_name",
+      windowCutoff,
+    ).toArray();
+    const tokenWindows = this.ctx.storage.sql.exec(
+      "SELECT key_ref, MIN(window_start) AS window_start, SUM(prompt_tokens) AS prompt_tokens, SUM(completion_tokens) AS completion_tokens FROM key_token_windows WHERE window_start >= ? GROUP BY key_ref",
+      windowCutoff,
+    ).toArray();
+    const routeDispatchMemoryRows = this.ctx.storage.sql.exec(
+      `SELECT canonical_target, request_class, group_name, dispatched_at
+       FROM route_dispatch_memory_by_class
+       WHERE dispatched_at >= ?`,
+      now - 86400000,
+    ).toArray();
+    const routeDispatchMemory: Record<string, Record<string, { group: string; dispatchedAt: number }>> = {};
+    for (const row of routeDispatchMemoryRows) {
+      const canonicalTarget = row.canonical_target as string;
+      const requestClass = row.request_class as string;
+      routeDispatchMemory[canonicalTarget] ??= {};
+      routeDispatchMemory[canonicalTarget][requestClass] = {
+        group: row.group_name as string,
+        dispatchedAt: row.dispatched_at as number,
+      };
+    }
     return {
       healthScores: Object.fromEntries(scoreRows.map(({ deploymentId, score }) => [deploymentId, mapHealthScoreRow(score)])),
       circuits: Object.fromEntries(circuits.map((row) => [row.deployment_id as string, mapCircuitRow(row)])),
@@ -432,8 +462,22 @@ export class ControlPlaneStateDO extends DurableObject {
         reason: row.reason,
         expiresAt: row.expires_at,
       }])),
+      keyWindows: Object.fromEntries(keyWindows.map((row) => [row.key_ref as string, {
+        windowStart: row.window_start,
+        count: row.count,
+      }])),
+      groupWindows: Object.fromEntries(groupWindows.map((row) => [row.group_name as string, {
+        windowStart: row.window_start,
+        count: row.count,
+      }])),
+      tokenWindows: Object.fromEntries(tokenWindows.map((row) => [row.key_ref as string, {
+        windowStart: row.window_start,
+        promptTokens: row.prompt_tokens,
+        completionTokens: row.completion_tokens,
+      }])),
+      routeDispatchMemory,
       scores: scoreRows.map(({ deploymentId, score }) => ({ deployment_id: deploymentId, ...mapHealthScoreRow(score) })),
-      timestamp: Date.now(),
+      timestamp: now,
     };
   }
 

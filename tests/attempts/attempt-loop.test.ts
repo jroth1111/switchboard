@@ -244,8 +244,9 @@ describe("End-to-end plan -> admit -> evaluate flow", () => {
     release(store, r2.reservationId!);
     recordSuccess(store, "deploy-2");
 
-    // Health scores reflect history
-    expect(store.getHealthScore("deploy-1")!.score).toBeLessThan(100);
+    // Overload pressure keeps fallback behavior without poisoning route health.
+    expect(store.getHealthScore("deploy-1")!.score).toBe(100);
+    expect(store.getCircuit("deploy-1")).toBeNull();
     expect(store.getHealthScore("deploy-2")!.score).toBeGreaterThan(0);
   });
 

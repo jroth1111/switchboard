@@ -3,11 +3,15 @@
 // via SqlStorageAdapter. Retains schema management and query/reporting methods.
 
 import { DurableObject } from "cloudflare:workers";
+import { MANIFEST } from "../config/manifest";
 import type { FailureClass } from "../config/schema";
 import type { AdmissionRequest, AdmissionResponse } from "./admission-engine";
 import * as engine from "./admission-engine";
 import { SqlStorageAdapter } from "./sql-adapter";
 import { safeJsonParse } from "../utils/result";
+
+// Confirmed reservations must outlive manifest stream timeouts (seconds) plus slack.
+const CONFIRMED_RESERVATION_TTL_MS = 600_000;
 
 // ─── Schema migrations ────────────────────────────────────────────
 
@@ -285,8 +289,8 @@ export type { AdmissionRequest, AdmissionResponse } from "./admission-engine";
 
 export class ControlPlaneStateDO extends DurableObject {
   private initialized = false;
-  private learnedConcurrencyEnabled = false;
-  private learnedConcurrencyTtlSeconds = 300;
+  private learnedConcurrencyEnabled = MANIFEST.defaultPolicy.budget.learnedConcurrencyEnabled;
+  private learnedConcurrencyTtlSeconds = MANIFEST.defaultPolicy.budget.learnedConcurrencyTtlSeconds;
   private store: SqlStorageAdapter | null = null;
 
   private ensureSchema() {
@@ -352,13 +356,20 @@ export class ControlPlaneStateDO extends DurableObject {
 
   async confirm(reservationId: string): Promise<void> {
     this.ensureSchema();
+    const now = Date.now();
     this.store!.transaction(() => {
       const res = this.store!.confirmReservation(reservationId);
       if (res) {
+        // Extend lease past RESERVATION_TTL_MS so reapExpired does not release active streams.
+        this.ctx.storage.sql.exec(
+          "UPDATE reservations SET expires_at = ? WHERE reservation_id = ?",
+          now + CONFIRMED_RESERVATION_TTL_MS,
+          reservationId,
+        );
         // Refresh the inflight row's updated_at so long-running streams (e.g. >120s)
         // are not pruned by pruneStaleInflight before the request completes.
         const current = this.store!.getInflight(res.deploymentId);
-        this.store!.setInflight(res.deploymentId, current, Date.now());
+        this.store!.setInflight(res.deploymentId, current, now);
       }
     });
   }
@@ -692,6 +703,7 @@ export class ControlPlaneStateDO extends DurableObject {
     const confirmedExpired = this.ctx.storage.sql.exec(
       "SELECT reservation_id FROM reservations WHERE expires_at < ? AND confirmed = 1", now,
     ).toArray();
+    // Confirmed leases use CONFIRMED_RESERVATION_TTL_MS; expired rows are abandoned streams.
     for (const row of confirmedExpired) await this.release(row.reservation_id as string);
     this.ctx.storage.sql.exec("DELETE FROM learned_limits WHERE expires_at IS NOT NULL AND expires_at < ?", now);
     this.ctx.storage.sql.exec("DELETE FROM key_token_windows WHERE window_start < ?", now - 60_000);

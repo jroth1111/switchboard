@@ -43,6 +43,8 @@ export function loadLocalSecretEnv(cwd = process.cwd(), processEnv: NodeJS.Proce
     }
   }
 
+  normalizeLoadedChatGPTAuthMaterial(cwd, values);
+
   return { values, localSecretSurfacePresent, loadErrors };
 }
 
@@ -79,6 +81,14 @@ export function validateChatGPTStructuredAuthSurface(
       kind: "error",
       message: "CHATGPT_OAUTH is legacy bare-token auth and is not accepted for ChatGPT Responses; "
         + `set CHATGPT_AUTH_JSON with required fields: ${CHATGPT_SUBSCRIPTION_AUTH_REQUIRED_FIELDS.join(", ")}`,
+    }];
+  }
+
+  if (hasFlatStructuredChatGPTAuthFields(env)) {
+    return [{
+      kind: "error",
+      message: "ChatGPT Responses subscription auth fields were loaded as top-level secrets; "
+        + "set CHATGPT_AUTH_JSON to a JSON object containing access_token, refresh_token, and id_token",
     }];
   }
 
@@ -124,9 +134,55 @@ function parseJsonSecretFile(text: string): Record<string, string> {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
   const values: Record<string, string> = {};
   for (const [key, value] of Object.entries(parsed)) {
-    if (typeof value === "string") values[key] = value.trim();
+    if (typeof value === "string") {
+      values[key] = value.trim();
+      continue;
+    }
+    if (key === "CHATGPT_AUTH_JSON" && isStructuredAuthRecord(value)) {
+      values[key] = JSON.stringify(value);
+    }
   }
   return values;
+}
+
+function normalizeLoadedChatGPTAuthMaterial(cwd: string, values: Record<string, string>): void {
+  promoteFlatStructuredChatGPTAuthFields(values);
+  resolveLocalChatGPTAuthFilePath(cwd, values);
+}
+
+function promoteFlatStructuredChatGPTAuthFields(values: Record<string, string>): void {
+  if (envValue(values, "CHATGPT_AUTH_JSON") || envValue(values, "CHATGPT_AUTH_FILE")) return;
+  if (!hasFlatStructuredChatGPTAuthFields(values)) return;
+  values.CHATGPT_AUTH_JSON = JSON.stringify(
+    Object.fromEntries(
+      CHATGPT_SUBSCRIPTION_AUTH_REQUIRED_FIELDS.map((field) => [field, envValue(values, field)]),
+    ),
+  );
+}
+
+function resolveLocalChatGPTAuthFilePath(cwd: string, values: Record<string, string>): void {
+  const authFile = envValue(values, "CHATGPT_AUTH_FILE");
+  if (!authFile || isChatGPTSubscriptionAuthJsonText(authFile)) return;
+
+  const candidate = join(cwd, authFile);
+  if (!existsSync(candidate)) return;
+
+  try {
+    const text = readFileSync(candidate, "utf8").trim();
+    if (isChatGPTSubscriptionAuthJsonText(text)) {
+      values.CHATGPT_AUTH_FILE = text;
+    }
+  } catch {
+    // Leave the path in place; validation reports unresolved local auth material.
+  }
+}
+
+function hasFlatStructuredChatGPTAuthFields(env: Record<string, string | undefined>): boolean {
+  return CHATGPT_SUBSCRIPTION_AUTH_REQUIRED_FIELDS.every((field) => envValue(env, field));
+}
+
+function isStructuredAuthRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function validateStructuredAuthValue(name: string, value: string): ChatGPTAuthValidationIssue[] {

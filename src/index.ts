@@ -155,8 +155,16 @@ export default {
       );
       let canaryHealth: CanaryHealthSnapshot | null = null;
       let recentCanaryResults: CanaryHistoryRow[] = [];
-      try { canaryHealth = await stateStub.getHealth() as CanaryHealthSnapshot; } catch {}
-      try { recentCanaryResults = await stateStub.getCanaryResults(100) as CanaryHistoryRow[]; } catch {}
+      try {
+        canaryHealth = await stateStub.getHealth() as CanaryHealthSnapshot;
+      } catch (e) {
+        console.warn("[canary] getHealth failed", String(e));
+      }
+      try {
+        recentCanaryResults = await stateStub.getCanaryResults(100) as CanaryHistoryRow[];
+      } catch (e) {
+        console.warn("[canary] getCanaryResults failed", String(e));
+      }
       const canaryContext = { health: canaryHealth, recentResults: recentCanaryResults };
       const results = await runCanaryProbes(
         env as unknown as Record<string, unknown>, // dynamic key lookup in canary probes
@@ -187,8 +195,8 @@ export default {
 
       console.log(`[canary] ${results.length} probes: ${results.filter((r) => r.success).length} ok, ${results.filter((r) => !r.success).length} fail`);
 
-      // Persist canary results to DO
-      for (const r of results) {
+      // Persist canary results to DO (extend lifetime past scheduled return)
+      const storeCanaryResults = results.map((r) =>
         stateStub.storeCanaryResult({
           deploymentId: r.deploymentId,
           group: r.group,
@@ -196,8 +204,11 @@ export default {
           failureClass: r.failureClass,
           latencyMs: r.latencyMs,
           statusCode: r.status,
-        }).catch((e) => console.error("canary_result_store_failed", String(e)));
-      }
+        }),
+      );
+      ctx.waitUntil(
+        Promise.all(storeCanaryResults).catch((e) => console.error("canary_result_store_failed", String(e))),
+      );
     }
 
     if (cron === "*/5 * * * *") {

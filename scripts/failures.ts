@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Inspect failed-request records through the Worker observability endpoint.
 
+import { pathToFileURL } from "node:url";
+
 const USAGE = `Usage:
   CONTROL_PLANE_URL=http://127.0.0.1:8787 NIM_HEALTH_TOKEN=... npm run failures -- recent [filters]
   CONTROL_PLANE_URL=http://127.0.0.1:8787 NIM_HEALTH_TOKEN=... npm run failures -- search [filters]
@@ -170,7 +172,7 @@ function clip(value: string): string {
   return value.length > 28 ? `${value.slice(0, 25)}...` : value;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const code = await main();
   process.exit(code);
 }

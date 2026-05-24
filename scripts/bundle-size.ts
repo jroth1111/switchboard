@@ -2,7 +2,7 @@
 // Usage: node scripts/bundle-size.ts
 // Fails if the Worker bundle exceeds size limits.
 
-import { readFileSync, statSync } from "fs";
+import { readFileSync } from "fs";
 import { execSync } from "child_process";
 import { gzipSync } from "zlib";
 

@@ -75,6 +75,16 @@ describe("Deployment pre-routing filter", () => {
     expect(result.passed).toHaveLength(1);
   });
 
+  it("rejects half-open probe deployments when inflight already has the single allowed slot", () => {
+    const state = createEmptyFilterState();
+    state.circuits.set("deploy-1", { state: "half_open" });
+    state.inflight.set("deploy-1", 1);
+    const candidates = [makeDeployment({ maxParallelRequests: 4 })];
+    const result = filterCandidates(candidates, state, Date.now());
+    expect(result.passed).toHaveLength(0);
+    expect(result.rejected[0].reason).toBe("inflight_exhausted");
+  });
+
   it("rejects deployments at inflight capacity", () => {
     const state = createEmptyFilterState();
     state.inflight.set("deploy-1", 2);

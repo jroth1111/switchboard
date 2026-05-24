@@ -202,7 +202,9 @@ function buildCandidate(
 
   // Deduct score for capability mismatches
   const deployments = MANIFEST.deploymentsByGroup[groupName] ?? [];
-  if (deployments.length > 0) {
+  if (deployments.length === 0) {
+    rejectionReason = rejectionReason ?? "no_deployments";
+  } else {
     const d = deployments[0];
 
     // Hard rejection: streaming requested but deployment doesn't support it
@@ -336,6 +338,7 @@ export function planRequest(
   // Sort non-rejected candidates by score descending (health-aware: higher score = healthier)
   const viable = candidates
     .filter((c) => !c.rejectionReason)
+    .filter((c) => (MANIFEST.deploymentsByGroup[c.group]?.length ?? 0) > 0)
     .sort((a, b) => b.score - a.score);
 
   const selected = viable[0];

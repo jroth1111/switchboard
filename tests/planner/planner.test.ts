@@ -102,6 +102,12 @@ describe("planRequest", () => {
     expect(plan).toBeNull();
   });
 
+  it("skips deployment-less route groups and selects the next viable fallback", () => {
+    const plan = planRequest(makeEnvelope("nim-secondary"));
+    expect(plan).not.toBeNull();
+    expect(plan!.selectedGroup).toBe("nim-primary");
+  });
+
   it("chatgpt subscription routes have no fallbacks", () => {
     const plan = planRequest(makeEnvelope("gpt-5.5"));
     expect(plan).not.toBeNull();

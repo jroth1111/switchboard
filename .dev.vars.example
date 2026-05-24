@@ -10,7 +10,8 @@ NIM_HEALTH_TOKEN=
 # Provider credentials and subscription account material.
 ZAI_KEY_1=
 NIM_KEY_1=
-CHATGPT_OAUTH=
+# Flat JSON object with access_token, refresh_token, and id_token.
+CHATGPT_AUTH_JSON='{"access_token":"","refresh_token":"","id_token":""}'
 ANTHROPIC_OAUTH_ACCOUNT=
 ANTHROPIC_CLIENT_ID=
 ANTHROPIC_CLIENT_SECRET=

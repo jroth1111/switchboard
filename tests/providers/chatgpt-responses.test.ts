@@ -90,7 +90,7 @@ describe("ChatGPT Responses provider contract", () => {
       tool_choice: "auto",
       previous_response_id: "resp_prev",
       truncation: "auto",
-    }, "oauth-token");
+    }, structuredAuth({ access_token: "oauth-token" }));
     const body = JSON.parse(req.body) as Record<string, unknown>;
 
     expect(req.url).toBe(`https://chatgpt.com${CHATGPT_RESPONSES_BACKEND_PATH}`);
@@ -118,7 +118,7 @@ describe("ChatGPT Responses provider contract", () => {
     const req = buildChatGPTResponsesRequest(
       deployment({ apiBase: "https://chatgpt-proxy.example/upstream" }),
       { model: "gpt-5.5", input: "OK" },
-      "oauth-token",
+      structuredAuth({ access_token: "oauth-token" }),
     );
 
     expect(req.url).toBe(`https://chatgpt-proxy.example/upstream${CHATGPT_RESPONSES_BACKEND_PATH}`);
@@ -128,7 +128,7 @@ describe("ChatGPT Responses provider contract", () => {
     const req = buildChatGPTResponsesRequest(
       deployment({ apiBase: `https://chatgpt-proxy.example${CHATGPT_RESPONSES_BACKEND_PATH}` }),
       { model: "gpt-5.5", input: "OK" },
-      "oauth-token",
+      structuredAuth({ access_token: "oauth-token" }),
     );
 
     expect(req.url).toBe(`https://chatgpt-proxy.example${CHATGPT_RESPONSES_BACKEND_PATH}`);
@@ -138,7 +138,7 @@ describe("ChatGPT Responses provider contract", () => {
     expect(() => buildChatGPTResponsesRequest(
       deployment({ apiBase: "https://api.openai.com/v1" }),
       { model: "gpt-5.5", input: "OK" },
-      "oauth-token",
+      structuredAuth({ access_token: "oauth-token" }),
     )).toThrow(/generic OpenAI API Platform/);
   });
 
@@ -146,7 +146,7 @@ describe("ChatGPT Responses provider contract", () => {
     expect(() => buildChatGPTResponsesRequest(
       deployment(),
       { model: "gpt-5.5", input: "OK" },
-      "sk-test-openai-key",
+      structuredAuth({ access_token: "sk-test-openai-key" }),
     )).toThrow(/subscription OAuth/);
   });
 
@@ -154,7 +154,7 @@ describe("ChatGPT Responses provider contract", () => {
     expect(() => buildChatGPTResponsesRequest(
       deployment({ params: { temperature: 0.2 }, extraBody: { custom: true } }),
       { model: "gpt-5.5", input: "OK" },
-      "oauth-token",
+      structuredAuth({ access_token: "oauth-token" }),
     )).toThrow(/must not configure provider body params/);
   });
 });
@@ -218,7 +218,7 @@ describe("validateResponsesContract", () => {
     const req = buildChatGPTResponsesRequest(
       deployment(),
       { model: "gpt-5.5", input: "hello", metadata: { nim_request_id: "req_1" } },
-      "oauth-token",
+      structuredAuth({ access_token: "oauth-token" }),
     );
     const body = JSON.parse(req.body) as Record<string, unknown>;
 
@@ -265,12 +265,8 @@ describe("validateResponsesContract", () => {
     )).toThrow(/subscription OAuth/);
   });
 
-  it("keeps legacy CHATGPT_OAUTH access-token fallback weaker and explicit", () => {
+  it("rejects legacy bare access-token auth by default", () => {
     expect(() => resolveChatGPTSubscriptionAuth("legacy-oauth-token")).toThrow(/must be structured JSON/);
-    expect(resolveChatGPTSubscriptionAuth("legacy-oauth-token", { allowLegacyAccessToken: true })).toEqual({
-      accessToken: "legacy-oauth-token",
-      source: "legacy",
-    });
   });
 });
 

@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import YAML from "yaml";
 import { MANIFEST, ROUTE_MANIFEST_VERSION } from "../src/config/manifest.ts";
 import { buildManifestSnapshot, canonicalJson } from "./manifest-snapshot.ts";
+import { loadLocalSecretEnv, validateChatGPTStructuredAuthSurface } from "./chatgpt-auth-secrets.ts";
 
 interface ValidationError {
   severity: "error" | "warning";
@@ -135,6 +136,7 @@ validateLiteLLMAliasParity(litellmConfigPath);
 
 // 12. ChatGPT subscription lanes must prefer structured auth material.
 validateChatGPTSubscriptionAuthRefs();
+validateChatGPTSubscriptionRuntimeAuth();
 
 function validateScheduledCrons(configPath: string, requiredCrons: string[]): void {
   let config: Record<string, unknown>;
@@ -233,6 +235,25 @@ function validateChatGPTSubscriptionAuthRefs(): void {
       "ChatGPT Responses subscription deployments must use CHATGPT_AUTH_JSON as their primary auth ref; "
       + `legacy refs: ${legacyRefs.join(", ")}`,
     );
+  }
+}
+
+function validateChatGPTSubscriptionRuntimeAuth(): void {
+  const chatgptResponsesEnabled = MANIFEST.deployments
+    .some((deployment) => deployment.provider === "chatgpt" && deployment.mode === "responses");
+  if (!chatgptResponsesEnabled) return;
+
+  const localSecrets = loadLocalSecretEnv();
+  for (const loadError of localSecrets.loadErrors) {
+    error(`Unable to inspect local secret surface for ChatGPT auth: ${loadError}`);
+  }
+
+  for (const issue of validateChatGPTStructuredAuthSurface(localSecrets.values, {
+    localSecretSurfacePresent: localSecrets.localSecretSurfacePresent,
+    chatgptResponsesEnabled,
+  })) {
+    if (issue.kind === "error") error(issue.message);
+    else warn(issue.message);
   }
 }
 

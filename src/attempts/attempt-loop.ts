@@ -13,7 +13,7 @@ import {
 import { getAdapter } from "../providers/registry";
 import type { ProviderAdapter } from "../providers/adapter";
 import type { OAuthAccountAccessor } from "../providers/anthropic-subscription";
-import { isChatGPTSubscriptionAuthJsonText } from "../providers/chatgpt-responses";
+import { isChatGPTSubscriptionAuthJsonText, resolveChatGPTSubscriptionAuth } from "../providers/chatgpt-responses";
 import { evaluateResponse, type ResponseEvaluationConfig } from "../nim/evaluate/response";
 import { classifyRateLimit } from "../nim/classify/rate-limit";
 import { wrapSubscriptionStream, type SubscriptionStreamFormat } from "../streaming/format-converter";
@@ -1223,36 +1223,46 @@ function failureRecordOptions(
 
 function resolveKey(env: Record<string, unknown>, keyRef: string, deployment?: Deployment): string {
   if (deployment?.provider === "chatgpt" && deployment.mode === "responses") {
-    return resolveChatGPTSubscriptionAuthMaterial(env, keyRef);
+    return resolveChatGPTSubscriptionAuthMaterial(env);
   }
   return (env[keyRef] as string) ?? "";
 }
 
-function resolveChatGPTSubscriptionAuthMaterial(env: Record<string, unknown>, keyRef: string): string {
+function resolveChatGPTSubscriptionAuthMaterial(env: Record<string, unknown>): string {
   const authJson = envString(env, "CHATGPT_AUTH_JSON");
   if (authJson) {
-    if (!isChatGPTSubscriptionAuthJsonText(authJson)) {
-      throw new SubscriptionTokenError(
-        "CHATGPT_AUTH_JSON must contain structured ChatGPT subscription auth JSON",
-        "oauth_session_failure",
-      );
-    }
-    return authJson;
+    return requireStructuredChatGPTAuthMaterial(authJson, "CHATGPT_AUTH_JSON");
   }
 
   const authFileContent = envString(env, "CHATGPT_AUTH_FILE");
   if (authFileContent) {
-    if (!isChatGPTSubscriptionAuthJsonText(authFileContent)) {
-      throw new SubscriptionTokenError(
-        "CHATGPT_AUTH_FILE must contain structured ChatGPT subscription auth JSON in the Worker runtime; "
-        + "filesystem paths must be resolved before deployment",
-        "oauth_session_failure",
-      );
-    }
-    return authFileContent;
+    return requireStructuredChatGPTAuthMaterial(
+      authFileContent,
+      "CHATGPT_AUTH_FILE",
+      "CHATGPT_AUTH_FILE must contain structured ChatGPT subscription auth JSON in the Worker runtime; "
+      + "filesystem paths must be resolved before deployment",
+    );
   }
 
-  return envString(env, keyRef) || envString(env, "CHATGPT_OAUTH");
+  throw new SubscriptionTokenError(
+    "ChatGPT Responses subscription auth requires structured CHATGPT_AUTH_JSON or CHATGPT_AUTH_FILE material",
+    "oauth_session_failure",
+  );
+}
+
+function requireStructuredChatGPTAuthMaterial(
+  authMaterial: string,
+  credentialName: string,
+  nonJsonMessage?: string,
+): string {
+  if (!isChatGPTSubscriptionAuthJsonText(authMaterial)) {
+    throw new SubscriptionTokenError(
+      nonJsonMessage ?? `${credentialName} must contain structured ChatGPT subscription auth JSON`,
+      "oauth_session_failure",
+    );
+  }
+  resolveChatGPTSubscriptionAuth(authMaterial, { credentialName });
+  return authMaterial;
 }
 
 function envString(env: Record<string, unknown>, key: string): string {

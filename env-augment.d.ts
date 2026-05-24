@@ -20,7 +20,6 @@ interface Env {
   ZAI_KEY_1: string;
   CHATGPT_AUTH_JSON?: string;
   CHATGPT_AUTH_FILE?: string;
-  CHATGPT_OAUTH?: string;
   ANTHROPIC_CLIENT_ID: string;
   ANTHROPIC_CLIENT_SECRET: string;
 }

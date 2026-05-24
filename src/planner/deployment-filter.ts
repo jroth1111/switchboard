@@ -8,10 +8,13 @@ import type { Deployment } from "../config/schema";
 
 export interface FilterState {
   cooldowns: Map<string, { until: number }>;
-  circuits: Map<string, { state: "open" | "half_open" | "closed"; halfOpenAfter?: number }>;
+  circuits: Map<string, { state: "open" | "half_open" | "closed" | "suspect"; failureCount?: number; halfOpenAfter?: number }>;
   inflight: Map<string, number>;
   learnedLimits: Map<string, { maxParallel: number; expiresAt?: number }>;
   keyWindows: Map<string, { windowStart: number; count: number }>;
+  groupWindows: Map<string, { windowStart: number; count: number }>;
+  tokenWindows: Map<string, { windowStart: number; promptTokens: number; completionTokens: number }>;
+  healthScores: Map<string, { consecutiveFailureCount?: number }>;
 }
 
 export function createEmptyFilterState(): FilterState {
@@ -21,6 +24,9 @@ export function createEmptyFilterState(): FilterState {
     inflight: new Map(),
     learnedLimits: new Map(),
     keyWindows: new Map(),
+    groupWindows: new Map(),
+    tokenWindows: new Map(),
+    healthScores: new Map(),
   };
 }
 
@@ -38,6 +44,13 @@ export function filterCandidates(
   state: FilterState,
   now: number,
   scopeMode: "global" | "per_key" = "per_key",
+  options: {
+    maxParallelOverride?: number | null;
+    quarantineFailureThreshold?: number;
+    suspectMaxParallelDivisor?: number;
+    rpmLimit?: number | null;
+    tokenBudgetPerMinute?: number | null;
+  } = {},
 ): FilterResult {
   const passed: FilterResult["passed"] = [];
   const rejected: FilterResult["rejected"] = [];
@@ -65,12 +78,27 @@ export function filterCandidates(
       }
     }
 
+    const isRecoveryState = circuit && (circuit.state === "half_open" || circuit.state === "suspect");
+    if ((options.quarantineFailureThreshold ?? 0) > 0 && !isRecoveryState) {
+      const consecutiveFailures = state.healthScores.get(deployment.id)?.consecutiveFailureCount ?? 0;
+      const circuitFailures = circuit?.failureCount ?? 0;
+      if (Math.max(consecutiveFailures, circuitFailures) >= options.quarantineFailureThreshold!) {
+        rejected.push({ deployment, reason: "quarantine" });
+        continue;
+      }
+    }
+
     // Inflight with learned concurrency
     const learned = state.learnedLimits.get(deployment.id);
     const learnedExpired = (learned?.expiresAt !== null && learned?.expiresAt !== undefined) && learned.expiresAt <= now;
     let effectiveMax = (learned && !learnedExpired) ? learned.maxParallel : deployment.maxParallelRequests;
+    if ((options.maxParallelOverride ?? 0) > 0) {
+      effectiveMax = Math.min(effectiveMax, options.maxParallelOverride!);
+    }
     if (halfOpenProbe) {
       effectiveMax = Math.min(effectiveMax, 1);
+    } else if (circuit?.state === "suspect" && (options.suspectMaxParallelDivisor ?? 0) > 0) {
+      effectiveMax = Math.max(1, Math.floor(effectiveMax / options.suspectMaxParallelDivisor!));
     }
 
     const currentInflight = state.inflight.get(deployment.id) ?? 0;
@@ -86,6 +114,29 @@ export function filterCandidates(
       if (windowEnd > now && keyWindow.count >= deployment.rpm) {
         rejected.push({ deployment, reason: "key_rpm_exhausted" });
         continue;
+      }
+    }
+
+    if ((options.rpmLimit ?? 0) > 0) {
+      const groupWindow = state.groupWindows.get(deployment.group);
+      if (groupWindow) {
+        const windowEnd = groupWindow.windowStart + 60000;
+        if (windowEnd > now && groupWindow.count >= options.rpmLimit!) {
+          rejected.push({ deployment, reason: "group_rpm_exhausted" });
+          continue;
+        }
+      }
+    }
+
+    if ((options.tokenBudgetPerMinute ?? 0) > 0) {
+      const tokenWindow = state.tokenWindows.get(deployment.keyRef);
+      if (tokenWindow) {
+        const windowEnd = tokenWindow.windowStart + 60000;
+        const used = tokenWindow.promptTokens + tokenWindow.completionTokens;
+        if (windowEnd > now && used >= options.tokenBudgetPerMinute!) {
+          rejected.push({ deployment, reason: "token_budget_exhausted" });
+          continue;
+        }
       }
     }
 

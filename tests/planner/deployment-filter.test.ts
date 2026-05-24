@@ -125,6 +125,30 @@ describe("Deployment pre-routing filter", () => {
     expect(result.rejected[0].reason).toBe("key_rpm_exhausted");
   });
 
+  it("rejects deployments with exhausted group RPM", () => {
+    const state = createEmptyFilterState();
+    const now = Date.now();
+    const windowStart = Math.floor(now / 1000) * 1000;
+    state.groupWindows.set("test-group", { windowStart, count: 2 });
+
+    const result = filterCandidates([makeDeployment()], state, now, "per_key", { rpmLimit: 2 });
+
+    expect(result.passed).toHaveLength(0);
+    expect(result.rejected[0].reason).toBe("group_rpm_exhausted");
+  });
+
+  it("rejects deployments with exhausted token budget", () => {
+    const state = createEmptyFilterState();
+    const now = Date.now();
+    const windowStart = Math.floor(now / 1000) * 1000;
+    state.tokenWindows.set("TEST_KEY", { windowStart, promptTokens: 50, completionTokens: 50 });
+
+    const result = filterCandidates([makeDeployment()], state, now, "per_key", { tokenBudgetPerMinute: 100 });
+
+    expect(result.passed).toHaveLength(0);
+    expect(result.rejected[0].reason).toBe("token_budget_exhausted");
+  });
+
   it("passes deployments in different RPM window", () => {
     const state = createEmptyFilterState();
     // Old window — 2 minutes ago, well outside 60s overlap
@@ -161,5 +185,39 @@ describe("Deployment pre-routing filter", () => {
     expect(result.passed).toHaveLength(1);
     expect(result.passed[0].deployment.id).toBe("deploy-3");
     expect(result.rejected).toHaveLength(2);
+  });
+
+  it("rejects quarantined deployments and keeps suspect deployments probeable", () => {
+    const state = createEmptyFilterState();
+    state.healthScores.set("deploy-1", { consecutiveFailureCount: 5 });
+    state.healthScores.set("deploy-2", { consecutiveFailureCount: 5 });
+    state.circuits.set("deploy-2", { state: "suspect", failureCount: 5 });
+
+    const result = filterCandidates([
+      makeDeployment({ id: "deploy-1" }),
+      makeDeployment({ id: "deploy-2" }),
+    ], state, Date.now(), "per_key", { quarantineFailureThreshold: 5 });
+
+    expect(result.rejected).toHaveLength(1);
+    expect(result.rejected[0].deployment.id).toBe("deploy-1");
+    expect(result.rejected[0].reason).toBe("quarantine");
+    expect(result.passed[0].deployment.id).toBe("deploy-2");
+  });
+
+  it("applies policy max-parallel override and suspect throttling", () => {
+    const state = createEmptyFilterState();
+    state.inflight.set("deploy-1", 1);
+    state.circuits.set("deploy-1", { state: "suspect" });
+
+    const result = filterCandidates(
+      [makeDeployment({ maxParallelRequests: 8 })],
+      state,
+      Date.now(),
+      "per_key",
+      { maxParallelOverride: 4, suspectMaxParallelDivisor: 4 },
+    );
+
+    expect(result.passed).toHaveLength(0);
+    expect(result.rejected[0].reason).toBe("inflight_exhausted");
   });
 });

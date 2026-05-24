@@ -3,6 +3,9 @@ import { dirname } from "node:path";
 
 type ProbeStatus = "pass" | "fail" | "skip";
 
+const FIXTURE_ACK_ENV = "LIVE_SMOKE_FIXTURE_ACK";
+const FIXTURE_ACK_VALUE = "provider-overrides-configured";
+
 interface ProbeResult {
   name: string;
   status: ProbeStatus;
@@ -46,24 +49,32 @@ Environment:
   ADMIN_API_KEY or NIM_HEALTH_TOKEN     Enables authorized health, receipts, and cooldown cleanup.
   LIVE_SMOKE_REPORT                    Optional JSON report path.
   FIXTURE_WORKER_URL                   Optional fixture worker URL for subscription format probes.
+  LIVE_SMOKE_FIXTURE_ACK               Required for LIVE_SMOKE_MODE=fixture; set to
+                                       ${FIXTURE_ACK_VALUE} after confirming provider API base
+                                       overrides route provider calls to fixtures.
 
 Fixture mode expects the target Worker to route provider calls to the fixture endpoint,
 usually via PROVIDER_API_BASE_* vars in its staging Worker configuration.`);
   process.exit(0);
 }
 
-const baseUrl = trimTrailingSlash(requiredEnv("CONTROL_PLANE_URL", "LIVE_BASE_URL"));
 const mode = (process.env.LIVE_SMOKE_MODE ?? "surface").trim().toLowerCase();
+if (!["surface", "provider", "fixture"].includes(mode)) {
+  failSetup(`LIVE_SMOKE_MODE must be surface, provider, or fixture; got ${mode}`);
+}
+if (mode === "fixture" && process.env[FIXTURE_ACK_ENV]?.trim() !== FIXTURE_ACK_VALUE) {
+  failSetup(
+    `LIVE_SMOKE_MODE=fixture requires ${FIXTURE_ACK_ENV}=${FIXTURE_ACK_VALUE} after confirming provider API base overrides route provider calls to fixtures.`,
+  );
+}
+
+const baseUrl = trimTrailingSlash(requiredEnv("CONTROL_PLANE_URL", "LIVE_BASE_URL"));
 const model = process.env.LIVE_SMOKE_MODEL ?? "nim-primary";
 const switchboardApiKey = process.env.SWITCHBOARD_API_KEY;
 const adminKey = process.env.ADMIN_API_KEY ?? process.env.NIM_HEALTH_TOKEN;
 const reportPath = process.env.LIVE_SMOKE_REPORT;
 const fixtureWorkerUrl = process.env.FIXTURE_WORKER_URL?.trim() ? trimTrailingSlash(process.env.FIXTURE_WORKER_URL.trim()) : undefined;
 const probeTimeoutMs = parsePositiveInt(process.env.LIVE_SMOKE_TIMEOUT_MS, 30_000);
-
-if (!["surface", "provider", "fixture"].includes(mode)) {
-  failSetup(`LIVE_SMOKE_MODE must be surface, provider, or fixture; got ${mode}`);
-}
 
 const probes: ProbeResult[] = [];
 const startedAt = new Date().toISOString();

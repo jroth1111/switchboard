@@ -16,16 +16,54 @@ function structuredAuth(overrides: Record<string, unknown> = {}): string {
   });
 }
 
-function messages(env: Record<string, string | undefined>, localSecretSurfacePresent = true): string[] {
+function issues(env: Record<string, string | undefined>, localSecretSurfacePresent = true) {
   return validateChatGPTStructuredAuthSurface(env, {
     localSecretSurfacePresent,
     chatgptResponsesEnabled: true,
-  }).map((issue) => issue.message);
+  });
+}
+
+function messages(env: Record<string, string | undefined>, localSecretSurfacePresent = true): string[] {
+  return issues(env, localSecretSurfacePresent).map((issue) => issue.message);
 }
 
 describe("ChatGPT structured auth validation", () => {
   it("accepts structured CHATGPT_AUTH_JSON", () => {
     expect(messages({ CHATGPT_AUTH_JSON: structuredAuth() })).toEqual([]);
+  });
+
+  it("warns when legacy CHATGPT_OAUTH is present with structured CHATGPT_AUTH_JSON", () => {
+    const result = issues({
+      CHATGPT_AUTH_JSON: structuredAuth(),
+      CHATGPT_OAUTH: "legacy-token-secret",
+    });
+    const output = result.map((issue) => issue.message).join("\n");
+
+    expect(result).toEqual([expect.objectContaining({
+      kind: "warning",
+      message: expect.stringContaining("CHATGPT_OAUTH is legacy bare-token auth and is ignored"),
+    })]);
+    expect(output).not.toContain("legacy-token-secret");
+    expect(output).not.toContain("access-secret");
+    expect(output).not.toContain("refresh-secret");
+    expect(output).not.toContain("id-secret");
+  });
+
+  it("warns when legacy CHATGPT_OAUTH is present with structured CHATGPT_AUTH_FILE content", () => {
+    const result = issues({
+      CHATGPT_AUTH_FILE: structuredAuth(),
+      CHATGPT_OAUTH: "legacy-token-secret",
+    });
+    const output = result.map((issue) => issue.message).join("\n");
+
+    expect(result).toEqual([expect.objectContaining({
+      kind: "warning",
+      message: expect.stringContaining("remove it from local secrets"),
+    })]);
+    expect(output).not.toContain("legacy-token-secret");
+    expect(output).not.toContain("access-secret");
+    expect(output).not.toContain("refresh-secret");
+    expect(output).not.toContain("id-secret");
   });
 
   it("rejects missing local structured auth surface", () => {
@@ -83,10 +121,14 @@ describe("ChatGPT structured auth validation", () => {
   });
 
   it("rejects legacy CHATGPT_OAUTH-only auth without leaking the token", () => {
-    const result = messages({ CHATGPT_OAUTH: "legacy-token-secret" });
+    const result = issues({ CHATGPT_OAUTH: "legacy-token-secret" });
+    const output = result.map((issue) => issue.message).join("\n");
 
-    expect(result.join("\n")).toContain("CHATGPT_OAUTH is legacy bare-token auth");
-    expect(result.join("\n")).not.toContain("legacy-token-secret");
+    expect(result).toEqual([expect.objectContaining({
+      kind: "error",
+      message: expect.stringContaining("CHATGPT_OAUTH is legacy bare-token auth"),
+    })]);
+    expect(output).not.toContain("legacy-token-secret");
   });
 
   it("rejects path-like CHATGPT_AUTH_FILE values without leaking the path", () => {
@@ -109,5 +151,20 @@ describe("ChatGPT structured auth validation", () => {
     expect(result.join("\n")).not.toContain("access-secret");
     expect(result.join("\n")).not.toContain("refresh-secret");
     expect(result.join("\n")).not.toContain("id-secret");
+  });
+
+  it("does not mask malformed structured auth with a stale OAuth warning", () => {
+    const result = issues({
+      CHATGPT_AUTH_JSON: structuredAuth({ refresh_token: "", id_token: undefined }),
+      CHATGPT_OAUTH: "legacy-token-secret",
+    });
+    const output = result.map((issue) => issue.message).join("\n");
+
+    expect(result).toEqual([expect.objectContaining({
+      kind: "error",
+      message: expect.stringContaining("missing required fields: refresh_token, id_token"),
+    })]);
+    expect(output).not.toContain("ignored while structured ChatGPT auth is present");
+    expect(output).not.toContain("legacy-token-secret");
   });
 });

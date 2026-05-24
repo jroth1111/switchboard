@@ -62,7 +62,9 @@ export function validateChatGPTStructuredAuthSurface(
   }
 
   const authJson = envValue(env, "CHATGPT_AUTH_JSON");
-  if (authJson) return validateStructuredAuthValue("CHATGPT_AUTH_JSON", authJson);
+  if (authJson) {
+    return withStaleOAuthWarning(validateStructuredAuthValue("CHATGPT_AUTH_JSON", authJson), env);
+  }
 
   const authFile = envValue(env, "CHATGPT_AUTH_FILE");
   if (authFile) {
@@ -73,7 +75,7 @@ export function validateChatGPTStructuredAuthSurface(
           + "filesystem paths must be resolved before deployment",
       }];
     }
-    return validateStructuredAuthValue("CHATGPT_AUTH_FILE", authFile);
+    return withStaleOAuthWarning(validateStructuredAuthValue("CHATGPT_AUTH_FILE", authFile), env);
   }
 
   if (envValue(env, "CHATGPT_OAUTH")) {
@@ -97,6 +99,22 @@ export function validateChatGPTStructuredAuthSurface(
     message: "ChatGPT Responses subscription lanes require structured CHATGPT_AUTH_JSON or CHATGPT_AUTH_FILE "
       + `with required fields: ${CHATGPT_SUBSCRIPTION_AUTH_REQUIRED_FIELDS.join(", ")}`,
   }];
+}
+
+function withStaleOAuthWarning(
+  issues: ChatGPTAuthValidationIssue[],
+  env: Record<string, string | undefined>,
+): ChatGPTAuthValidationIssue[] {
+  if (issues.some((issue) => issue.kind === "error")) return issues;
+  if (!envValue(env, "CHATGPT_OAUTH")) return issues;
+  return [
+    ...issues,
+    {
+      kind: "warning",
+      message: "CHATGPT_OAUTH is legacy bare-token auth and is ignored while structured ChatGPT auth is present; "
+        + "remove it from local secrets",
+    },
+  ];
 }
 
 function discoverDefaultSecretPaths(cwd: string): string[] {

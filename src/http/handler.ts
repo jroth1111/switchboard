@@ -4,6 +4,7 @@ import { MANIFEST, ROUTE_MANIFEST_VERSION } from "../config/manifest";
 import type { FailureClass, Surface } from "../config/schema";
 import { planRequest, applyTransforms, type RequestEnvelope } from "../planner/planner";
 import { executeAttemptLoop } from "../attempts/attempt-loop";
+import { validateResponsesContract } from "../providers/chatgpt-responses";
 import { sanitizeClientMetadata, signMetadata } from "../security/internal-metadata";
 import { recordReceipt, sanitizeReceipt, type RouteReceipt } from "../observability/receipt";
 import { readJsonBodyWithLimit, validateBodySize, validateChatRequest, validateContentType, validateResponsesRequest } from "./validation";
@@ -127,6 +128,19 @@ export async function handleResponses(
   const validation = validateResponsesRequest(body);
   if (!validation.valid) {
     return errorResponse(validation.error!, 400, requestId, client);
+  }
+
+  if (isChatGPTResponsesModel(body.model as string)) {
+    const contract = validateResponsesContract(body);
+    if (!contract.valid) {
+      return errorResponse({
+        message: contract.reason ?? "ChatGPT Responses request violates provider contract",
+        type: "invalid_request",
+        code: contract.forbiddenFields?.length
+          ? "chatgpt_responses_forbidden_fields"
+          : "chatgpt_responses_contract_violation",
+      }, 400, requestId, client);
+    }
   }
 
   body = sanitizeClientMetadata(body);

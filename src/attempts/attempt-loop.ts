@@ -13,10 +13,11 @@ import {
 import { getAdapter } from "../providers/registry";
 import type { ProviderAdapter } from "../providers/adapter";
 import type { OAuthAccountAccessor } from "../providers/anthropic-subscription";
+import { isChatGPTSubscriptionAuthJsonText } from "../providers/chatgpt-responses";
 import { evaluateResponse, type ResponseEvaluationConfig } from "../nim/evaluate/response";
 import { classifyRateLimit } from "../nim/classify/rate-limit";
 import { wrapSubscriptionStream, type SubscriptionStreamFormat } from "../streaming/format-converter";
-import { classifyProviderFailure, classifyThrownError, type ProviderFailureClassification } from "../nim/classify/provider-failure";
+import { classifyProviderFailure, classifyThrownError, SubscriptionTokenError, type ProviderFailureClassification } from "../nim/classify/provider-failure";
 import { loadConfiguredPatterns } from "../nim/repair/aliases";
 import { executeStreamWithPreBuffer, type PreBufferConfig, type StreamDone } from "../streaming/pre-buffer";
 import { logInfo, logWarn } from "../observability/logging";
@@ -199,7 +200,6 @@ export async function executeAttemptLoop(
         break;
       }
       const deployment = applyDeploymentRuntimeOverrides(admittedDeployment, env);
-      const apiKey = resolveKey(env, admission.keyRef!);
       const attemptStart = Date.now();
       let releaseInFinally = true;
 
@@ -211,6 +211,7 @@ export async function executeAttemptLoop(
       const adapter = getAdapter(deployment.provider, deployment.mode);
 
       try {
+        const apiKey = resolveKey(env, admission.keyRef!, deployment);
         const providerReq = await adapter.buildRequest({
           deployment, body: envelope.body, apiKey,
           requestId: envelope.requestId, subscriptionCtx,
@@ -426,7 +427,7 @@ async function admitHedgeLanes(
       policy: entry.policy,
       admission,
       deployment,
-      apiKey: resolveKey(env, admission.keyRef!),
+      apiKey: resolveKey(env, admission.keyRef!, deployment),
       attemptIndex: baseAttemptIndex + lanes.length,
       attemptTimeoutMs: Math.min(
         resolveAdaptiveAttemptTimeoutMs(entry.policy, deployment, deploymentHealth, envelope.stream),
@@ -1220,8 +1221,43 @@ function failureRecordOptions(
   };
 }
 
-function resolveKey(env: Record<string, unknown>, keyRef: string): string {
+function resolveKey(env: Record<string, unknown>, keyRef: string, deployment?: Deployment): string {
+  if (deployment?.provider === "chatgpt" && deployment.mode === "responses") {
+    return resolveChatGPTSubscriptionAuthMaterial(env, keyRef);
+  }
   return (env[keyRef] as string) ?? "";
+}
+
+function resolveChatGPTSubscriptionAuthMaterial(env: Record<string, unknown>, keyRef: string): string {
+  const authJson = envString(env, "CHATGPT_AUTH_JSON");
+  if (authJson) {
+    if (!isChatGPTSubscriptionAuthJsonText(authJson)) {
+      throw new SubscriptionTokenError(
+        "CHATGPT_AUTH_JSON must contain structured ChatGPT subscription auth JSON",
+        "oauth_session_failure",
+      );
+    }
+    return authJson;
+  }
+
+  const authFileContent = envString(env, "CHATGPT_AUTH_FILE");
+  if (authFileContent) {
+    if (!isChatGPTSubscriptionAuthJsonText(authFileContent)) {
+      throw new SubscriptionTokenError(
+        "CHATGPT_AUTH_FILE must contain structured ChatGPT subscription auth JSON in the Worker runtime; "
+        + "filesystem paths must be resolved before deployment",
+        "oauth_session_failure",
+      );
+    }
+    return authFileContent;
+  }
+
+  return envString(env, keyRef) || envString(env, "CHATGPT_OAUTH");
+}
+
+function envString(env: Record<string, unknown>, key: string): string {
+  const value = env[key];
+  return typeof value === "string" ? value.trim() : "";
 }
 
 const FORWARDABLE_UPSTREAM_HEADERS = [

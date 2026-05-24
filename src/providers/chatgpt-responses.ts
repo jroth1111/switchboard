@@ -3,6 +3,7 @@
 // generic OpenAI Platform Responses API.
 
 import type { Deployment } from "../config/schema";
+import { SubscriptionTokenError } from "../nim/classify/provider-failure";
 import type { ProviderRequest } from "./base";
 
 // ─── Responses API request shape ───────────────────────────────────
@@ -85,6 +86,12 @@ const CHATGPT_RESPONSES_ALLOWED_REASONING_EFFORTS = new Set([
   "xhigh",
 ]);
 
+export const CHATGPT_SUBSCRIPTION_AUTH_REQUIRED_FIELDS = [
+  "access_token",
+  "refresh_token",
+  "id_token",
+] as const;
+
 export interface ResponsesAPIRequest {
   model: string;
   input: Array<ResponseInputItem>;
@@ -101,17 +108,32 @@ export interface ResponsesAPIRequest {
 
 export type ResponseInputItem = Record<string, unknown>;
 
+export interface ChatGPTSubscriptionAuth {
+  accessToken: string;
+  source: "structured" | "legacy";
+}
+
+interface ChatGPTSubscriptionAuthOptions {
+  credentialName?: string;
+  allowLegacyAccessToken?: boolean;
+}
+
 // ─── Build ChatGPT Responses request ───────────────────────────────
 
 export function buildChatGPTResponsesRequest(
   deployment: Deployment,
   body: Record<string, unknown>,
-  accessToken: string,
+  authMaterial: string,
 ): ProviderRequest {
   const bodyContract = validateResponsesContract(body);
   if (!bodyContract.valid) {
     throw new Error(`Responses contract violation: ${bodyContract.reason}`);
   }
+  const auth = resolveChatGPTSubscriptionAuth(authMaterial, {
+    credentialName: "ChatGPT Responses subscription auth",
+    allowLegacyAccessToken: true,
+  });
+  const accessToken = auth.accessToken;
   validateDeploymentContract(deployment, accessToken);
 
   const url = buildChatGPTResponsesUrl(deployment);
@@ -143,6 +165,65 @@ export function buildChatGPTResponsesRequest(
     method: "POST",
     headers,
     body: JSON.stringify(responsesBody),
+  };
+}
+
+// ─── ChatGPT subscription auth parsing ─────────────────────────────
+
+export function isChatGPTSubscriptionAuthJsonText(value: string): boolean {
+  return value.trim().startsWith("{");
+}
+
+export function resolveChatGPTSubscriptionAuth(
+  authMaterial: string,
+  options: ChatGPTSubscriptionAuthOptions = {},
+): ChatGPTSubscriptionAuth {
+  const credentialName = options.credentialName ?? "ChatGPT subscription auth";
+  const raw = authMaterial.trim();
+  if (!raw) {
+    throw chatgptAuthError(`${credentialName} is required`);
+  }
+
+  if (isChatGPTSubscriptionAuthJsonText(raw)) {
+    return parseStructuredChatGPTAuth(raw, credentialName);
+  }
+
+  if (!options.allowLegacyAccessToken) {
+    throw chatgptAuthError(
+      `${credentialName} must be structured JSON with required fields: `
+      + CHATGPT_SUBSCRIPTION_AUTH_REQUIRED_FIELDS.join(", "),
+    );
+  }
+
+  return {
+    accessToken: validateChatGPTAccessToken(raw, credentialName),
+    source: "legacy",
+  };
+}
+
+function parseStructuredChatGPTAuth(raw: string, credentialName: string): ChatGPTSubscriptionAuth {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw chatgptAuthError(`${credentialName} must be valid JSON`);
+  }
+
+  if (!isPlainRecord(parsed)) {
+    throw chatgptAuthError(`${credentialName} must be a flat JSON object`);
+  }
+
+  const missing = CHATGPT_SUBSCRIPTION_AUTH_REQUIRED_FIELDS.filter((field) => {
+    const value = parsed[field];
+    return typeof value !== "string" || value.trim() === "";
+  });
+  if (missing.length > 0) {
+    throw chatgptAuthError(`${credentialName} is missing required fields: ${missing.join(", ")}`);
+  }
+
+  return {
+    accessToken: validateChatGPTAccessToken(parsed.access_token as string, credentialName),
+    source: "structured",
   };
 }
 
@@ -470,6 +551,21 @@ function validateDeploymentContract(deployment: Deployment, accessToken: string)
   if (/^sk-[A-Za-z0-9]/.test(token)) {
     throw new Error("ChatGPT Responses deployments require subscription OAuth, not an OpenAI API key");
   }
+}
+
+function validateChatGPTAccessToken(accessToken: string, credentialName: string): string {
+  const token = accessToken.trim();
+  if (!token) {
+    throw chatgptAuthError(`${credentialName} requires a non-empty access_token`);
+  }
+  if (/^sk-[A-Za-z0-9]/.test(token)) {
+    throw chatgptAuthError(`${credentialName} requires subscription OAuth, not an OpenAI API key`);
+  }
+  return token;
+}
+
+function chatgptAuthError(message: string): SubscriptionTokenError {
+  return new SubscriptionTokenError(message, "oauth_session_failure");
 }
 
 function buildChatGPTResponsesUrl(deployment: Deployment): string {

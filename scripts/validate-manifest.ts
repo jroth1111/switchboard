@@ -133,6 +133,9 @@ validateManifestSnapshot("config/route-manifest.snapshot.json");
 // 11. LiteLLM alias parity: Switchboard must meet or supersede the local LiteLLM catalog.
 validateLiteLLMAliasParity(litellmConfigPath);
 
+// 12. ChatGPT subscription lanes must prefer structured auth material.
+validateChatGPTSubscriptionAuthRefs();
+
 function validateScheduledCrons(configPath: string, requiredCrons: string[]): void {
   let config: Record<string, unknown>;
   try {
@@ -216,6 +219,20 @@ function validateLiteLLMAliasParity(configPath: string): void {
     .map(([alias, target]) => `${alias}: switchboard=${MANIFEST.aliases[alias]} litellm=${String(target)}`);
   if (mismatched.length > 0) {
     error(`LiteLLM alias parity has ${mismatched.length} mismatched targets: ${mismatched.join(", ")}`);
+  }
+}
+
+function validateChatGPTSubscriptionAuthRefs(): void {
+  const legacyRefs = MANIFEST.deployments
+    .filter((deployment) => deployment.provider === "chatgpt" && deployment.mode === "responses")
+    .filter((deployment) => deployment.keyRef !== "CHATGPT_AUTH_JSON")
+    .map((deployment) => `${deployment.id}:${deployment.keyRef}`);
+
+  if (legacyRefs.length > 0) {
+    error(
+      "ChatGPT Responses subscription deployments must use CHATGPT_AUTH_JSON as their primary auth ref; "
+      + `legacy refs: ${legacyRefs.join(", ")}`,
+    );
   }
 }
 

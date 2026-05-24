@@ -91,7 +91,11 @@ function createRouteTestEnv() {
     storeFailedRequest: vi.fn(async () => {}),
   };
   const env = {
-    CHATGPT_OAUTH: "chatgpt-token",
+    CHATGPT_AUTH_JSON: JSON.stringify({
+      access_token: "chatgpt-token",
+      refresh_token: "chatgpt-refresh-token",
+      id_token: "chatgpt-id-token",
+    }),
     ZAI_KEY_1: "zai-token",
     CLIENT_KEYS_JSON: JSON.stringify({
       clients: [{
@@ -701,7 +705,7 @@ describe("ChatGPT Responses public surface", () => {
       candidates: expect.arrayContaining([
         expect.objectContaining({
           deploymentId: "chatgpt-subscription-gpt-5.5-medium-key-1",
-          keyRef: "CHATGPT_OAUTH",
+          keyRef: "CHATGPT_AUTH_JSON",
         }),
       ]),
     }));
@@ -717,6 +721,84 @@ describe("ChatGPT Responses public surface", () => {
         }),
       }),
     }));
+  });
+
+  it.each([
+    ["temperature", { temperature: 0.7 }],
+    ["extra_body", { extra_body: { unsafe: true } }],
+    ["max_output_tokens", { max_output_tokens: 512 }],
+  ] as Array<[string, Record<string, unknown>]>)(
+    "rejects ChatGPT Responses forbidden field %s before admission or fetch",
+    async (field, forbiddenPayload) => {
+      const { env, stateDo } = createRouteTestEnv();
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+
+      const response = await worker.fetch(
+        new Request("https://example.com/v1/responses", {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer client-token",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "gpt-5.5",
+            input: "Return a short success message.",
+            ...forbiddenPayload,
+          }),
+        }),
+        env,
+        routeContext(),
+      );
+      const body = await response.json() as { error: { code: string; message: string } };
+
+      expect(response.status).toBe(400);
+      expect(body.error.code).toBe("chatgpt_responses_forbidden_fields");
+      expect(body.error.message).toContain(field);
+      expect(stateDo.admitClientRequest).not.toHaveBeenCalled();
+      expect(stateDo.admit).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps non-ChatGPT /v1/responses dispatch compatible with generic fields", async () => {
+    const { env, stateDo } = createRouteTestEnv();
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      id: "chatcmpl_non_chatgpt_responses",
+      object: "chat.completion",
+      created: 0,
+      model: "glm-5.1",
+      choices: [{
+        index: 0,
+        message: { role: "assistant", content: "Non-ChatGPT responses route accepted." },
+        finish_reason: "stop",
+      }],
+      usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await worker.fetch(
+      new Request("https://example.com/v1/responses", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer client-token",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "smart-route",
+          input: "hello",
+          temperature: 0.7,
+          max_output_tokens: 512,
+        }),
+      }),
+      env,
+      routeContext(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(stateDo.admitClientRequest).toHaveBeenCalled();
+    expect(stateDo.admit).toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("rejects ChatGPT subscription aliases on /v1/chat/completions before provider dispatch", async () => {
@@ -808,6 +890,18 @@ describe("ChatGPT Responses public surface", () => {
 
     expect(result.valid).toBe(false);
     expect(result.error?.code).toBe("unsupported_messages");
+  });
+
+  it("keeps generic /v1/responses validation compatible with non-ChatGPT fields", () => {
+    const result = validateResponsesRequest({
+      model: "non-chatgpt-responses",
+      input: "hello",
+      temperature: 0.7,
+      max_output_tokens: 512,
+      extra_body: { provider_option: true },
+    });
+
+    expect(result.valid).toBe(true);
   });
 });
 

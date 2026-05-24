@@ -505,7 +505,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "chatgpt-subscription-gpt-5.5-none-key-1", group: "chatgpt-subscription-gpt-5.5-none",
       provider: "chatgpt", model: "gpt-5.5", providerModel: "gpt-5.5",
-      keyRef: "CHATGPT_OAUTH", rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
+      keyRef: "CHATGPT_AUTH_JSON", rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true, mode: "responses", reasoningEffort: "none",
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
       contextWindow: 400000, hidden: true,
@@ -513,7 +513,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "chatgpt-subscription-gpt-5.5-minimal-key-1", group: "chatgpt-subscription-gpt-5.5-minimal",
       provider: "chatgpt", model: "gpt-5.5", providerModel: "gpt-5.5",
-      keyRef: "CHATGPT_OAUTH", rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
+      keyRef: "CHATGPT_AUTH_JSON", rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true, mode: "responses", reasoningEffort: "minimal",
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
       contextWindow: 400000, hidden: true,
@@ -521,7 +521,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "chatgpt-subscription-gpt-5.5-low-key-1", group: "chatgpt-subscription-gpt-5.5-low",
       provider: "chatgpt", model: "gpt-5.5", providerModel: "gpt-5.5",
-      keyRef: "CHATGPT_OAUTH", rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
+      keyRef: "CHATGPT_AUTH_JSON", rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true, mode: "responses", reasoningEffort: "low",
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
       contextWindow: 400000, hidden: true,
@@ -529,7 +529,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "chatgpt-subscription-gpt-5.5-medium-key-1", group: "chatgpt-subscription-gpt-5.5-medium",
       provider: "chatgpt", model: "gpt-5.5", providerModel: "gpt-5.5",
-      keyRef: "CHATGPT_OAUTH", rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
+      keyRef: "CHATGPT_AUTH_JSON", rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true, mode: "responses", reasoningEffort: "medium",
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
       contextWindow: 400000, hidden: true,
@@ -537,7 +537,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "chatgpt-subscription-gpt-5.5-high-key-1", group: "chatgpt-subscription-gpt-5.5-high",
       provider: "chatgpt", model: "gpt-5.5", providerModel: "gpt-5.5",
-      keyRef: "CHATGPT_OAUTH", rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
+      keyRef: "CHATGPT_AUTH_JSON", rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true, mode: "responses", reasoningEffort: "high",
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
       contextWindow: 400000, hidden: true,
@@ -545,7 +545,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "chatgpt-subscription-gpt-5.5-xhigh-key-1", group: "chatgpt-subscription-gpt-5.5-xhigh",
       provider: "chatgpt", model: "gpt-5.5", providerModel: "gpt-5.5",
-      keyRef: "CHATGPT_OAUTH", rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
+      keyRef: "CHATGPT_AUTH_JSON", rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true, mode: "responses", reasoningEffort: "xhigh",
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
       contextWindow: 400000, hidden: true,

@@ -4,6 +4,7 @@ import {
   resolveAdaptiveAttemptTimeoutMs,
   resolveAdaptiveFirstTokenTimeoutMs,
   resolveAdaptiveStreamHardTimeoutMs,
+  resolveAttemptTimeoutMs,
 } from "../../src/attempts/attempt-loop";
 
 describe("Exponential backoff computation", () => {
@@ -107,6 +108,12 @@ describe("Adaptive deadline resolution", () => {
 });
 
 describe("Deadline-aware attempt timeout", () => {
+  it("does not extend attempt timeout beyond remaining total budget", () => {
+    expect(resolveAttemptTimeoutMs(30_000, 2_000)).toBe(2_000);
+    expect(resolveAttemptTimeoutMs(30_000, 12_000)).toBe(12_000);
+    expect(resolveAttemptTimeoutMs(30_000, 0)).toBe(0);
+  });
+
   it("total timeout exceeds single attempt timeout", async () => {
     const { MANIFEST } = await import("../../src/config/manifest");
     const policy = MANIFEST.defaultPolicy;

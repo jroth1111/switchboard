@@ -74,12 +74,20 @@ export async function refreshAnthropicOAuthToken(
     }
 
     const data = await resp.json() as Record<string, unknown>;
+    const accessToken = data.access_token;
+    if (typeof accessToken !== "string" || !accessToken) {
+      return {
+        success: false,
+        error: "missing access_token in OAuth response",
+        failureClass: "auth_failure",
+      };
+    }
     const expiresIn = (data.expires_in as number) ?? 3600;
 
     return {
       success: true,
       token: {
-        accessToken: data.access_token as string,
+        accessToken,
         refreshToken: (data.refresh_token as string) ?? refreshToken,
         expiresAt: Date.now() + expiresIn * 1000 - 60000, // 1min safety margin
       },
@@ -113,8 +121,8 @@ export async function getValidAnthropicToken(
     return { error: "no_token_stored", failureClass: "oauth_session_failure" };
   }
 
-  // Token still valid?
-  if (stored.expiresAt && stored.expiresAt > Date.now()) {
+  // Token still valid? Missing expiry means use the stored access token until refresh is required.
+  if (!stored.expiresAt || stored.expiresAt > Date.now()) {
     return { token: stored.accessToken, refreshed: false };
   }
 
@@ -134,12 +142,19 @@ export async function getValidAnthropicToken(
   }
 
   try {
-    if (!stored.refreshToken) {
+    const current = await oauthDo.getToken(accountId);
+    if (!current) {
+      return { error: "no_token_stored", failureClass: "oauth_session_failure" };
+    }
+    if (!current.expiresAt || current.expiresAt > Date.now()) {
+      return { token: current.accessToken, refreshed: true };
+    }
+    if (!current.refreshToken) {
       return { error: "no_refresh_token", failureClass: "oauth_session_failure" };
     }
 
     const result = await refreshAnthropicOAuthToken(
-      stored.refreshToken,
+      current.refreshToken,
       oauthConfig.clientId,
       oauthConfig.clientSecret,
       { tokenUrl: oauthConfig.tokenUrl },

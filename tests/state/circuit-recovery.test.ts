@@ -70,6 +70,28 @@ describe("Circuit breaker recovery", () => {
     expect(r.admitted).toBe(true);
   });
 
+  it("does not decay failureCount on partial half_open successes", () => {
+    const store = new InMemoryStorageAdapter();
+
+    for (let i = 0; i < 5; i++) {
+      recordFailure(store, "deploy-1", "server_5xx", 0, 5, 300);
+    }
+
+    const circuit = store.getCircuit("deploy-1")!;
+    store.setCircuit("deploy-1", {
+      ...circuit,
+      state: "half_open",
+      halfOpenAfter: Date.now() - 1000,
+      successCount: 0,
+    });
+
+    recordSuccess(store, "deploy-1");
+    const afterOne = store.getCircuit("deploy-1")!;
+    expect(afterOne.state).toBe("half_open");
+    expect(afterOne.successCount).toBe(1);
+    expect(afterOne.failureCount).toBe(circuit.failureCount);
+  });
+
   it("closes circuit after 3 successes in half_open", () => {
     const store = new InMemoryStorageAdapter();
     const c = candidate("deploy-1");
@@ -92,6 +114,7 @@ describe("Circuit breaker recovery", () => {
     let c2 = store.getCircuit("deploy-1")!;
     expect(c2.state).toBe("half_open");
     expect(c2.successCount).toBe(1);
+    expect(c2.failureCount).toBe(circuit.failureCount);
 
     recordSuccess(store, "deploy-1");
     c2 = store.getCircuit("deploy-1")!;

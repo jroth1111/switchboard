@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { validateManifest, type ValidationIssue } from "../../src/config/validate-manifest";
+import {
+  validateManifest,
+  ROUTING_ONLY_ROUTE_GROUPS,
+  type ValidationIssue,
+} from "../../src/config/validate-manifest";
 import { MANIFEST, POLICY_PROFILES, composePolicy } from "../../src/config/manifest";
 import type { RouteManifest, RouteGroup, Deployment, Policy } from "../../src/config/schema";
 
@@ -101,6 +105,12 @@ describe("MANIFEST validation", () => {
     const issues = validateManifest(MANIFEST);
     const errs = errors(issues);
     expect(errs).toEqual([]);
+  });
+
+  it("has no warnings on the production manifest", () => {
+    const issues = validateManifest(MANIFEST);
+    const warnings = issues.filter((i) => i.kind === "warning");
+    expect(warnings).toEqual([]);
   });
 
   it("all aliases resolve to existing groups", () => {
@@ -251,6 +261,13 @@ describe("deployment validation", () => {
     expect(errors(issues).some((i) => i.code === "deployment_group_missing")).toBe(true);
   });
 
+  it("does not warn about routing-only groups without deployments", () => {
+    const issues = validateManifest(MANIFEST);
+    for (const group of ROUTING_ONLY_ROUTE_GROUPS) {
+      expect(issues.some((i) => i.code === "group_has_no_deployments" && i.message.includes(group))).toBe(false);
+    }
+  });
+
   it("warns about non-hidden group with no deployments", () => {
     const m = makeManifest({
       routeGroups: {
@@ -261,6 +278,25 @@ describe("deployment validation", () => {
     });
     const issues = validateManifest(m);
     expect(issues.some((i) => i.code === "group_has_no_deployments" && i.kind === "warning")).toBe(true);
+  });
+});
+
+// ─── Planner validation ────────────────────────────────────────────
+
+describe("planner validation", () => {
+  it("detects planner toolGroup referencing nonexistent group", () => {
+    const m = makeManifest({
+      routeGroups: {
+        "group-a": {
+          target: "model-a",
+          hidden: false,
+          fallbacks: [],
+          planner: { toolGroup: "missing-tool-group" },
+        },
+      },
+    });
+    const issues = validateManifest(m);
+    expect(errors(issues).some((i) => i.code === "planner_group_missing")).toBe(true);
   });
 });
 
@@ -277,6 +313,17 @@ describe("policy validation", () => {
     const m = makeManifest({ defaultPolicy: undefined as unknown as Policy });
     const issues = validateManifest(m);
     expect(errors(issues).some((i) => i.code === "no_default_policy")).toBe(true);
+  });
+
+  it("detects policies without a matching route group", () => {
+    const m = makeManifest({
+      policies: {
+        "group-a": DEFAULT_POLICY,
+        "orphan-policy": DEFAULT_POLICY,
+      },
+    });
+    const issues = validateManifest(m);
+    expect(errors(issues).some((i) => i.code === "orphan_policy")).toBe(true);
   });
 });
 

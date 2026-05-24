@@ -14,6 +14,13 @@ const defaultEvalConfig: ResponseEvaluationConfig = {
   semanticMinPrintableRatio: 0.8,
   repetitionMaxRatio: 0.4,
   stripReasoningFromSuccess: true,
+  enableSchemaAwareRepair: false,
+  repairPolicy: {
+    allowDestructive: true,
+    enumAliases: {},
+    toolNameAliases: {},
+    relationalDefaults: {},
+  },
 };
 
 function makeResponse(content: string, finishReason = "stop", toolCalls?: unknown[]) {
@@ -137,6 +144,45 @@ describe("response evaluator", () => {
     );
     expect(result.action).toBe("retry_fallback");
     expect(result.failureClass).toBe("malformed_response");
+  });
+
+  it("rejects tool calls when the request did not define tools", () => {
+    const result = evaluateResponse(
+      { messages: [{ role: "user", content: "hello" }] },
+      makeResponse("", "tool_calls", [
+        { function: { name: "get_weather", arguments: "{}" } },
+      ]),
+      defaultEvalConfig,
+    );
+    expect(result.action).toBe("retry_fallback");
+    expect(result.failureClass).toBe("tool_contract_failure");
+    expect(result.failureMessage).toContain("without requested tools");
+  });
+
+  it("rejects schema-invalid tool arguments when contract validation passes", () => {
+    const result = evaluateResponse(
+      {
+        messages: [{ role: "user", content: "weather?" }],
+        tools: [{
+          type: "function",
+          function: {
+            name: "get_weather",
+            parameters: {
+              type: "object",
+              properties: { city: { type: "string" } },
+              required: ["city"],
+            },
+          },
+        }],
+      },
+      makeResponse("", "tool_calls", [
+        { function: { name: "get_weather", arguments: '{"city": 123}' } },
+      ]),
+      defaultEvalConfig,
+    );
+    expect(result.action).toBe("retry_fallback");
+    expect(result.failureClass).toBe("tool_contract_failure");
+    expect(result.failureMessage).toContain("schema_invalid");
   });
 });
 

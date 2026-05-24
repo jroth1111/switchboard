@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   admit,
   release,
-  recordSuccess,
   recordFailure,
 } from "../../src/state/admission-engine";
 import { InMemoryStorageAdapter } from "../../src/state/storage-adapter";

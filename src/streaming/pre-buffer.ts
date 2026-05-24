@@ -211,11 +211,10 @@ export function executeStreamWithPreBuffer(
 
         const delta = extractDelta(evt.data);
         if (!delta) {
-          // Non-data event (e.g. ping) — pass through if committed
+          // Non-data events (e.g. provider pings) — pass through only after commit.
+          // Do not buffer them: many keepalives can hit MAX_BUFFERED_EVENTS before content.
           if (committed) {
             await emitter.send(evt.data, evt.event, evt.id);
-          } else {
-            bufferedEvents.push(evt);
           }
           continue;
         }
@@ -230,13 +229,7 @@ export function executeStreamWithPreBuffer(
             committed = true;
             finishReady({ committed: true });
             for (const bEvt of bufferedEvents) {
-              const bDelta = extractDelta(bEvt.data);
-              const processedContent = bDelta?.content
-                ? evaluator.processContent(bDelta.content)
-                : bDelta?.content;
-              if (processedContent || !bDelta?.content) {
-                await emitter.send(bEvt.data, bEvt.event, bEvt.id);
-              }
+              await emitBufferedEvent(emitter, evaluator, bEvt);
             }
           }
           await emitter.sendDone();
@@ -269,17 +262,7 @@ export function executeStreamWithPreBuffer(
             finishReady({ committed: true });
             // Replay buffered events with content processing
             for (const bEvt of bufferedEvents) {
-              const bDelta = extractDelta(bEvt.data);
-              if (bDelta?.content) {
-                const processed = evaluator.processContent(bDelta.content);
-                if (processed !== bDelta.content) {
-                  // Content was modified — rebuild the SSE event
-                  const modifiedData = rebuildDeltaData(bEvt.data, processed);
-                  await emitter.send(modifiedData, bEvt.event, bEvt.id);
-                  continue;
-                }
-              }
-              await emitter.send(bEvt.data, bEvt.event, bEvt.id);
+              await emitBufferedEvent(emitter, evaluator, bEvt);
             }
             bufferedEvents.length = 0;
           }
@@ -309,7 +292,7 @@ export function executeStreamWithPreBuffer(
       if (upstream.body) {
         try { await upstream.body.cancel(); } catch { /* already consumed */ }
       }
-      finishReady({ committed: !wasAborted, abortReason });
+      finishReady({ committed, abortReason });
       await emitter.close();
       finishDone({ finishReason, totalChunks, wasAborted, abortReason, usage: buildStreamUsage(streamPromptTokens, streamCompletionTokens) });
     }
@@ -332,6 +315,24 @@ function buildStreamUsage(
     };
   }
   return { kind: "unknown", source: "streaming" };
+}
+
+/** Emit one buffered SSE event, applying stream-evaluator content processing. */
+async function emitBufferedEvent(
+  emitter: SSEEmitter,
+  evaluator: StreamEvaluator,
+  bEvt: SSEEvent,
+): Promise<void> {
+  const bDelta = extractDelta(bEvt.data);
+  if (bDelta?.content) {
+    const processed = evaluator.processContent(bDelta.content);
+    if (!processed) return;
+    if (processed !== bDelta.content) {
+      await emitter.send(rebuildDeltaData(bEvt.data, processed), bEvt.event, bEvt.id);
+      return;
+    }
+  }
+  await emitter.send(bEvt.data, bEvt.event, bEvt.id);
 }
 
 /** Rebuild SSE data payload with modified content. */

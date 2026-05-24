@@ -29,6 +29,17 @@ export function wrapSubscriptionStream(
         while (true) {
           const { done, value } = await reader.read();
           if (done) {
+            const trailing = decoder.decode();
+            if (trailing) {
+              for (const evt of parser.feed(trailing)) {
+                trackToolCallIndex(evt, format, toolCallIndexMap, () => nextToolCallIdx++);
+                const converted = convertEvent(evt, format, requestId, model, toolCallIndexMap);
+                if (converted) {
+                  if (converted === "data: [DONE]\n\n") doneSent = true;
+                  controller.enqueue(encoder.encode(converted));
+                }
+              }
+            }
             // Flush remaining parser buffer
             for (const evt of parser.flush()) {
               const converted = convertEvent(evt, format, requestId, model, toolCallIndexMap);

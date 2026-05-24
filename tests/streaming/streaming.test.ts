@@ -317,6 +317,93 @@ describe("executeStreamWithPreBuffer", () => {
     });
   });
 
+  it("resolves ready as not committed when upstream ends before [DONE] without committing", async () => {
+    const encoder = new TextEncoder();
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "Hi" }, finish_reason: null }] })}\n\n`));
+        controller.close();
+      },
+    });
+
+    const result = executeStreamWithPreBuffer(
+      { body: upstream, status: 200, headers: new Headers() },
+      {
+        preBufferChunks: 4,
+        enableThinkingLeakStripping: false,
+        enableSpecialTokenRepair: false,
+        heartbeatIntervalMs: 0,
+        maxSilenceMs: 0,
+        firstTokenTimeoutMs: 0,
+        hardTimeoutMs: 0,
+      },
+    );
+
+    const ready = await result.ready;
+    expect(ready).toEqual({ committed: false });
+    await expect(result.done).resolves.toMatchObject({ wasAborted: false, totalChunks: 1 });
+  });
+
+  it("does not abort on many pre-commit ping events before content", async () => {
+    const encoder = new TextEncoder();
+    const pings = Array.from({ length: 120 }, () => `data: ${JSON.stringify({ type: "ping" })}\n\n`).join("");
+    const content = `data: ${JSON.stringify({ choices: [{ delta: { content: "OK" }, finish_reason: null }] })}\n\n`;
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(pings + content + "data: [DONE]\n\n"));
+        controller.close();
+      },
+    });
+
+    const result = executeStreamWithPreBuffer(
+      { body: upstream, status: 200, headers: new Headers() },
+      {
+        preBufferChunks: 1,
+        enableThinkingLeakStripping: false,
+        enableSpecialTokenRepair: false,
+        heartbeatIntervalMs: 0,
+        maxSilenceMs: 0,
+        firstTokenTimeoutMs: 0,
+        hardTimeoutMs: 0,
+      },
+    );
+
+    const ready = await result.ready;
+    expect(ready).toEqual({ committed: true });
+    const body = await new Response(result.readable).text();
+    expect(body).toContain("OK");
+    await expect(result.done).resolves.toMatchObject({ wasAborted: false, abortReason: undefined });
+  });
+
+  it("replays short streams with special-token repair before [DONE]", async () => {
+    const encoder = new TextEncoder();
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "Hi <|eot_id|>" }, finish_reason: null }] })}\n\n`));
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      },
+    });
+
+    const result = executeStreamWithPreBuffer(
+      { body: upstream, status: 200, headers: new Headers() },
+      {
+        preBufferChunks: 4,
+        enableThinkingLeakStripping: false,
+        enableSpecialTokenRepair: true,
+        heartbeatIntervalMs: 0,
+        maxSilenceMs: 0,
+        firstTokenTimeoutMs: 0,
+        hardTimeoutMs: 0,
+      },
+    );
+
+    await expect(result.ready).resolves.toEqual({ committed: true });
+    const body = await new Response(result.readable).text();
+    expect(body).toContain('"content":"Hi "');
+    expect(body).not.toContain("eot_id");
+  });
+
   it("resolves ready as abort when the first token timeout fires", async () => {
     const upstream = new ReadableStream<Uint8Array>({
       start() {
@@ -353,6 +440,28 @@ describe("executeStreamWithPreBuffer", () => {
 });
 
 // Full SSE pipeline (emitter -> parser)
+
+describe("parseSSEStream", () => {
+  it("flushes incomplete UTF-8 at stream end", async () => {
+    const emoji = "😀";
+    const payload = `data: ${emoji}\n\n`;
+    const bytes = new TextEncoder().encode(payload);
+    const incomplete = bytes.slice(0, bytes.length - 1);
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(incomplete);
+        controller.close();
+      },
+    });
+
+    const events: string[] = [];
+    for await (const evt of parseSSEStream(stream)) {
+      events.push(evt.data);
+    }
+    expect(events[0]).toContain("😀");
+  });
+});
 
 describe("SSE pipeline", () => {
   it("round-trips events through emitter and parser", async () => {

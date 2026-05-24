@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { env } from "cloudflare:test";
+import { env, runInDurableObject } from "cloudflare:test";
 import type { ControlPlaneStateDO } from "../../src/state/control-plane-state";
 
 function getDoStub(): ControlPlaneStateDO {
@@ -421,6 +421,45 @@ describe("ControlPlaneStateDO with real SQLite", () => {
     const reaped = await stub.reapExpired();
     // Fresh reservation should not be reaped (expires_at is in the future)
     expect(reaped).toBe(0);
+  });
+
+  it("confirm extends reservation TTL so reapExpired does not release active streams", async () => {
+    const stub = getDoStub();
+    const deploymentId = `deploy-reap-confirmed-${Date.now()}`;
+    const result = await stub.admit({
+      requestId: `req_reap_confirmed_${Date.now()}`,
+      candidates: [{
+        deploymentId,
+        keyRef: "key-1",
+        rpm: 100,
+        maxParallel: 2,
+        group: "test-group",
+      }],
+    });
+    expect(result.admitted).toBe(true);
+    await stub.confirm(result.reservationId!);
+
+    const reapedWhileActive = await stub.reapExpired();
+    expect(reapedWhileActive).toBe(0);
+
+    const healthWhileActive = await stub.getHealth();
+    const inflightWhileActive = healthWhileActive.inflight as Record<string, { count: number }>;
+    expect(inflightWhileActive[deploymentId]?.count).toBe(1);
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE reservations SET expires_at = ? WHERE reservation_id = ?",
+        Date.now() - 1000,
+        result.reservationId!,
+      );
+    });
+
+    const reapedAfterAbandon = await stub.reapExpired();
+    expect(reapedAfterAbandon).toBe(1);
+
+    const healthAfterReap = await stub.getHealth();
+    const inflightAfterReap = healthAfterReap.inflight as Record<string, { count: number }>;
+    expect(inflightAfterReap[deploymentId]?.count ?? 0).toBe(0);
   });
 
   it("stores and retrieves canary results", async () => {

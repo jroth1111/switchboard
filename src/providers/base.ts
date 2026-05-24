@@ -182,6 +182,10 @@ export async function executeStreamingProviderRequest(
     };
   } finally {
     clearTimeout(timeoutId);
-    ctx.signal.removeEventListener("abort", onExternalAbort);
+    // Keep the external abort listener attached so the consumer of the
+    // response body can still be notified if the signal fires during
+    // streaming. Removing it here creates a gap between finally and the
+    // consumer reading the body. The listener is cheap and will be GC'd
+    // with the signal/response.
   }
 }

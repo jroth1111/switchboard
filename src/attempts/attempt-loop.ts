@@ -232,7 +232,10 @@ export async function executeAttemptLoop(
           envelope, plan, providerReq, policy, admission, deployment,
           group, stateDo, abortSignal, attemptStart, attempts, attemptIndex, adapter, attemptTimeoutMs,
         );
-        if (result !== null) { releaseInFinally = false; return result; }
+        if (result !== null) {
+          await stateDo.release(admission.reservationId!);
+          return result;
+        }
 
         const lastAttempt = attempts[attempts.length - 1];
         if (lastAttempt?.retryable) {
@@ -257,6 +260,9 @@ export async function executeAttemptLoop(
         });
         emitUnknownUsage(stateDo, {
           requestId: envelope.requestId, attemptIndex, canonicalTarget: plan.canonicalTarget,
+          clientId: envelope.clientId, appId: envelope.appId,
+          userHash: envelope.userHash, policyId: envelope.policyId,
+          policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
           selectedGroup: group, deploymentId: admission.deploymentId!, provider: deployment.provider,
           model: deployment.providerModel, stream: false, finalOutcome: "retry_fallback", usageSource: deployment.provider,
         });
@@ -337,13 +343,19 @@ async function executeHedgedNonStreamingAttempt(
   }
 
   let result: AttemptResult | null = null;
+  let winnerReservationId: string | null = null;
   while (pending.size > 0 && !abortSignal.aborted) {
     const outcome = await Promise.race(pending.values());
     pending.delete(outcome.lane.attemptIndex);
     if (outcome.kind === "success" || outcome.kind === "client") {
       result = outcome.result;
+      winnerReservationId = outcome.lane.admission.reservationId!;
       for (const [attemptIdx, controller] of controllers.entries()) {
-        if (attemptIdx !== outcome.lane.attemptIndex) controller.abort();
+        if (attemptIdx !== outcome.lane.attemptIndex) {
+          controller.abort();
+          const loser = lanes.find((lane) => lane.attemptIndex === attemptIdx);
+          if (loser) await stateDo.release(loser.admission.reservationId!);
+        }
       }
       break;
     }
@@ -354,6 +366,13 @@ async function executeHedgedNonStreamingAttempt(
   } else if (abortSignal.aborted) {
     for (const controller of controllers.values()) controller.abort();
     await Promise.allSettled([...pending.values()]);
+  }
+
+  // Non-streaming winners are complete here. Streaming winners release after
+  // the response body finishes so long streams do not lose their inflight slot
+  // immediately after pre-buffer commit.
+  if (winnerReservationId && !envelope.stream) {
+    await stateDo.release(winnerReservationId);
   }
 
   return { result, attemptsUsed: launched };
@@ -369,7 +388,7 @@ async function admitHedgeLanes(
   totalDeadline: number,
 ): Promise<HedgeLane[]> {
   const maxCandidates = Math.max(2, entry.policy.retry.hedge?.maxCandidates ?? 2);
-  const remaining = shuffleArray([...entry.deployments]);
+  const remaining = [...entry.deployments];
   const lanes: HedgeLane[] = [];
 
   while (lanes.length < maxCandidates && remaining.length > 0) {
@@ -472,6 +491,9 @@ async function runHedgeLane(
     });
     emitUnknownUsage(stateDo, {
       requestId: envelope.requestId, attemptIndex: lane.attemptIndex, canonicalTarget: plan.canonicalTarget,
+      clientId: envelope.clientId, appId: envelope.appId,
+      userHash: envelope.userHash, policyId: envelope.policyId,
+          policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
       selectedGroup: lane.group, deploymentId: lane.admission.deploymentId!, provider: lane.deployment.provider,
       model: lane.deployment.providerModel, stream: false, finalOutcome: "retry_fallback", usageSource: lane.deployment.provider,
     });
@@ -560,6 +582,9 @@ async function handleNonStreamingAttempt(
     });
     emitUnknownUsage(stateDo, {
       requestId: envelope.requestId, attemptIndex: currentAttemptIndex, canonicalTarget: plan.canonicalTarget,
+      clientId: envelope.clientId, appId: envelope.appId,
+      userHash: envelope.userHash, policyId: envelope.policyId,
+          policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
       selectedGroup: group, deploymentId: admission.deploymentId!, provider: deployment.provider,
       model: deployment.providerModel, stream: false, finalOutcome: "retry_fallback", usageSource: deployment.provider,
     });
@@ -641,6 +666,9 @@ async function handleNonStreamingAttempt(
 
     emitUsageEvent(stateDo, {
       requestId: envelope.requestId, attemptIndex: currentAttemptIndex, timestamp: Date.now(),
+      clientId: envelope.clientId, appId: envelope.appId,
+      userHash: envelope.userHash, policyId: envelope.policyId,
+          policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
       canonicalTarget: plan.canonicalTarget, selectedGroup: group,
       deploymentId: admission.deploymentId!, provider: deployment.provider,
       model: deployment.providerModel, stream: false, finalOutcome: evaluation.action,
@@ -665,6 +693,9 @@ async function handleNonStreamingAttempt(
     });
     emitUsageEvent(stateDo, {
       requestId: envelope.requestId, attemptIndex: currentAttemptIndex, timestamp: Date.now(),
+      clientId: envelope.clientId, appId: envelope.appId,
+      userHash: envelope.userHash, policyId: envelope.policyId,
+          policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
       canonicalTarget: plan.canonicalTarget, selectedGroup: group,
       deploymentId: admission.deploymentId!, provider: deployment.provider,
       model: deployment.providerModel, stream: false, finalOutcome: "fail_client",
@@ -701,6 +732,9 @@ async function handleNonStreamingAttempt(
   });
   emitUsageEvent(stateDo, {
     requestId: envelope.requestId, attemptIndex: currentAttemptIndex, timestamp: Date.now(),
+    clientId: envelope.clientId, appId: envelope.appId,
+    userHash: envelope.userHash, policyId: envelope.policyId,
+          policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
     canonicalTarget: plan.canonicalTarget, selectedGroup: group,
     deploymentId: admission.deploymentId!, provider: deployment.provider,
     model: deployment.providerModel, stream: false, finalOutcome: evaluation.action,
@@ -786,6 +820,9 @@ async function handleStreamingAttempt(
       });
       emitUnknownUsage(stateDo, {
         requestId: envelope.requestId, attemptIndex: currentAttemptIndex, canonicalTarget: plan.canonicalTarget,
+        clientId: envelope.clientId, appId: envelope.appId,
+        userHash: envelope.userHash, policyId: envelope.policyId,
+          policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
         selectedGroup: group, deploymentId: admission.deploymentId!, provider: deployment.provider,
         model: deployment.providerModel, stream: true, finalOutcome: "stream_abort", usageSource: deployment.provider,
       });
@@ -841,6 +878,9 @@ async function handleStreamingAttempt(
       if (attempt) attempt.tokenUsage = streamUsage;
       stateDo.storeUsageEvent?.({
         requestId: envelope.requestId, attemptIndex: currentAttemptIndex, timestamp: Date.now(),
+        clientId: envelope.clientId, appId: envelope.appId,
+        userHash: envelope.userHash, policyId: envelope.policyId,
+          policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
         canonicalTarget: plan.canonicalTarget, selectedGroup: group,
         deploymentId: admission.deploymentId!, provider: deployment.provider,
         model: deployment.providerModel, stream: true,
@@ -877,6 +917,9 @@ async function handleStreamingAttempt(
     });
     emitUnknownUsage(stateDo, {
       requestId: envelope.requestId, attemptIndex: currentAttemptIndex, canonicalTarget: plan.canonicalTarget,
+      clientId: envelope.clientId, appId: envelope.appId,
+      userHash: envelope.userHash, policyId: envelope.policyId,
+          policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
       selectedGroup: group, deploymentId: admission.deploymentId!, provider: deployment.provider,
       model: deployment.providerModel, stream: true, finalOutcome: "retry_fallback", usageSource: deployment.provider,
     });
@@ -948,6 +991,9 @@ function handleProviderHttpError(
 
   emitUnknownUsage(stateDo, {
     requestId: envelope.requestId, attemptIndex: currentAttemptIndex, canonicalTarget: plan.canonicalTarget,
+    clientId: envelope.clientId, appId: envelope.appId,
+    userHash: envelope.userHash, policyId: envelope.policyId,
+          policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
     selectedGroup: group, deploymentId: admission.deploymentId!, provider: deployment.provider,
     model: deployment.providerModel, stream: isStream, finalOutcome: "retry_fallback", usageSource: deployment.provider,
   });
@@ -1130,6 +1176,9 @@ function clampDeadline(candidateMs: number, baseTimeoutMs: number, minimumMs = 5
 }
 
 function dispatchRequestClass(envelope: RequestEnvelope): string {
+  if (envelope.surface === "responses") {
+    return envelope.stream ? "responses_stream" : "responses";
+  }
   if (envelope.stream) {
     if (envelope.hasStrictTools) return "strict_tool_stream";
     if (envelope.hasTools) return "tool_stream";
@@ -1226,11 +1275,16 @@ function emitUsageEvent(stateObj: AttemptStateAccessor, event: UsageEventPayload
 
 function emitUnknownUsage(stateObj: AttemptStateAccessor, params: {
   requestId: string; attemptIndex: number; canonicalTarget: string;
+  clientId?: string; appId?: string; userHash?: string; policyId?: string;
+  policyVersion?: string; routeVersion?: string;
   selectedGroup: string; deploymentId: string; provider: string;
   model: string | undefined; stream: boolean; finalOutcome: string; usageSource: string;
 }): void {
   emitUsageEvent(stateObj, {
     requestId: params.requestId, attemptIndex: params.attemptIndex, timestamp: Date.now(),
+    clientId: params.clientId, appId: params.appId,
+    userHash: params.userHash, policyId: params.policyId,
+    policyVersion: params.policyVersion, routeVersion: params.routeVersion,
     canonicalTarget: params.canonicalTarget, selectedGroup: params.selectedGroup,
     deploymentId: params.deploymentId, provider: params.provider, model: params.model ?? "",
     stream: params.stream, finalOutcome: params.finalOutcome, usageKind: "unknown",

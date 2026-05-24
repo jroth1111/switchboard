@@ -60,11 +60,14 @@ export class SqlStorageAdapter implements StorageAdapter {
   }
 
   confirmReservation(reservationId: string): { deploymentId: string } | null {
+    this.sql.exec(
+      "UPDATE reservations SET confirmed = 1 WHERE reservation_id = ? AND confirmed = 0",
+      reservationId,
+    );
     const rows = this.sql.exec(
       "SELECT deployment_id FROM reservations WHERE reservation_id = ?", reservationId,
     ).toArray();
     if (rows.length === 0) return null;
-    this.sql.exec("UPDATE reservations SET confirmed = 1 WHERE reservation_id = ?", reservationId);
     return { deploymentId: rows[0].deployment_id as string };
   }
 

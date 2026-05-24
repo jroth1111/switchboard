@@ -8,8 +8,12 @@ export interface FailedRequestSummary {
   requestId: string;
   timestamp: number;
   originalModel: string;
+  route: string;
   canonicalTarget: string;
   selectedGroup: string;
+  selectedModel: string;
+  selectedDeploymentId: string | undefined;
+  requestSource: string;
   finalOutcome: string;
   failureClass: string | undefined;
   issueCode: string | undefined;
@@ -36,13 +40,18 @@ export function failedRequestSummaryFromReceipt(receipt: RouteReceipt): FailedRe
 
   const lastAttempt = receipt.attempts[receipt.attempts.length - 1];
   const firstFailure = receipt.attempts.find((a) => a.failureClass);
+  const selectedDeploymentId = [...receipt.attempts].reverse().find((a) => a.deploymentId)?.deploymentId;
 
   return {
     requestId: receipt.requestId,
     timestamp: receipt.timestamp,
     originalModel: receipt.originalModel,
+    route: receipt.canonicalTarget,
     canonicalTarget: receipt.canonicalTarget,
     selectedGroup: receipt.selectedGroup,
+    selectedModel: selectedDeploymentId ?? receipt.selectedGroup,
+    selectedDeploymentId,
+    requestSource: receipt.appId ?? receipt.clientId ?? "unknown",
     finalOutcome: receipt.finalOutcome,
     failureClass: lastAttempt?.failureClass ?? firstFailure?.failureClass,
     issueCode: receipt.finalOutcome === "exhausted" ? "all_groups_exhausted" : undefined,

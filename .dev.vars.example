@@ -1,0 +1,16 @@
+# Local Wrangler development variables.
+# Copy to .dev.vars for local runs, fill values locally, and keep the file ignored.
+# Secret values must not be committed or printed. Harden local copies with:
+# chmod 0600 .dev.vars
+
+SWITCHBOARD_API_KEY=
+ADMIN_API_KEY=
+NIM_HEALTH_TOKEN=
+
+# Provider credentials and subscription account material.
+ZAI_KEY_1=
+NIM_KEY_1=
+CHATGPT_OAUTH=
+ANTHROPIC_OAUTH_ACCOUNT=
+ANTHROPIC_CLIENT_ID=
+ANTHROPIC_CLIENT_SECRET=

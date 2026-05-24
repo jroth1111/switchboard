@@ -139,7 +139,9 @@ function stubStreamingFetch(firstByteDelays: Record<string, number>) {
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
         const onAbort = () => {
+          if (timer) clearTimeout(timer);
           try { controller.error(new DOMException("Aborted", "AbortError")); } catch {}
         };
         if (init?.signal?.aborted) {
@@ -170,7 +172,7 @@ function stubStreamingFetch(firstByteDelays: Record<string, number>) {
           controller.enqueue(encoder.encode("data: [DONE]\n\n"));
           controller.close();
         };
-        if (delayMs > 0) setTimeout(startFirst, delayMs);
+        if (delayMs > 0) timer = setTimeout(startFirst, delayMs);
         else startFirst();
       },
     });
@@ -294,12 +296,18 @@ describe("hedged streaming execution", () => {
 
       expect(result.success).toBe(true);
       expect(fetchMock).toHaveBeenCalledTimes(2);
+      // The slow loser is released after cancellation, while the fast winner is
+      // held until stream consumption finishes.
+      expect(state.release).toHaveBeenCalledWith("res-1");
+      expect(state.release).not.toHaveBeenCalledWith("res-2");
       // The user-facing stream should contain the fast lane's tokens
       const text = await result.response!.text();
       expect(text).toContain("fast-model");
       expect(text).toContain("[DONE]");
       // Winner attempt is recorded
       expect(result.attempts.some((a) => a.deploymentId === "fast" && a.action === "accept")).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(state.release).toHaveBeenCalledWith("res-2");
     } finally {
       vi.unstubAllGlobals();
     }

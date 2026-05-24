@@ -1,9 +1,11 @@
 // Build-time manifest validator.
 // Runs as part of the build pipeline to catch config errors early.
-// Usage: npx tsx scripts/validate-manifest.ts
+// Usage: node scripts/validate-manifest.ts
 
 import { readFileSync } from "node:fs";
-import { MANIFEST } from "../src/config/manifest";
+import YAML from "yaml";
+import { MANIFEST, ROUTE_MANIFEST_VERSION } from "../src/config/manifest.ts";
+import { buildManifestSnapshot, canonicalJson } from "./manifest-snapshot.ts";
 
 interface ValidationError {
   severity: "error" | "warning";
@@ -12,6 +14,8 @@ interface ValidationError {
 
 const errors: ValidationError[] = [];
 const requiredScheduledCrons = ["*/2 * * * *", "*/5 * * * *", "0 * * * *"];
+const litellmConfigPath = "../../.litellm/config.yaml";
+const approvedMissingLiteLLMAliases: Record<string, string> = {};
 
 function error(msg: string) {
   errors.push({ severity: "error", message: msg });
@@ -123,6 +127,12 @@ for (const configPath of ["wrangler.jsonc", "wrangler.dev.jsonc"]) {
   validateScheduledCrons(configPath, requiredScheduledCrons);
 }
 
+// 10. Versioned manifest snapshot exists and matches the compiled manifest shape
+validateManifestSnapshot("config/route-manifest.snapshot.json");
+
+// 11. LiteLLM alias parity: Switchboard must meet or supersede the local LiteLLM catalog.
+validateLiteLLMAliasParity(litellmConfigPath);
+
 function validateScheduledCrons(configPath: string, requiredCrons: string[]): void {
   let config: Record<string, unknown>;
   try {
@@ -143,6 +153,69 @@ function validateScheduledCrons(configPath: string, requiredCrons: string[]): vo
     if (!crons.includes(cron)) {
       error(`${configPath} missing scheduled cron '${cron}'`);
     }
+  }
+}
+
+function validateManifestSnapshot(snapshotPath: string): void {
+  let snapshot: Record<string, unknown>;
+  try {
+    snapshot = JSON.parse(readFileSync(snapshotPath, "utf8")) as Record<string, unknown>;
+  } catch (err) {
+    error(`Unable to parse ${snapshotPath}: ${(err as Error).message}`);
+    return;
+  }
+  if (snapshot.version !== ROUTE_MANIFEST_VERSION) {
+    error(`${snapshotPath} version ${String(snapshot.version)} does not match ${ROUTE_MANIFEST_VERSION}`);
+  }
+  if (Object.keys((snapshot.aliases as Record<string, unknown> | undefined) ?? {}).length !== Object.keys(MANIFEST.aliases).length) {
+    error(`${snapshotPath} alias count does not match compiled manifest`);
+  }
+  if (Object.keys((snapshot.routeGroups as Record<string, unknown> | undefined) ?? {}).length !== Object.keys(MANIFEST.routeGroups).length) {
+    error(`${snapshotPath} route group count does not match compiled manifest`);
+  }
+  if (((snapshot.deployments as unknown[] | undefined) ?? []).length !== MANIFEST.deployments.length) {
+    error(`${snapshotPath} deployment count does not match compiled manifest`);
+  }
+  const expected = buildManifestSnapshot();
+  if (canonicalJson(snapshot) !== canonicalJson(expected)) {
+    error(`${snapshotPath} content does not match compiled manifest; run npm run snapshot`);
+  }
+}
+
+function validateLiteLLMAliasParity(configPath: string): void {
+  let parsed: unknown;
+  try {
+    parsed = YAML.parse(readFileSync(configPath, "utf8"));
+  } catch (err) {
+    error(`Unable to parse LiteLLM config ${configPath}: ${(err as Error).message}`);
+    return;
+  }
+
+  const aliases = ((parsed as { nim_policy_plane?: { aliases?: unknown } })?.nim_policy_plane?.aliases);
+  if (!aliases || typeof aliases !== "object" || Array.isArray(aliases)) {
+    error(`${configPath} missing nim_policy_plane.aliases`);
+    return;
+  }
+
+  const litellmAliases = aliases as Record<string, unknown>;
+  const missing = Object.entries(litellmAliases)
+    .filter(([alias]) => !(alias in MANIFEST.aliases) && !(alias in approvedMissingLiteLLMAliases))
+    .map(([alias, target]) => `${alias} -> ${String(target)}`);
+  if (missing.length > 0) {
+    error(`LiteLLM alias parity missing ${missing.length} unapproved aliases: ${missing.join(", ")}`);
+  }
+
+  const staleApprovals = Object.keys(approvedMissingLiteLLMAliases)
+    .filter((alias) => alias in MANIFEST.aliases);
+  if (staleApprovals.length > 0) {
+    error(`LiteLLM alias parity approval is stale for aliases now present in Switchboard: ${staleApprovals.join(", ")}`);
+  }
+
+  const mismatched = Object.entries(litellmAliases)
+    .filter(([alias, target]) => alias in MANIFEST.aliases && MANIFEST.aliases[alias] !== target)
+    .map(([alias, target]) => `${alias}: switchboard=${MANIFEST.aliases[alias]} litellm=${String(target)}`);
+  if (mismatched.length > 0) {
+    error(`LiteLLM alias parity has ${mismatched.length} mismatched targets: ${mismatched.join(", ")}`);
   }
 }
 

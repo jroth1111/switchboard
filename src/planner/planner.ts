@@ -2,6 +2,7 @@
 // Ports behavior from litellm_logic/routing/planner.py, candidates.py, preflight.py.
 
 import { MANIFEST } from "../config/manifest";
+import type { RouteDecision } from "../observability/receipt";
 import type {
   Deployment, RouteGroup, Policy, Surface, Operation, FailureClass, ContentClass,
 } from "../config/schema";
@@ -12,6 +13,13 @@ import { hasTypedContentNormalization, normalizeTypedContentParts } from "../nim
 export interface RequestEnvelope {
   requestId: string;
   originalModel: string;
+  surface?: Surface;
+  clientId?: string;
+  appId?: string;
+  userHash?: string;
+  policyId?: string;
+  policyVersion?: string;
+  routeVersion?: string;
   body: Record<string, unknown>;
   stream: boolean;
   hasTools: boolean;
@@ -257,12 +265,14 @@ function detectContentClass(envelope: RequestEnvelope): ContentClass | undefined
 
 // ─── Operation / surface helpers ──────────────────────────────────
 
-export function getSurface(_envelope: RequestEnvelope): Surface {
-  // For now only chat_completions; Responses surface can be added later
-  return "chat_completions";
+export function getSurface(envelope: RequestEnvelope): Surface {
+  return envelope.surface ?? "chat_completions";
 }
 
 export function getOperation(envelope: RequestEnvelope): Operation {
+  if (getSurface(envelope) === "responses") {
+    return envelope.stream ? "responses_stream" : "responses";
+  }
   if (envelope.stream) {
     if (envelope.hasStrictTools) return "strict_tool_stream";
     if (envelope.hasTools) return "tool_stream";
@@ -288,6 +298,7 @@ export interface ExecutionPlan {
     deployments: Deployment[];
   }>;
   transforms: RequestTransform[];
+  routeDecision: RouteDecision;
   receipt: PlanReceiptDraft;
   isManaged: boolean;
 }
@@ -345,6 +356,35 @@ export function planRequest(
 
   // Compute transforms
   const transforms = buildTransforms(envelope, selected.policy, selectedDeployments);
+  const requestClass = computeRequestClass(envelope);
+  const routeDecision: RouteDecision = {
+    canonicalization: {
+      requestedModel: envelope.originalModel,
+      canonicalTarget: canon.canonicalTarget,
+      reason: canon.reason,
+    },
+    requestClass: {
+      stream: requestClass.stream,
+      hasTools: requestClass.hasTools,
+      hasStrictTools: requestClass.hasStrictTools,
+      hasTypedContent: requestClass.hasTypedContent,
+      requiresJsonMode: requestClass.requiresJsonMode,
+      operation: requestClass.operation,
+      surface: requestClass.surface,
+    },
+    selectedGroup: selected.group,
+    selectedReason: `highest scoring viable candidate (${selected.score})`,
+    fallbackGroups: fallbackSequence.map((f) => f.group),
+    candidates: candidates.map((candidate) => ({
+      group: candidate.group,
+      score: candidate.score,
+      viable: !candidate.rejectionReason,
+      rejectionReason: candidate.rejectionReason,
+      hidden: candidate.routeGroup.hidden,
+      deploymentCount: MANIFEST.deploymentsByGroup[candidate.group]?.length ?? 0,
+    })),
+    transforms: transforms.map((transform) => ({ ...transform })),
+  };
 
   return {
     requestId: envelope.requestId,
@@ -355,6 +395,7 @@ export function planRequest(
     selectedDeployments,
     fallbackSequence,
     transforms,
+    routeDecision,
     receipt: {
       requestId: envelope.requestId,
       timestamp: Date.now(),

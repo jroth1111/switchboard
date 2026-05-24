@@ -5,15 +5,14 @@ const ALGORITHM = "AES-GCM";
 const IV_LENGTH = 12;
 const TAG_LENGTH = 128;
 
-const keyCache = new Map<string, CryptoKey>();
+let cachedKeyMaterial: { id: string; key: CryptoKey } | null = null;
 
 async function deriveKey(encryptionKey: string): Promise<CryptoKey> {
-  const cached = keyCache.get(encryptionKey);
-  if (cached) return cached;
+  if (cachedKeyMaterial?.id === encryptionKey) return cachedKeyMaterial.key;
   const encoder = new TextEncoder();
   const keyMaterial = await crypto.subtle.digest("SHA-256", encoder.encode(encryptionKey));
   const key = await crypto.subtle.importKey("raw", keyMaterial, { name: ALGORITHM }, false, ["encrypt", "decrypt"]);
-  keyCache.set(encryptionKey, key);
+  cachedKeyMaterial = { id: encryptionKey, key };
   return key;
 }
 

@@ -1,5 +1,5 @@
 // Bundle size budget checker.
-// Usage: npx tsx scripts/bundle-size.ts
+// Usage: node scripts/bundle-size.ts
 // Fails if the Worker bundle exceeds size limits.
 
 import { readFileSync, statSync } from "fs";

@@ -34,10 +34,11 @@ describe("canonicalize", () => {
     expect(result.reason).toBe("unmanaged");
   });
 
-  it("does not expose terminal fallback as a public alias", () => {
+  it("keeps terminal fallback aliases managed for parity while route policy keeps them hidden", () => {
     const result = canonicalize("zai-fallback");
-    expect(result.isManaged).toBe(false);
-    expect(result.canonicalTarget).toBe("zai-fallback");
+    expect(result.isManaged).toBe(true);
+    expect(result.canonicalTarget).toBe("zai-glm-5.1-terminal-fallback");
+    expect(MANIFEST.routeGroups[result.canonicalTarget].hidden).toBe(true);
   });
 
   it("resolves ambiguous aliases when direct alias is missing", () => {

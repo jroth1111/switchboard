@@ -409,7 +409,9 @@ describe("Provider format conversion integration", () => {
     const req = buildAnthropicSubscriptionRequest(deploy, body, "test-token");
     const parsed = JSON.parse(req.body);
     expect(parsed.model).toBe("claude-sonnet-4-6-20250514");
-    expect(parsed.system).toBe("Be helpful.");
+    expect(parsed.system[0].text).toMatch(/^x-anthropic-billing-header:/);
+    expect(parsed.system[1].text).toBe("You are a Claude agent, built on Anthropic's Claude Agent SDK.");
+    expect(parsed.system[2].text).toBe("Be helpful.");
     expect(parsed.messages).toHaveLength(1);
 
     // Convert response
@@ -430,14 +432,12 @@ describe("Provider format conversion integration", () => {
       provider: "chatgpt",
       mode: "responses",
       providerModel: "gpt-5.5",
+      reasoningEffort: "medium",
     });
     const body = {
       model: "gpt-5.5",
-      messages: [
-        { role: "system", content: "Be helpful." },
-        { role: "user", content: "Hello" },
-      ],
-      max_tokens: 1024,
+      input: "Hello",
+      instructions: "Be helpful.",
     };
 
     const contract = validateResponsesContract(body);
@@ -447,6 +447,10 @@ describe("Provider format conversion integration", () => {
     const parsed = JSON.parse(req.body);
     expect(parsed.model).toBe("gpt-5.5");
     expect(parsed.instructions).toBe("Be helpful.");
+    expect(parsed.input).toEqual([{ type: "message", role: "user", content: [{ type: "input_text", text: "Hello" }] }]);
+    expect(parsed.stream).toBe(true);
+    expect(parsed.store).toBe(false);
+    expect(parsed.include).toContain("reasoning.encrypted_content");
 
     // Convert response
     const responsesApi = {

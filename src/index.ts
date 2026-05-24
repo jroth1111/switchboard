@@ -2,26 +2,27 @@
 // LLM Control Plane — Cloudflare Worker with NIM mitigation, account rotation,
 // silent failover, and health scoring.
 
-import { MANIFEST } from "./config/manifest";
+import { MANIFEST, ROUTE_MANIFEST_VERSION } from "./config/manifest";
 import type { FailureClass } from "./config/schema";
 import { validateManifest } from "./config/validate-manifest";
 import { ControlPlaneStateDO } from "./state/control-plane-state";
 import { OAuthAccountDO } from "./state/oauth-account";
 import {
   handleChatCompletions,
+  handleResponses,
   handleAdminHealth,
   handleAdminReceipts,
+  handleAdminClientRequests,
   handleAdminClearCooldowns,
   handleAdminUsage,
   handlePing,
-  verifyProxyAuth,
   verifyAdminAuth,
-  checkRequestRateLimit,
   handleNimHealth,
   handleNimFailures,
   handleAdminCanaryTrigger,
   handleAdminCanaryResults,
 } from "./http/handler";
+import { authenticateProxyClient, visibleModelsForClient, type ClientIdentity } from "./http/client-policy";
 import { runCanaryProbes, reapAllLeases, type CanaryHealthSnapshot, type CanaryHistoryRow } from "./probes/canary";
 
 export { ControlPlaneStateDO, OAuthAccountDO };
@@ -72,7 +73,7 @@ export default {
       response = handlePing();
     } else if (path === "/nim/health" && request.method === "GET") {
       response = await handleNimHealth(request, env);
-    } else if (path === "/nim/failures" && request.method === "GET") {
+    } else if ((path === "/nim/failures" || path.startsWith("/nim/failures/")) && request.method === "GET") {
       response = await handleNimFailures(request, env);
     } else if (path.startsWith("/admin/")) {
       if (!verifyAdminAuth(request, env.ADMIN_API_KEY)) {
@@ -84,6 +85,8 @@ export default {
         response = await handleAdminHealth(request, env);
       } else if (path === "/admin/receipts" && request.method === "GET") {
         response = await handleAdminReceipts(request, env);
+      } else if (path === "/admin/client-requests" && request.method === "GET") {
+        response = await handleAdminClientRequests(request, env);
       } else if (path === "/admin/cooldowns/clear" && request.method === "POST") {
         response = await handleAdminClearCooldowns(request, env);
       } else if (path === "/admin/usage" && request.method === "GET") {
@@ -99,23 +102,38 @@ export default {
         });
       }
     } else if ((path === "/models" || path === "/v1/models") && request.method === "GET") {
-      response = handleModelsList();
+      const auth = await authenticateProxyClient(request, env);
+      if (!auth.ok) {
+        response = new Response(JSON.stringify({ error: auth.error }), {
+          status: auth.status,
+          headers: { "Content-Type": "application/json" },
+        });
+      } else {
+        response = handleModelsList(auth.client);
+      }
     } else if (
       request.method === "POST" &&
       (path === "/chat/completions" || path === "/v1/chat/completions")
     ) {
-      // Rate limit check
-      const rateLimitResp = checkRequestRateLimit(request);
-      if (rateLimitResp) return withCors(rateLimitResp);
-
-      if (!verifyProxyAuth(request, env.PROXY_API_KEY)) {
-        return withCors(new Response(JSON.stringify({ error: { message: "unauthorized", type: "auth" } }), {
-          status: 401,
+      const auth = await authenticateProxyClient(request, env);
+      if (!auth.ok) {
+        return withCors(new Response(JSON.stringify({ error: auth.error }), {
+          status: auth.status,
           headers: { "Content-Type": "application/json" },
         }));
       }
 
-      response = await handleChatCompletions(request, env, ctx);
+      response = await handleChatCompletions(request, env, ctx, auth.client);
+    } else if (request.method === "POST" && path === "/v1/responses") {
+      const auth = await authenticateProxyClient(request, env);
+      if (!auth.ok) {
+        return withCors(new Response(JSON.stringify({ error: auth.error }), {
+          status: auth.status,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+
+      response = await handleResponses(request, env, ctx, auth.client);
     } else {
       response = new Response(JSON.stringify({ error: "not found" }), {
         status: 404,
@@ -201,20 +219,14 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
-function handleModelsList(): Response {
-  const models = Object.entries(MANIFEST.aliases)
-    .filter(([, target]) => {
-      const rg = MANIFEST.routeGroups[target];
-      return rg && !rg.hidden;
-    })
-    .map(([alias, target]) => ({
-      id: alias,
-      object: "model" as const,
-      created: 0,
-      owned_by: "control-plane",
-    }));
-
+function handleModelsList(client: ClientIdentity): Response {
+  const models = visibleModelsForClient(client);
   return new Response(JSON.stringify({ object: "list", data: models }), {
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Policy-Id": client.policyId,
+      "X-Policy-Version": client.policyVersion,
+      "X-Route-Version": ROUTE_MANIFEST_VERSION,
+    },
   });
 }

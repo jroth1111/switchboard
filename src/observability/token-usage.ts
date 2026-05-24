@@ -9,6 +9,12 @@ export interface UsageEventPayload {
   requestId: string;
   attemptIndex: number;
   timestamp: number;
+  clientId?: string;
+  appId?: string;
+  userHash?: string;
+  policyId?: string;
+  policyVersion?: string;
+  routeVersion?: string;
   canonicalTarget: string;
   selectedGroup: string;
   deploymentId: string;

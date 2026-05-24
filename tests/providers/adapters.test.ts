@@ -1,5 +1,7 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import {
+  ANTHROPIC_OAUTH_TOKEN_URL,
+  CLAUDE_AI_OAUTH_SCOPE,
   buildAnthropicSubscriptionRequest,
   convertAnthropicToOpenAI,
   convertAnthropicStreamChunk,
@@ -42,10 +44,32 @@ function makeDeployment(overrides: Partial<Deployment> = {}): Deployment {
   };
 }
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+function stubClaudeCodeEnv(overrides: Record<string, string> = {}): void {
+  for (const [key, value] of Object.entries({
+    ANTHROPIC_SUBSCRIPTION_CLAUDE_CODE_VERSION: "1.2.3",
+    ANTHROPIC_SUBSCRIPTION_NODE_VERSION: "v22.11.0",
+    CLAUDE_CODE_SESSION_ID: "session-123",
+    CLAUDE_CODE_NONINTERACTIVE: "1",
+    USER_TYPE: "external",
+    CLAUDE_CODE_ENTRYPOINT: "cli",
+    CLAUDE_CODE_WORKLOAD: "coding-harness",
+    CLAUDE_CODE_DEVICE_ID: "device-abc",
+    CLAUDE_CODE_ACCOUNT_UUID: "acct-xyz",
+    ...overrides,
+  })) {
+    vi.stubEnv(key, value);
+  }
+}
+
 // ─── Anthropic subscription request building ────────────────────────
 
 describe("Anthropic subscription request builder", () => {
-  it("builds a valid Messages API request", () => {
+  it("builds a Claude Code-shaped Messages API request", () => {
+    stubClaudeCodeEnv();
     const deploy = makeDeployment();
     const body = {
       model: "claude-sonnet-4-6",
@@ -59,14 +83,85 @@ describe("Anthropic subscription request builder", () => {
     const req = buildAnthropicSubscriptionRequest(deploy, body, "test-token");
     const parsed = JSON.parse(req.body);
 
-    expect(req.url).toContain("/v1/messages");
-    expect(req.headers["Authorization"]).toBe("Bearer test-token");
+    expect(req.url).toBe("https://api.anthropic.com/v1/messages?beta=true");
+    expect(req.headers.authorization).toBe("Bearer test-token");
     expect(req.headers["anthropic-version"]).toBe("2023-06-01");
+    expect(req.headers["x-app"]).toBe("cli");
+    expect(req.headers["x-claude-code-session-id"]).toBe("session-123");
+    expect(req.headers["user-agent"]).toBe("claude-cli/1.2.3 (external, cli, workload/coding-harness)");
+    expect(req.headers["x-stainless-lang"]).toBe("js");
+    expect(req.headers["x-stainless-package-version"]).toBe("0.81.0");
+    expect(req.headers["x-stainless-runtime"]).toBe("node");
+    expect(req.headers["x-stainless-runtime-version"]).toBe("v22.11.0");
+    expect(req.headers["x-stainless-retry-count"]).toBe("0");
+    expect(req.headers["x-stainless-timeout"]).toBe("600000");
+    expect(req.headers["content-length"]).toBe(String(new TextEncoder().encode(req.body).length));
+    expect(req.headers["anthropic-beta"]).toBe([
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "context-management-2025-06-27",
+      "prompt-caching-scope-2026-01-05",
+      "effort-2025-11-24",
+    ].join(","));
     expect(parsed.model).toBe("claude-sonnet-4-6-20250514");
-    expect(parsed.system).toBe("You are helpful.");
+    expect(parsed.system[0].text).toMatch(/^x-anthropic-billing-header: cc_version=1\.2\.3\.[0-9a-f]{3}; cc_entrypoint=cli; cch=[0-9a-f]{5}; cc_workload=coding-harness;$/);
+    expect(parsed.system[1]).toEqual({
+      type: "text",
+      text: "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+      cache_control: { type: "ephemeral" },
+    });
+    expect(parsed.system[2]).toEqual({
+      type: "text",
+      text: "You are helpful.",
+      cache_control: { type: "ephemeral" },
+    });
+    expect(JSON.parse(parsed.metadata.user_id)).toEqual({
+      device_id: "device-abc",
+      account_uuid: "acct-xyz",
+      session_id: "session-123",
+    });
     expect(parsed.messages).toHaveLength(1);
     expect(parsed.messages[0].role).toBe("user");
+    expect(parsed.messages[0].content).toEqual([
+      { type: "text", text: "Hello", cache_control: { type: "ephemeral" } },
+    ]);
     expect(parsed.max_tokens).toBe(4096);
+    expect(parsed.thinking).toEqual({ type: "adaptive" });
+    expect(parsed.context_management).toEqual({ edits: [{ type: "clear_thinking_20251015", keep: "all" }] });
+    expect(parsed.output_config).toEqual({ effort: "high" });
+    expect(parsed).not.toHaveProperty("temperature");
+    expect(Object.keys(parsed).slice(0, 8)).toEqual([
+      "model",
+      "messages",
+      "system",
+      "metadata",
+      "max_tokens",
+      "thinking",
+      "context_management",
+      "output_config",
+    ]);
+    expect(Object.keys(req.headers).slice(0, 5)).toEqual([
+      "accept",
+      "content-type",
+      "user-agent",
+      "x-claude-code-session-id",
+      "x-stainless-arch",
+    ]);
+  });
+
+  it("moves explicit betas into the anthropic-beta header", () => {
+    stubClaudeCodeEnv({ CLAUDE_CODE_SESSION_ID: "session-custom" });
+    const deploy = makeDeployment({ extraBody: { betas: ["custom-beta-1", "custom-beta-2"] } });
+    const req = buildAnthropicSubscriptionRequest(deploy, {
+      model: "claude-sonnet-4-6",
+      messages: [{ role: "user", content: "hi" }],
+      max_tokens: 10,
+    }, "token");
+    const parsed = JSON.parse(req.body);
+
+    expect(req.headers["anthropic-beta"]).toBe("custom-beta-1,custom-beta-2,effort-2025-11-24");
+    expect(parsed.betas).toBeUndefined();
   });
 
   it("converts tools to Anthropic format", () => {
@@ -173,6 +268,22 @@ describe("Anthropic subscription request builder", () => {
     expect(parsed.tool_choice).toEqual({ type: "auto" });
   });
 
+  it("converts tool_choice none without stripping tools", () => {
+    const deploy = makeDeployment();
+    const body = {
+      model: "claude-sonnet-4-6",
+      messages: [{ role: "user", content: "do not use the tool" }],
+      tools: [{ type: "function", function: { name: "get_weather", description: "Get weather", parameters: { type: "object", properties: {} } } }],
+      tool_choice: "none",
+    };
+
+    const req = buildAnthropicSubscriptionRequest(deploy, body, "token");
+    const parsed = JSON.parse(req.body);
+    expect(parsed.tool_choice).toEqual({ type: "none" });
+    expect(parsed.tools).toHaveLength(1);
+    expect(parsed.tools[0].name).toBe("get_weather");
+  });
+
   it("merges deployment extraBody", () => {
     const deploy = makeDeployment({
       extraBody: { thinking: { type: "enabled", budget_tokens: 10000 } },
@@ -215,7 +326,37 @@ describe("Anthropic subscription request builder", () => {
 
     const req = buildAnthropicSubscriptionRequest(deploy, body, "token");
     const parsed = JSON.parse(req.body);
-    expect(parsed.reasoning_effort).toBe("high");
+    expect(parsed.reasoning_effort).toBeUndefined();
+    expect(parsed.output_config.effort).toBe("high");
+  });
+
+  it("strips client cache markers before adding the Claude cache breakpoint", () => {
+    stubClaudeCodeEnv();
+    const deploy = makeDeployment();
+    const body = {
+      model: "claude-sonnet-4-6",
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "old marker", cache_control: { type: "ephemeral", ttl: "1h" } }],
+        },
+        {
+          role: "user",
+          content: [{ type: "text", text: "new marker", cache_control: { type: "ephemeral", ttl: "1h" } }],
+        },
+      ],
+      max_tokens: 10,
+    };
+
+    const req = buildAnthropicSubscriptionRequest(deploy, body, "token");
+    const parsed = JSON.parse(req.body);
+    const messageCacheBlocks = parsed.messages.flatMap((message: { content: Array<Record<string, unknown>> }) =>
+      message.content.filter((block) => "cache_control" in block)
+    );
+
+    expect(messageCacheBlocks).toHaveLength(1);
+    expect(messageCacheBlocks[0]).toEqual({ type: "text", text: "new marker", cache_control: { type: "ephemeral" } });
+    expect(parsed.messages[0].content[0]).not.toHaveProperty("cache_control");
   });
 });
 
@@ -372,9 +513,16 @@ describe("OAuth token management", () => {
         clientId: "test-client",
       });
 
-      expect(fetchMock).toHaveBeenCalledWith("https://api.anthropic.com/v1/oauth/token", expect.objectContaining({
+      expect(fetchMock).toHaveBeenCalledWith(ANTHROPIC_OAUTH_TOKEN_URL, expect.objectContaining({
         method: "POST",
       }));
+      const [, refreshInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(JSON.parse(refreshInit.body as string)).toEqual({
+        grant_type: "refresh_token",
+        refresh_token: "refresh-me",
+        client_id: "test-client",
+        scope: CLAUDE_AI_OAUTH_SCOPE,
+      });
       expect(mockAccessor.acquireRefreshLock).toHaveBeenCalledWith("acc-1", "req-1", 30000);
       expect(mockAccessor.releaseRefreshLock).toHaveBeenCalledWith("acc-1", "req-1");
       expect(setTokenMock).toHaveBeenCalledWith("acc-1", "anthropic_subscription", "new-token", "refresh-new", expect.any(Number));
@@ -384,6 +532,65 @@ describe("OAuth token management", () => {
       } else {
         expect.fail(`Expected refreshed token result, got ${result.failureClass}`);
       }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("refreshAnthropicOAuthToken sends Claude scopes, optional client secret, and token URL override", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      access_token: "new-token",
+      refresh_token: "refresh-new",
+      expires_in: 3600,
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const result = await refreshAnthropicOAuthToken(
+        "refresh-me",
+        "test-client",
+        "client-secret",
+        { tokenUrl: "https://platform.staging.ant.dev/v1/oauth/token" },
+      );
+
+      expect(fetchMock).toHaveBeenCalledWith("https://platform.staging.ant.dev/v1/oauth/token", expect.objectContaining({
+        method: "POST",
+      }));
+      const [, refreshInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(JSON.parse(refreshInit.body as string)).toEqual({
+        grant_type: "refresh_token",
+        refresh_token: "refresh-me",
+        client_id: "test-client",
+        scope: CLAUDE_AI_OAUTH_SCOPE,
+        client_secret: "client-secret",
+      });
+      expect(result).toMatchObject({
+        success: true,
+        token: {
+          accessToken: "new-token",
+          refreshToken: "refresh-new",
+        },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("refreshAnthropicOAuthToken classifies rejected OAuth sessions", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("expired session", { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const result = await refreshAnthropicOAuthToken("refresh-me", "test-client");
+
+      expect(result).toEqual({
+        success: false,
+        error: "expired session",
+        failureClass: "oauth_session_failure",
+      });
     } finally {
       vi.unstubAllGlobals();
     }
@@ -428,51 +635,58 @@ describe("OAuth token management", () => {
 // ─── ChatGPT Responses request building ────────────────────────────
 
 describe("ChatGPT Responses request builder", () => {
-  it("builds a valid Responses API request", () => {
+  it("builds a LiteLLM-equivalent ChatGPT/Codex Responses request", () => {
     const deploy = makeDeployment({
       provider: "chatgpt",
       mode: "responses",
       providerModel: "gpt-5.5",
-      apiBase: "https://api.openai.com",
+      reasoningEffort: "medium",
     });
     const body = {
       model: "gpt-5.5",
-      messages: [
-        { role: "system", content: "You are helpful." },
-        { role: "user", content: "Hello" },
-      ],
-      max_tokens: 4096,
+      input: "Hello",
+      instructions: "You are helpful.",
+      stream: false,
+      store: true,
+      previous_response_id: "resp_prev",
+      truncation: "auto",
     };
 
     const req = buildChatGPTResponsesRequest(deploy, body, "chatgpt-token");
     const parsed = JSON.parse(req.body);
 
-    expect(req.url).toContain("/v1/responses");
+    expect(req.url).toContain("/backend-api/codex/responses");
     expect(req.headers["Authorization"]).toBe("Bearer chatgpt-token");
     expect(parsed.model).toBe("gpt-5.5");
     expect(parsed.instructions).toBe("You are helpful.");
-    expect(parsed.input).toHaveLength(1);
-    expect(parsed.input[0].role).toBe("user");
-    expect(parsed.max_output_tokens).toBe(4096);
+    expect(parsed.input).toEqual([{ type: "message", role: "user", content: [{ type: "input_text", text: "Hello" }] }]);
+    expect(parsed.stream).toBe(true);
+    expect(parsed.store).toBe(false);
+    expect(parsed.include).toContain("reasoning.encrypted_content");
+    expect(parsed.reasoning).toEqual({ effort: "medium" });
+    expect(parsed.previous_response_id).toBe("resp_prev");
+    expect(parsed.truncation).toBe("auto");
+    expect(parsed).not.toHaveProperty("messages");
+    expect(parsed).not.toHaveProperty("max_output_tokens");
   });
 
-  it("converts tools to Responses format", () => {
+  it("preserves Responses tools and tool_choice", () => {
     const deploy = makeDeployment({
       provider: "chatgpt",
       mode: "responses",
       providerModel: "gpt-5.5",
+      reasoningEffort: "high",
     });
     const body = {
       model: "gpt-5.5",
-      messages: [{ role: "user", content: "use tool" }],
+      input: "use tool",
       tools: [{
         type: "function",
-        function: {
-          name: "get_weather",
-          description: "Get weather",
-          parameters: { type: "object", properties: { city: { type: "string" } } },
-        },
+        name: "get_weather",
+        description: "Get weather",
+        parameters: { type: "object", properties: { city: { type: "string" } } },
       }],
+      tool_choice: { type: "function", name: "get_weather" },
     };
 
     const req = buildChatGPTResponsesRequest(deploy, body, "token");
@@ -481,6 +695,7 @@ describe("ChatGPT Responses request builder", () => {
     expect(parsed.tools).toHaveLength(1);
     expect(parsed.tools[0].type).toBe("function");
     expect(parsed.tools[0].name).toBe("get_weather");
+    expect(parsed.tool_choice).toEqual({ type: "function", name: "get_weather" });
   });
 });
 
@@ -569,52 +784,59 @@ describe("Responses contract validation", () => {
   it("accepts valid request", () => {
     const result = validateResponsesContract({
       model: "gpt-5.5",
-      messages: [{ role: "user", content: "hello" }],
+      input: "hello",
     });
     expect(result.valid).toBe(true);
+  });
+
+  it("rejects missing input", () => {
+    const result = validateResponsesContract({
+      model: "gpt-5.5",
+    });
+    expect(result.valid).toBe(false);
+    expect(result.reason).toContain("input is required");
+  });
+
+  it("rejects messages payloads", () => {
+    const result = validateResponsesContract({
+      model: "gpt-5.5",
+      input: "hello",
+      messages: [{ role: "user", content: "hello" }],
+    });
+    expect(result.valid).toBe(false);
+    expect(result.forbiddenFields).toEqual(["messages"]);
   });
 
   it("rejects response_format", () => {
     const result = validateResponsesContract({
       model: "gpt-5.5",
-      messages: [{ role: "user", content: "hello" }],
+      input: "hello",
       response_format: { type: "json_object" },
     });
     expect(result.valid).toBe(false);
     expect(result.reason).toContain("response_format");
   });
 
-  it("rejects n > 1", () => {
+  it("rejects n instead of accepting chat-completions fanout semantics", () => {
     const result = validateResponsesContract({
       model: "gpt-5.5",
-      messages: [{ role: "user", content: "hello" }],
-      n: 3,
-    });
-    expect(result.valid).toBe(false);
-    expect(result.reason).toContain("n > 1");
-  });
-
-  it("accepts n = 1", () => {
-    const result = validateResponsesContract({
-      model: "gpt-5.5",
-      messages: [{ role: "user", content: "hello" }],
+      input: "hello",
       n: 1,
     });
-    expect(result.valid).toBe(true);
+    expect(result.valid).toBe(false);
+    expect(result.forbiddenFields).toEqual(["n"]);
   });
 
-  it("strips unsupported params", () => {
+  it("rejects unsupported params instead of stripping them", () => {
     const result = validateResponsesContract({
       model: "gpt-5.5",
-      messages: [{ role: "user", content: "hello" }],
+      input: "hello",
       frequency_penalty: 0.5,
       stop: ["\n"],
       seed: 42,
     });
-    expect(result.valid).toBe(true);
-    expect(result.strippedParams).toContain("frequency_penalty");
-    expect(result.strippedParams).toContain("stop");
-    expect(result.strippedParams).toContain("seed");
+    expect(result.valid).toBe(false);
+    expect(result.forbiddenFields).toEqual(["frequency_penalty", "seed", "stop"]);
   });
 });
 

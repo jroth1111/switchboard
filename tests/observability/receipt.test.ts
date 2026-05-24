@@ -121,6 +121,7 @@ describe("Structured receipt sanitization", () => {
     const input = {
       error_body: "Internal Server Error: database connection failed",
       issue_detail: "timeout exceeded",
+      failureMessage: "provider body included prompt text",
       safe_field: "keep me",
     };
     const result = sanitizeReceipt(input) as Record<string, unknown>;
@@ -135,6 +136,10 @@ describe("Structured receipt sanitization", () => {
     const issueDetail = result.issue_detail as Record<string, unknown>;
     expect(issueDetail.redacted).toBe(true);
     expect(issueDetail.length).toBe("timeout exceeded".length);
+
+    const failureMessage = result.failureMessage as Record<string, unknown>;
+    expect(failureMessage.redacted).toBe(true);
+    expect(failureMessage.length).toBe("provider body included prompt text".length);
 
     expect(result.safe_field).toBe("keep me");
   });

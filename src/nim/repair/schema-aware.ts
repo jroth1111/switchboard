@@ -6,7 +6,7 @@ import { TOOL_NAME_ALIASES, ENUM_ALIASES, isDestructiveToolName } from "./aliase
 // ─── Types ────────────────────────────────────────────────────────
 
 export interface ToolParameterSchema {
-  type?: string;
+  type?: string | string[];
   format?: string;
   properties?: Record<string, ToolParameterSchema>;
   required?: string[];
@@ -603,7 +603,7 @@ export function repairToolCallsSchemaAware(
         continue;
       }
     } else if (isPlainObject(rawArgs)) {
-      args = rawArgs as Record<string, unknown>;
+      args = structuredClone(rawArgs) as Record<string, unknown>;
     } else {
       repairedCalls.push({ ...tc, function: { ...fn, name: resolvedName } });
       continue;
@@ -713,7 +713,14 @@ function deleteAtPath(root: Record<string, unknown>, path: string): void {
     current = next as Record<string, unknown>;
   }
   const last = parts[parts.length - 1];
-  delete current[last.key];
+  if (last.index !== undefined) {
+    const arr = current[last.key];
+    if (Array.isArray(arr) && last.index >= 0 && last.index < arr.length) {
+      arr.splice(last.index, 1);
+    }
+  } else {
+    delete current[last.key];
+  }
 }
 
 interface PathPart { key: string; index?: number; }
@@ -757,6 +764,10 @@ function schemaAtPath(schema: ToolParameterSchema, path: string): ToolParameterS
 }
 
 function resolveSchemaForTraversal(schema: ToolParameterSchema): ToolParameterSchema {
+  if (Array.isArray(schema.type)) {
+    const fallback = schema.type.find((t) => t !== "null") ?? schema.type[0];
+    return { ...schema, type: fallback };
+  }
   if (schema.type) return schema;
   const alternatives = schema.anyOf ?? schema.oneOf;
   if (!alternatives || alternatives.length === 0) return schema;
@@ -770,8 +781,17 @@ function resolveSchemaForTraversal(schema: ToolParameterSchema): ToolParameterSc
 function isOptionalField(schema: ToolParameterSchema, path: string): boolean {
   const parts = parsePath(path);
   if (parts.length === 0) return false;
+
+  const lastPart = parts[parts.length - 1];
+  if (lastPart.index !== undefined) {
+    const itemsSchema = schemaAtPath(schema, path.replace(/\[\d+\]$/, ""));
+    if (!itemsSchema?.items) return false;
+    if (schemaAllowsNull(itemsSchema.items)) return false;
+    return true;
+  }
+
   const parentPath = parts.slice(0, -1);
-  const lastKey = parts[parts.length - 1].key;
+  const lastKey = lastPart.key;
 
   let parent: ToolParameterSchema | null = schema;
   for (const part of parentPath) {

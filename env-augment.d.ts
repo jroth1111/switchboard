@@ -22,4 +22,5 @@ interface Env {
   CHATGPT_AUTH_FILE?: string;
   ANTHROPIC_CLIENT_ID: string;
   ANTHROPIC_CLIENT_SECRET: string;
+  ANTHROPIC_OAUTH_TOKEN_URL?: string;
 }

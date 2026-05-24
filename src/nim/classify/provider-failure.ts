@@ -11,6 +11,32 @@ export interface ProviderFailureClassification {
   details: string;
 }
 
+export function isContextLengthError(bodyLower: string): boolean {
+  if (bodyLower.includes("context") || bodyLower.includes("maximum") || bodyLower.includes("too long")) {
+    return true;
+  }
+  if (/\btoo many tokens\b/.test(bodyLower) || /\bmax(?:imum)?\s+tokens\b/.test(bodyLower)) {
+    return true;
+  }
+  if (bodyLower.includes("token") && !isTokenAuthError(bodyLower)) {
+    return true;
+  }
+  return false;
+}
+
+function isTokenAuthError(bodyLower: string): boolean {
+  return (
+    bodyLower.includes("invalid token")
+    || bodyLower.includes("expired token")
+    || bodyLower.includes("malformed token")
+    || bodyLower.includes("unauthorized")
+    || bodyLower.includes("oauth")
+    || bodyLower.includes("api key")
+    || bodyLower.includes("apikey")
+    || bodyLower.includes("authentication")
+  );
+}
+
 export function classifyProviderFailure(
   status: number,
   body: string,
@@ -49,13 +75,8 @@ export function classifyProviderFailure(
     };
   }
 
-  // Context length
-  if (status === 400 && (
-    bodyLower.includes("context") ||
-    bodyLower.includes("token") ||
-    bodyLower.includes("maximum") ||
-    bodyLower.includes("too long")
-  )) {
+  // Context length — avoid broad "token" matches (OAuth / invalid token errors)
+  if (status === 400 && isContextLengthError(bodyLower)) {
     return {
       failureClass: "context_length_exceeded",
       cooldownSeconds: 0,

@@ -656,12 +656,11 @@ export function deploymentPenalty(
 export function isQuarantined(
   snapshot: HealthSnapshot | undefined,
   config: PenaltyConfig = DEFAULT_PENALTY_CONFIG,
+  circuitFailureCount = 0,
 ): boolean {
-  if (!snapshot) return false;
-  return (
-    config.quarantineFailureThreshold > 0 &&
-    snapshot.consecutiveFailureCount >= config.quarantineFailureThreshold
-  );
+  if (config.quarantineFailureThreshold <= 0) return false;
+  const consecutiveFailures = snapshot?.consecutiveFailureCount ?? 0;
+  return Math.max(consecutiveFailures, circuitFailureCount) >= config.quarantineFailureThreshold;
 }
 
 // Convert a HealthScoreRow (from storage) to HealthSnapshot (for scoring).

@@ -20,6 +20,9 @@
       "new_sqlite_classes": ["ControlPlaneStateDO", "OAuthAccountDO"]
     }
   ],
+  "vars": {
+    "ENCRYPTION_KEY": "vitest-local-encryption-key-32b-minimum-length"
+  },
   "triggers": {
     "crons": [
       "*/2 * * * *",

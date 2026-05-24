@@ -22,6 +22,7 @@ import { loadConfiguredPatterns } from "../nim/repair/aliases";
 import { executeStreamWithPreBuffer, type PreBufferConfig, type StreamDone } from "../streaming/pre-buffer";
 import { logInfo, logWarn } from "../observability/logging";
 import { applyDeploymentRuntimeOverrides } from "../config/runtime-overrides";
+import { buildFilterStateFromHealth, filterCandidates } from "../planner/deployment-filter";
 import type { TokenUsage, UsageEventPayload } from "../observability/token-usage";
 import { normalizeProviderUsage, usageEventFromTokenUsage } from "../observability/token-usage";
 
@@ -57,6 +58,7 @@ export interface SubscriptionContext {
     accessor: OAuthAccountAccessor;
     clientId: string;
     clientSecret?: string;
+    tokenUrl?: string;
   };
 }
 
@@ -170,7 +172,10 @@ export async function executeAttemptLoop(
         if (abortSignal.aborted) break;
       }
 
-      const shuffled = shuffleArray([...deployments]);
+      const routable = filterDeploymentsForAttempt(deployments, durableHealth, policy);
+      if (routable.length === 0) break;
+
+      const shuffled = shuffleArray([...routable]);
       const admissionCandidates = shuffled.map((d) => ({
         deploymentId: d.id, keyRef: d.keyRef, rpm: d.rpm,
         maxParallel: d.maxParallelRequests, group: d.group,
@@ -387,7 +392,7 @@ async function admitHedgeLanes(
   totalDeadline: number,
 ): Promise<HedgeLane[]> {
   const maxCandidates = Math.max(2, entry.policy.retry.hedge?.maxCandidates ?? 2);
-  const remaining = [...entry.deployments];
+  const remaining = filterDeploymentsForAttempt([...entry.deployments], durableHealth, entry.policy);
   const lanes: HedgeLane[] = [];
 
   while (lanes.length < maxCandidates && remaining.length > 0) {
@@ -1213,7 +1218,7 @@ function toRequestShape(envelope: RequestEnvelope): "chat" | "tool" | "multi_too
 const TRANSPORT_FAILURE_CLASSES = ["transport_error", "transport_timeout", "server_5xx"];
 const SEMANTIC_FAILURE_CLASSES = ["semantic_failure", "empty_response", "truncated_response", "repetition_detected", "reasoning_leak", "special_token_leak", "malformed_response"];
 
-function applyPolicyCooldown(failureClass: string, cooldownSec: number, policy: Policy): number {
+export function applyPolicyCooldown(failureClass: string, cooldownSec: number, policy: Policy): number {
   if (TRANSPORT_FAILURE_CLASSES.includes(failureClass) && policy.health.transportCooldownSeconds > 0)
     return Math.max(cooldownSec, policy.health.transportCooldownSeconds);
   if (SEMANTIC_FAILURE_CLASSES.includes(failureClass) && policy.health.semanticCooldownThreshold > 0 && cooldownSec === 0) return policy.health.semanticCooldownThreshold;
@@ -1233,6 +1238,20 @@ function failureRecordOptions(
     semanticSeverity,
     transportCooldownThreshold: policy?.health.transportCooldownThreshold,
   };
+}
+
+function filterDeploymentsForAttempt(
+  deployments: Deployment[],
+  durableHealth: DurableHealthSnapshot | null,
+  policy: Policy,
+): Deployment[] {
+  const filterState = buildFilterStateFromHealth(durableHealth);
+  const result = filterCandidates(deployments, filterState, Date.now(), {
+    scopeMode: policy.budget.scopeMode,
+    quarantineFailureThreshold: policy.health.circuitFailureThreshold,
+    suspectMaxParallelDivisor: policy.health.suspectMaxParallelDivisor,
+  });
+  return result.passed.map((entry) => entry.deployment);
 }
 
 function resolveKey(env: Record<string, unknown>, keyRef: string, deployment?: Deployment): string {

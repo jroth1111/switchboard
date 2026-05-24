@@ -4,6 +4,7 @@ import { repairRepetition } from "../../../src/nim/repair/repetition";
 import { repairSpecialTokens } from "../../../src/nim/repair/special-tokens";
 import { isDestructiveToolName } from "../../../src/nim/repair/aliases";
 import {
+  hasHiddenOnlyResponsesInput,
   hasHiddenOnlyTypedContent,
   hasTypedContentNormalization,
   normalizeTypedContentParts,
@@ -286,6 +287,15 @@ describe("typed content part normalization", () => {
     })).toBe(true);
     expect(hasHiddenOnlyTypedContent({
       messages: [{ role: "user", content: [{ type: "reasoning", text: "internal" }, { type: "text", text: "visible" }] }],
+    })).toBe(false);
+  });
+
+  it("detects hidden-only responses input arrays", () => {
+    expect(hasHiddenOnlyResponsesInput({
+      input: [{ role: "user", content: [{ type: "reasoning", text: "internal" }] }],
+    })).toBe(true);
+    expect(hasHiddenOnlyResponsesInput({
+      input: [{ role: "user", content: [{ type: "output_text", text: "visible" }] }],
     })).toBe(false);
   });
 

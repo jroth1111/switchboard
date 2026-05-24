@@ -20,6 +20,7 @@ export interface ProviderBuildContext {
       accessor: OAuthAccountAccessor;
       clientId: string;
       clientSecret?: string;
+      tokenUrl?: string;
     };
   };
 }

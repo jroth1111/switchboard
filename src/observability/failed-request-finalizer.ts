@@ -34,13 +34,30 @@ export function failedRequestSummaryFromReceipt(receipt: RouteReceipt): FailedRe
     return null;
   }
 
-  if (receipt.attempts.length === 0) {
-    return null;
-  }
-
   const lastAttempt = receipt.attempts[receipt.attempts.length - 1];
   const firstFailure = receipt.attempts.find((a) => a.failureClass);
   const selectedDeploymentId = [...receipt.attempts].reverse().find((a) => a.deploymentId)?.deploymentId;
+
+  if (receipt.attempts.length === 0) {
+    if (receipt.finalOutcome !== "client_error") return null;
+    return {
+      requestId: receipt.requestId,
+      timestamp: receipt.timestamp,
+      originalModel: receipt.originalModel,
+      route: receipt.canonicalTarget,
+      canonicalTarget: receipt.canonicalTarget,
+      selectedGroup: receipt.selectedGroup,
+      selectedModel: receipt.selectedGroup,
+      selectedDeploymentId: undefined,
+      requestSource: receipt.appId ?? receipt.clientId ?? "unknown",
+      finalOutcome: receipt.finalOutcome,
+      failureClass: receipt.denialReason,
+      issueCode: receipt.denialReason ?? "client_denied",
+      attemptsCount: 0,
+      stream: receipt.stream,
+      attempts: [],
+    };
+  }
 
   return {
     requestId: receipt.requestId,
@@ -54,7 +71,9 @@ export function failedRequestSummaryFromReceipt(receipt: RouteReceipt): FailedRe
     requestSource: receipt.appId ?? receipt.clientId ?? "unknown",
     finalOutcome: receipt.finalOutcome,
     failureClass: lastAttempt?.failureClass ?? firstFailure?.failureClass,
-    issueCode: receipt.finalOutcome === "exhausted" ? "all_groups_exhausted" : undefined,
+    issueCode: receipt.finalOutcome === "exhausted"
+      ? "all_groups_exhausted"
+      : receipt.denialReason,
     attemptsCount: receipt.attempts.length,
     stream: receipt.stream,
     attempts: receipt.attempts.map((a) => ({

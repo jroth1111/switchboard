@@ -89,6 +89,17 @@ describe("Chat request validation", () => {
     expect(result.error?.code).toBe("invalid_messages");
   });
 
+  it("rejects null or non-object message entries", () => {
+    for (const messages of [[null], [undefined], ["not-an-object"], [[]]]) {
+      const result = validateChatRequest({
+        model: "glm-5.1",
+        messages,
+      });
+      expect(result.valid).toBe(false);
+      expect(result.error?.code).toBe("invalid_messages");
+    }
+  });
+
   it("rejects unsupported message role", () => {
     const result = validateChatRequest({
       model: "glm-5.1",

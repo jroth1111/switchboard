@@ -33,7 +33,14 @@ export function validateChatRequest(body: Record<string, unknown>): ValidationRe
   }
 
   for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i] as Record<string, unknown>;
+    const raw = messages[i];
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return {
+        valid: false,
+        error: { message: `messages[${i}] must be an object`, type: "invalid_request", code: "invalid_messages" },
+      };
+    }
+    const msg = raw as Record<string, unknown>;
     if (!msg.role || typeof msg.role !== "string") {
       return { valid: false, error: { message: `messages[${i}].role is required`, type: "invalid_request", code: "invalid_messages" } };
     }

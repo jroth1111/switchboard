@@ -206,7 +206,8 @@ export async function executeAttemptLoop(
       const remainingTotal = totalDeadline - attemptStart;
       const deploymentHealth = durableHealth?.healthScores?.[deployment.id];
       const adaptiveTimeoutMs = resolveAdaptiveAttemptTimeoutMs(policy, deployment, deploymentHealth, envelope.stream);
-      const attemptTimeoutMs = Math.min(adaptiveTimeoutMs, Math.max(remainingTotal, 5000));
+      const attemptTimeoutMs = resolveAttemptTimeoutMs(adaptiveTimeoutMs, remainingTotal);
+      if (attemptTimeoutMs <= 0) break;
 
       const adapter = getAdapter(deployment.provider, deployment.mode);
 
@@ -233,10 +234,7 @@ export async function executeAttemptLoop(
           envelope, plan, providerReq, policy, admission, deployment,
           group, stateDo, abortSignal, attemptStart, attempts, attemptIndex, adapter, attemptTimeoutMs,
         );
-        if (result !== null) {
-          await stateDo.release(admission.reservationId!);
-          return result;
-        }
+        if (result !== null) return result;
 
         const lastAttempt = attempts[attempts.length - 1];
         if (lastAttempt?.retryable) {
@@ -421,7 +419,19 @@ async function admitHedgeLanes(
     const [selected] = remaining.splice(idx, 1);
     const deployment = applyDeploymentRuntimeOverrides(selected, env);
     const remainingTotal = totalDeadline - Date.now();
+    if (remainingTotal <= 0) {
+      await stateDo.release(admission.reservationId!);
+      break;
+    }
     const deploymentHealth = durableHealth?.healthScores?.[deployment.id];
+    const attemptTimeoutMs = resolveAttemptTimeoutMs(
+      resolveAdaptiveAttemptTimeoutMs(entry.policy, deployment, deploymentHealth, envelope.stream),
+      remainingTotal,
+    );
+    if (attemptTimeoutMs <= 0) {
+      await stateDo.release(admission.reservationId!);
+      break;
+    }
     lanes.push({
       group: entry.group,
       policy: entry.policy,
@@ -429,10 +439,7 @@ async function admitHedgeLanes(
       deployment,
       apiKey: resolveKey(env, admission.keyRef!, deployment),
       attemptIndex: baseAttemptIndex + lanes.length,
-      attemptTimeoutMs: Math.min(
-        resolveAdaptiveAttemptTimeoutMs(entry.policy, deployment, deploymentHealth, envelope.stream),
-        Math.max(remainingTotal, 5_000),
-      ),
+      attemptTimeoutMs,
       deploymentHealth,
     });
   }
@@ -1131,6 +1138,13 @@ function coerceHealthSnapshot(snapshot: Partial<HealthSnapshot> | undefined, now
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────
+
+/** Caps per-attempt timeout by remaining total deadline budget (no artificial floor past budget). */
+export function resolveAttemptTimeoutMs(adaptiveTimeoutMs: number, remainingTotalMs: number): number {
+  const remaining = Math.max(0, remainingTotalMs);
+  if (remaining === 0) return 0;
+  return Math.min(adaptiveTimeoutMs, remaining);
+}
 
 export function resolveAdaptiveAttemptTimeoutMs(
   policy: Policy,

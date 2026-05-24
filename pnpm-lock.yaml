@@ -18,6 +18,27 @@ importers:
       '@types/node':
         specifier: ^22.15.0
         version: 22.19.18
+      '@vitest/expect':
+        specifier: 3.2.4
+        version: 3.2.4
+      '@vitest/mocker':
+        specifier: 3.2.4
+        version: 3.2.4(vite@6.4.2(@types/node@22.19.18)(tsx@4.21.0)(yaml@2.8.4))
+      '@vitest/pretty-format':
+        specifier: 3.2.4
+        version: 3.2.4
+      '@vitest/runner':
+        specifier: 3.2.4
+        version: 3.2.4
+      '@vitest/snapshot':
+        specifier: 3.2.4
+        version: 3.2.4
+      '@vitest/spy':
+        specifier: 3.2.4
+        version: 3.2.4
+      '@vitest/utils':
+        specifier: 3.2.4
+        version: 3.2.4
       tsx:
         specifier: ^4.19.0
         version: 4.21.0

@@ -212,7 +212,7 @@ export class InMemoryStorageAdapter implements StorageAdapter {
   getLearnedLimit(deploymentId: string, now: number): LearnedLimitRow | null {
     const l = this.learnedLimits.get(deploymentId);
     if (!l) return null;
-    if (l.expiresAt && l.expiresAt < now) return null;
+    if (l.expiresAt != null && l.expiresAt < now) return null;
     return l;
   }
 

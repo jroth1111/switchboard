@@ -57,11 +57,22 @@ export class OAuthAccountDO extends DurableObject {
     const now = Date.now();
     const encKey = this.encryptionKey();
     const accessTokenCiphertext = await encrypt(accessToken, encKey);
-    const refreshTokenCiphertext = refreshToken ? await encrypt(refreshToken, encKey) : null;
+
+    const existingRows = this.ctx.storage.sql
+      .exec("SELECT refresh_token_ciphertext, expires_at FROM oauth_tokens WHERE account_id = ?", accountId)
+      .toArray();
+    const existing = existingRows[0];
+
+    const refreshTokenCiphertext = refreshToken !== undefined
+      ? (refreshToken ? await encrypt(refreshToken, encKey) : null)
+      : (existing ? (existing.refresh_token_ciphertext as string | null) : null);
+    const resolvedExpiresAt = expiresAt !== undefined
+      ? (expiresAt ?? null)
+      : (existing ? (existing.expires_at as number | null) : null);
 
     this.ctx.storage.sql.exec(
       "INSERT OR REPLACE INTO oauth_tokens (account_id, provider, access_token_ciphertext, refresh_token_ciphertext, expires_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-      accountId, provider, accessTokenCiphertext, refreshTokenCiphertext, expiresAt ?? null, now,
+      accountId, provider, accessTokenCiphertext, refreshTokenCiphertext, resolvedExpiresAt, now,
     );
   }
 
@@ -83,7 +94,7 @@ export class OAuthAccountDO extends DurableObject {
       .toArray();
     return rows.length > 0
       && rows[0].request_id === requestId
-      && rows[0].locked_until === lockedUntil;
+      && Number(rows[0].locked_until) === lockedUntil;
   }
 
   async releaseRefreshLock(accountId: string, requestId: string): Promise<void> {

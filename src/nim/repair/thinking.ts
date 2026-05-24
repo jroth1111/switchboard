@@ -28,19 +28,31 @@ const THINKING_REGEX_PAIRS: Array<{
 }> = THINKING_TAG_NAMES.map((name) => {
   const open = `<${name}`;
   const close = `</${name}`;
+  const closeTagEnd = `<\\/${name}\\b[^>]*>`;
+  const closeTagEndNoGt = `<\\/${name}[^>]*>`;
   return {
     open,
     close,
-    pairRe: new RegExp(open + "\\b[^>]*>[\\s\\S]*?" + close + "\\b[^>]*>", "gi"),
-    pairNoGtRe: new RegExp(open + "\\b[^>]*>[\\s\\S]{0,4096}?" + close + "[^>]*>", "gi"),
+    pairRe: new RegExp(open + "\\b[^>]*>(?:(?!" + open + "\\b)[\\s\\S])*?" + closeTagEnd, "gi"),
+    pairNoGtRe: new RegExp(open + "\\b[^>]*>(?:(?!" + open + "\\b)[\\s\\S]){0,4096}" + closeTagEndNoGt, "gi"),
     unclosedRe: new RegExp(open + "\\b[^>]*>?", "gi"),
-    closeTagPresentRe: new RegExp(close + "\\b", "i"),
+    closeTagPresentRe: new RegExp(`<\\/${name}\\b`, "i"),
   };
 });
 
 const REASONING_FIELDS = ["reasoning", "reasoning_content", "thinking"];
 
 export function stripThinkingLeaks(text: string): string {
+  let result = text;
+  for (;;) {
+    const next = stripThinkingLeaksOnce(result);
+    if (next === result) break;
+    result = next;
+  }
+  return result;
+}
+
+function stripThinkingLeaksOnce(text: string): string {
   let result = text;
 
   for (const { close, pairRe, pairNoGtRe, unclosedRe, closeTagPresentRe } of THINKING_REGEX_PAIRS) {

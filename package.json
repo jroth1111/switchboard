@@ -1,0 +1,32 @@
+{
+  "name": "worker-control-plane",
+  "description": "Cloudflare Worker LLM control plane with NIM mitigation, account rotation, and silent failover",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --config wrangler.dev.jsonc",
+    "deploy": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --config wrangler.dev.jsonc",
+    "deploy:fixture": "wrangler deploy --config wrangler.provider-fixture.jsonc",
+    "live:smoke": "tsx scripts/live-smoke.ts",
+    "test": "vitest run",
+    "test:watch": "vitest watch",
+    "tsc": "tsc --noEmit",
+    "validate": "tsx scripts/validate-manifest.ts",
+    "bundle-size": "tsx scripts/bundle-size.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.12.20",
+    "@types/node": "^22.15.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.3",
+    "vite": "^6.3.0",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.87.0",
+    "yaml": "^2.7.0"
+  },
+  "dependencies": {
+    "jsonrepair": "^3.14.0"
+  }
+}

@@ -1,0 +1,77 @@
+.dev.vars
+.live-smoke-report.json
+.wrangler/
+
+# BEGIN local agent runtime artifact ignores
+# Local Beads state
+.beads/
+
+# Dependency installs and package-manager state
+node_modules/
+bower_components/
+jspm_packages/
+.pnp/
+.pnp.*
+
+# Build outputs and framework caches
+target/
+dist/
+build/
+out/
+.next/
+.nuxt/
+.output/
+.svelte-kit/
+.astro/
+.turbo/
+.nx/
+.cache/
+.parcel-cache/
+.vite/
+.vitepress/cache/
+
+# Test and coverage artifacts
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+cypress/screenshots/
+cypress/videos/
+
+# Python caches and virtual environments
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+.tox/
+.nox/
+.venv/
+venv/
+env/
+htmlcov/
+
+# Native/JVM/Swift/Zig build state
+.gradle/
+.cmake/
+CMakeFiles/
+cmake-build-*/
+DerivedData/
+.build/
+.swiftpm/
+zig-cache/
+.zig-cache/
+
+# Runtime temp and logs
+tmp/
+temp/
+logs/
+log/
+*.log
+# END local agent runtime artifact ignores
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key

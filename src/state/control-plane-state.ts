@@ -1,0 +1,604 @@
+// ControlPlaneStateDO: Durable Object for strongly consistent routing state.
+// Delegates admission/circuit/health logic to the unified admission engine
+// via SqlStorageAdapter. Retains schema management and query/reporting methods.
+
+import { DurableObject } from "cloudflare:workers";
+import type { FailureClass } from "../config/schema";
+import type { AdmissionRequest, AdmissionResponse } from "./admission-engine";
+import * as engine from "./admission-engine";
+import { SqlStorageAdapter } from "./sql-adapter";
+import { safeJsonParse } from "../utils/result";
+
+// ─── Schema migrations ────────────────────────────────────────────
+
+const SCHEMA = `
+  CREATE TABLE IF NOT EXISTS key_windows (
+    key_ref TEXT NOT NULL,
+    window_start INTEGER NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (key_ref, window_start)
+  );
+
+  CREATE TABLE IF NOT EXISTS group_windows (
+    group_name TEXT NOT NULL,
+    window_start INTEGER NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (group_name, window_start)
+  );
+
+  CREATE TABLE IF NOT EXISTS reservations (
+    reservation_id TEXT PRIMARY KEY,
+    key_ref TEXT NOT NULL,
+    deployment_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    confirmed INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS inflight (
+    deployment_id TEXT PRIMARY KEY,
+    count INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS cooldowns (
+    scope TEXT PRIMARY KEY,
+    reason TEXT NOT NULL,
+    until INTEGER NOT NULL,
+    details_json TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS circuits (
+    deployment_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL DEFAULT 'closed',
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    opened_at INTEGER,
+    half_open_after INTEGER,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS health_scores (
+    deployment_id TEXT PRIMARY KEY,
+    score REAL NOT NULL DEFAULT 100.0,
+    last_success_at INTEGER,
+    last_failure_at INTEGER,
+    failure_class TEXT,
+    updated_at INTEGER NOT NULL,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    consecutive_failure_count INTEGER NOT NULL DEFAULT 0,
+    latency_ema_ms REAL,
+    latency_sample_count INTEGER NOT NULL DEFAULT 0,
+    recent_outcomes_json TEXT,
+    first_byte_latency_history_json TEXT,
+    total_latency_history_json TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS learned_limits (
+    deployment_id TEXT PRIMARY KEY,
+    max_parallel INTEGER NOT NULL,
+    reason TEXT,
+    expires_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS route_dispatch_memory (
+    canonical_target TEXT PRIMARY KEY,
+    group_name TEXT NOT NULL,
+    dispatched_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS route_dispatch_memory_by_class (
+    canonical_target TEXT NOT NULL,
+    request_class TEXT NOT NULL,
+    group_name TEXT NOT NULL,
+    dispatched_at INTEGER NOT NULL,
+    PRIMARY KEY (canonical_target, request_class)
+  );
+
+  CREATE TABLE IF NOT EXISTS receipts (
+    request_id TEXT PRIMARY KEY,
+    timestamp INTEGER NOT NULL,
+    original_model TEXT NOT NULL,
+    canonical_target TEXT NOT NULL,
+    selected_group TEXT NOT NULL,
+    fallback_groups TEXT NOT NULL,
+    attempts_json TEXT NOT NULL,
+    final_outcome TEXT NOT NULL,
+    stream INTEGER NOT NULL DEFAULT 0,
+    total_duration_ms INTEGER
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_receipts_timestamp ON receipts(timestamp);
+
+  CREATE TABLE IF NOT EXISTS failed_request_receipts (
+    request_id TEXT PRIMARY KEY,
+    timestamp INTEGER NOT NULL,
+    original_model TEXT NOT NULL,
+    canonical_target TEXT,
+    selected_group TEXT,
+    final_outcome TEXT NOT NULL,
+    failure_class TEXT,
+    attempts_count INTEGER NOT NULL,
+    summary_json TEXT NOT NULL,
+    receipt_json TEXT,
+    written_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_failed_timestamp ON failed_request_receipts(timestamp);
+  CREATE INDEX IF NOT EXISTS idx_failed_group ON failed_request_receipts(selected_group);
+  CREATE INDEX IF NOT EXISTS idx_failed_failure_class ON failed_request_receipts(failure_class);
+
+  CREATE INDEX IF NOT EXISTS idx_reservations_expires ON reservations(expires_at);
+
+  CREATE TABLE IF NOT EXISTS usage_events (
+    request_id TEXT NOT NULL,
+    attempt_index INTEGER NOT NULL,
+    timestamp INTEGER NOT NULL,
+    canonical_target TEXT NOT NULL,
+    selected_group TEXT NOT NULL,
+    deployment_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    stream INTEGER NOT NULL,
+    final_outcome TEXT NOT NULL,
+    usage_kind TEXT NOT NULL,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    total_tokens INTEGER,
+    usage_source TEXT NOT NULL,
+    PRIMARY KEY (request_id, attempt_index)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_usage_group_time ON usage_events(selected_group, timestamp);
+  CREATE INDEX IF NOT EXISTS idx_usage_deployment_time ON usage_events(deployment_id, timestamp);
+
+  CREATE TABLE IF NOT EXISTS usage_rollups_hourly (
+    hour_start INTEGER NOT NULL,
+    selected_group TEXT NOT NULL,
+    deployment_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    requests INTEGER NOT NULL DEFAULT 0,
+    known_requests INTEGER NOT NULL DEFAULT 0,
+    unknown_requests INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (hour_start, selected_group, deployment_id, provider, model)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_rollups_hour ON usage_rollups_hourly(hour_start);
+
+  CREATE TABLE IF NOT EXISTS key_token_windows (
+    key_ref TEXT NOT NULL,
+    window_start INTEGER NOT NULL,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (key_ref, window_start)
+  );
+
+  CREATE TABLE IF NOT EXISTS canary_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp INTEGER NOT NULL,
+    deployment_id TEXT NOT NULL,
+    group_name TEXT NOT NULL,
+    success INTEGER NOT NULL,
+    failure_class TEXT,
+    latency_ms INTEGER,
+    status_code INTEGER
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_canary_timestamp ON canary_results(timestamp);
+`;
+
+// Re-export types that consumers depend on
+export type { AdmissionRequest, AdmissionResponse } from "./admission-engine";
+
+// ─── Durable Object ───────────────────────────────────────────────
+
+export class ControlPlaneStateDO extends DurableObject {
+  private initialized = false;
+  private learnedConcurrencyEnabled = false;
+  private learnedConcurrencyTtlSeconds = 300;
+  private store: SqlStorageAdapter | null = null;
+
+  private ensureSchema() {
+    if (this.initialized) return;
+    this.ctx.storage.sql.exec(SCHEMA);
+    this.ensureColumn("health_scores", "success_count", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("health_scores", "failure_count", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("health_scores", "consecutive_failure_count", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("health_scores", "latency_ema_ms", "REAL");
+    this.ensureColumn("health_scores", "latency_sample_count", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("health_scores", "recent_outcomes_json", "TEXT");
+    this.ensureColumn("health_scores", "first_byte_latency_history_json", "TEXT");
+    this.ensureColumn("health_scores", "total_latency_history_json", "TEXT");
+    this.ensureColumn("receipts", "total_duration_ms", "INTEGER");
+    this.store = new SqlStorageAdapter(this.ctx.storage);
+    this.initialized = true;
+  }
+
+  private ensureColumn(tableName: string, columnName: string, definition: string) {
+    if (!/^[a-z_][a-z0-9_]*$/.test(tableName) || !/^[a-z_][a-z0-9_]*$/.test(columnName)) return;
+    const columns = this.ctx.storage.sql.exec(`PRAGMA table_info(${tableName})`).toArray();
+    if (columns.some((column) => column.name === columnName)) return;
+    this.ctx.storage.sql.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+  }
+
+  // ─── Admission (delegated to engine) ────────────────────────────
+
+  async admit(req: AdmissionRequest): Promise<AdmissionResponse> {
+    this.ensureSchema();
+    if ((req.learnedConcurrencyEnabled !== null && req.learnedConcurrencyEnabled !== undefined)) this.learnedConcurrencyEnabled = req.learnedConcurrencyEnabled;
+    if ((req.learnedConcurrencyTtlSeconds !== null && req.learnedConcurrencyTtlSeconds !== undefined)) this.learnedConcurrencyTtlSeconds = req.learnedConcurrencyTtlSeconds;
+    return engine.admit(this.store!, req);
+  }
+
+  async confirm(reservationId: string): Promise<void> {
+    this.ensureSchema();
+    const res = this.store!.confirmReservation(reservationId);
+    if (res) {
+      // Refresh the inflight row's updated_at so long-running streams (e.g. >120s)
+      // are not pruned by pruneStaleInflight before the request completes.
+      const current = this.store!.getInflight(res.deploymentId);
+      this.store!.setInflight(res.deploymentId, current, Date.now());
+    }
+  }
+
+  async release(reservationId: string): Promise<void> {
+    this.ensureSchema();
+    engine.release(this.store!, reservationId);
+  }
+
+  // ─── Health recording (delegated to engine) ───────────────────
+
+  async recordSuccess(deploymentId: string, circuitSuccessThreshold?: number, durationMs?: number, latencyConfig?: { emaAlpha?: number; penaltyFactor?: number; warmupSamples?: number }, options?: engine.RecordSuccessOptions): Promise<void> {
+    this.ensureSchema();
+    engine.recordSuccess(
+      this.store!, deploymentId, circuitSuccessThreshold, durationMs, latencyConfig,
+      this.learnedConcurrencyEnabled, this.learnedConcurrencyTtlSeconds, options,
+    );
+  }
+
+  async recordFailure(
+    deploymentId: string,
+    failureClass: FailureClass,
+    cooldownSeconds: number,
+    circuitThreshold: number,
+    circuitDurationSeconds: number,
+    suspectThresholdFraction?: number,
+    options?: engine.RecordFailureOptions,
+  ): Promise<void> {
+    this.ensureSchema();
+    engine.recordFailure(
+      this.store!, deploymentId, failureClass, cooldownSeconds,
+      circuitThreshold, circuitDurationSeconds, suspectThresholdFraction,
+      this.learnedConcurrencyEnabled, this.learnedConcurrencyTtlSeconds, options,
+    );
+  }
+
+  // ─── Health snapshot ───────────────────────────────────────────
+
+  async getHealth(): Promise<Record<string, unknown>> {
+    this.ensureSchema();
+    const scoreRows = this.store!.listHealthScores();
+    const circuits = this.ctx.storage.sql.exec("SELECT * FROM circuits").toArray();
+    const cooldowns = this.ctx.storage.sql.exec("SELECT * FROM cooldowns").toArray();
+    const inflight = this.ctx.storage.sql.exec("SELECT * FROM inflight").toArray();
+    const learnedLimits = this.ctx.storage.sql.exec("SELECT * FROM learned_limits").toArray();
+    return {
+      healthScores: Object.fromEntries(scoreRows.map(({ deploymentId, score }) => [deploymentId, mapHealthScoreRow(score)])),
+      circuits: Object.fromEntries(circuits.map((row) => [row.deployment_id as string, mapCircuitRow(row)])),
+      cooldowns: Object.fromEntries(cooldowns.map((row) => [row.scope as string, {
+        reason: row.reason,
+        until: row.until,
+        details: safeJsonParse(row.details_json as string | null),
+      }])),
+      inflight: Object.fromEntries(inflight.map((row) => [row.deployment_id as string, {
+        count: row.count,
+        updatedAt: row.updated_at,
+      }])),
+      learnedLimits: Object.fromEntries(learnedLimits.map((row) => [row.deployment_id as string, {
+        maxParallel: row.max_parallel,
+        reason: row.reason,
+        expiresAt: row.expires_at,
+      }])),
+      scores: scoreRows.map(({ deploymentId, score }) => ({ deployment_id: deploymentId, ...mapHealthScoreRow(score) })),
+      timestamp: Date.now(),
+    };
+  }
+
+  // ─── Route dispatch memory ─────────────────────────────────────
+
+  async recordRouteDispatch(canonicalTarget: string, requestClass: string, groupName: string): Promise<void> {
+    this.ensureSchema();
+    const now = Date.now();
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO route_dispatch_memory_by_class
+         (canonical_target, request_class, group_name, dispatched_at) VALUES (?, ?, ?, ?)`,
+      canonicalTarget, requestClass, groupName, now,
+    );
+    this.ctx.storage.sql.exec("DELETE FROM route_dispatch_memory_by_class WHERE dispatched_at < ?", now - 86400000);
+  }
+
+  async getRecentRouteDispatch(canonicalTarget: string, requestClass: string, maxAgeSeconds: number): Promise<Record<string, unknown> | null> {
+    this.ensureSchema();
+    const cutoff = Date.now() - maxAgeSeconds * 1000;
+    const rows = this.ctx.storage.sql.exec(
+      `SELECT group_name, dispatched_at FROM route_dispatch_memory_by_class
+       WHERE canonical_target = ? AND request_class = ? AND dispatched_at >= ?`,
+      canonicalTarget, requestClass, cutoff,
+    ).toArray();
+    if (rows.length === 0) return null;
+    return { group: rows[0].group_name, dispatchedAt: rows[0].dispatched_at };
+  }
+
+  // ─── Clear cooldowns (admin) ──────────────────────────────────
+
+  async clearCooldowns(deploymentId?: string): Promise<void> {
+    this.ensureSchema();
+    this.store!.clearCooldowns(deploymentId);
+  }
+
+  // ─── Token usage recording ────────────────────────────────────
+
+  async recordTokenUsage(keyRef: string, promptTokens: number, completionTokens: number): Promise<void> {
+    this.ensureSchema();
+    const now = Date.now();
+    const bucketStart = Math.floor(now / 1000) * 1000;
+    this.store!.addTokenUsage(keyRef, bucketStart, promptTokens, completionTokens);
+  }
+
+  // ─── Receipts ──────────────────────────────────────────────────
+
+  async storeReceipt(receipt: {
+    requestId: string; timestamp: number; originalModel: string;
+    canonicalTarget: string; selectedGroup: string; fallbackGroups: string[];
+    attempts: Array<Record<string, unknown>>; finalOutcome: string;
+    stream: boolean; totalDurationMs?: number;
+  }): Promise<void> {
+    this.ensureSchema();
+    this.ctx.storage.sql.exec(
+      "INSERT OR REPLACE INTO receipts (request_id, timestamp, original_model, canonical_target, selected_group, fallback_groups, attempts_json, final_outcome, stream, total_duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      receipt.requestId, receipt.timestamp, receipt.originalModel, receipt.canonicalTarget,
+      receipt.selectedGroup, JSON.stringify(receipt.fallbackGroups), JSON.stringify(receipt.attempts),
+      receipt.finalOutcome, receipt.stream ? 1 : 0, receipt.totalDurationMs ?? null,
+    );
+    this.ctx.storage.sql.exec("DELETE FROM receipts WHERE timestamp < ?", Date.now() - 86400000);
+  }
+
+  async getReceipt(requestId: string): Promise<Record<string, unknown> | null> {
+    this.ensureSchema();
+    const rows = this.ctx.storage.sql.exec("SELECT * FROM receipts WHERE request_id = ?", requestId).toArray();
+    if (rows.length === 0) return null;
+    return mapReceiptRow(rows[0]);
+  }
+
+  async getRecentReceipts(limit = 200): Promise<Record<string, unknown>[]> {
+    this.ensureSchema();
+    return this.ctx.storage.sql.exec("SELECT * FROM receipts ORDER BY timestamp DESC LIMIT ?", limit).toArray().map(mapReceiptRow);
+  }
+
+  // ─── Canary results ────────────────────────────────────────────
+
+  async storeCanaryResult(result: {
+    deploymentId: string; group: string; success: boolean;
+    failureClass?: string; latencyMs: number; statusCode?: number;
+  }): Promise<void> {
+    this.ensureSchema();
+    const now = Date.now();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO canary_results (timestamp, deployment_id, group_name, success, failure_class, latency_ms, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      now, result.deploymentId, result.group, result.success ? 1 : 0,
+      result.failureClass ?? null, result.latencyMs, result.statusCode ?? null,
+    );
+    const count = this.ctx.storage.sql.exec("SELECT COUNT(*) as cnt FROM canary_results").toArray();
+    const total = (count[0]?.cnt as number) ?? 0;
+    if (total > 100) {
+      this.ctx.storage.sql.exec("DELETE FROM canary_results WHERE id IN (SELECT id FROM canary_results ORDER BY timestamp ASC LIMIT ?)", total - 100);
+    }
+  }
+
+  async getCanaryResults(limit = 50): Promise<Record<string, unknown>[]> {
+    this.ensureSchema();
+    return this.ctx.storage.sql.exec("SELECT * FROM canary_results ORDER BY timestamp DESC LIMIT ?", limit).toArray().map(mapCanaryResultRow);
+  }
+
+  // ─── Reap expired leases ──────────────────────────────────────
+
+  async reapExpired(): Promise<number> {
+    this.ensureSchema();
+    const now = Date.now();
+    const expired = this.ctx.storage.sql.exec(
+      "SELECT reservation_id FROM reservations WHERE expires_at < ? AND confirmed = 0", now,
+    ).toArray();
+    for (const row of expired) await this.release(row.reservation_id as string);
+    const confirmedExpired = this.ctx.storage.sql.exec(
+      "SELECT reservation_id FROM reservations WHERE expires_at < ? AND confirmed = 1", now,
+    ).toArray();
+    for (const row of confirmedExpired) await this.release(row.reservation_id as string);
+    this.ctx.storage.sql.exec("DELETE FROM learned_limits WHERE expires_at IS NOT NULL AND expires_at < ?", now);
+    this.ctx.storage.sql.exec("DELETE FROM key_token_windows WHERE window_start < ?", now - 60_000);
+    engine.decayIdleHealthScores(this.store!, now);
+    return expired.length + confirmedExpired.length;
+  }
+
+  // ─── Failed request storage ────────────────────────────────────
+
+  async storeFailedRequest(summary: {
+    requestId: string; timestamp: number; originalModel: string;
+    canonicalTarget: string; selectedGroup: string; finalOutcome: string;
+    failureClass?: string; attemptsCount: number; summaryJson: string; receiptJson?: string;
+  }): Promise<void> {
+    this.ensureSchema();
+    const now = Date.now();
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO failed_request_receipts
+        (request_id, timestamp, original_model, canonical_target, selected_group,
+         final_outcome, failure_class, attempts_count, summary_json, receipt_json, written_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      summary.requestId, summary.timestamp, summary.originalModel,
+      summary.canonicalTarget, summary.selectedGroup, summary.finalOutcome,
+      summary.failureClass ?? null, summary.attemptsCount,
+      summary.summaryJson, summary.receiptJson ?? null, now,
+    );
+    this.ctx.storage.sql.exec("DELETE FROM failed_request_receipts WHERE timestamp < ?", now - 7 * 86400000);
+  }
+
+  async queryFailedRequests(filters: {
+    requestId?: string; group?: string; failureClass?: string; limit?: number;
+  }): Promise<Record<string, unknown>[]> {
+    this.ensureSchema();
+    const limit = filters.limit ?? 100;
+    if (filters.requestId) {
+      return this.ctx.storage.sql.exec("SELECT * FROM failed_request_receipts WHERE request_id = ?", filters.requestId).toArray().map(mapFailedRequestRow);
+    }
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (filters.group) { conditions.push("selected_group = ?"); params.push(filters.group); }
+    if (filters.failureClass) { conditions.push("failure_class = ?"); params.push(filters.failureClass); }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    return this.ctx.storage.sql.exec(`SELECT * FROM failed_request_receipts ${where} ORDER BY timestamp DESC LIMIT ?`, ...params, limit).toArray().map(mapFailedRequestRow);
+  }
+
+  // ─── Usage events ──────────────────────────────────────────────
+
+  async storeUsageEvent(event: {
+    requestId: string; attemptIndex: number; timestamp: number;
+    canonicalTarget: string; selectedGroup: string; deploymentId: string;
+    provider: string; model: string; stream: boolean; finalOutcome: string;
+    usageKind: string; promptTokens: number | null; completionTokens: number | null;
+    totalTokens: number | null; usageSource: string;
+  }): Promise<void> {
+    this.ensureSchema();
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO usage_events
+         (request_id, attempt_index, timestamp, canonical_target, selected_group,
+          deployment_id, provider, model, stream, final_outcome,
+          usage_kind, prompt_tokens, completion_tokens, total_tokens, usage_source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      event.requestId, event.attemptIndex, event.timestamp,
+      event.canonicalTarget, event.selectedGroup, event.deploymentId,
+      event.provider, event.model, event.stream ? 1 : 0, event.finalOutcome,
+      event.usageKind, event.promptTokens, event.completionTokens,
+      event.totalTokens, event.usageSource,
+    );
+    this.ctx.storage.sql.exec("DELETE FROM usage_events WHERE timestamp < ?", Date.now() - 30 * 86400000);
+  }
+
+  async queryUsageEvents(filters: {
+    group?: string; deploymentId?: string; since?: number; until?: number; limit?: number;
+  }): Promise<Record<string, unknown>[]> {
+    this.ensureSchema();
+    const limit = filters.limit ?? 1000;
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (filters.group) { conditions.push("selected_group = ?"); params.push(filters.group); }
+    if (filters.deploymentId) { conditions.push("deployment_id = ?"); params.push(filters.deploymentId); }
+    if (filters.since) { conditions.push("timestamp >= ?"); params.push(filters.since); }
+    if (filters.until) { conditions.push("timestamp <= ?"); params.push(filters.until); }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    return this.ctx.storage.sql.exec(`SELECT * FROM usage_events ${where} ORDER BY timestamp DESC LIMIT ?`, ...params, limit).toArray().map(mapUsageEventRow);
+  }
+
+  async computeHourlyRollups(hourStart?: number): Promise<void> {
+    this.ensureSchema();
+    const hour = hourStart ?? Math.floor(Date.now() / 3600000) * 3600000;
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO usage_rollups_hourly
+         (hour_start, selected_group, deployment_id, provider, model,
+          requests, known_requests, unknown_requests, prompt_tokens, completion_tokens, total_tokens)
+       SELECT ?, selected_group, deployment_id, provider, model,
+         COUNT(*), SUM(CASE WHEN usage_kind = 'known' THEN 1 ELSE 0 END),
+         SUM(CASE WHEN usage_kind = 'unknown' THEN 1 ELSE 0 END),
+         COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
+       FROM usage_events WHERE timestamp >= ? AND timestamp < ?
+       GROUP BY selected_group, deployment_id, provider, model`,
+      hour, hour, hour + 3600000,
+    );
+  }
+
+  async queryRollups(filters: {
+    group?: string; deploymentId?: string; since?: number; until?: number;
+  }): Promise<Record<string, unknown>[]> {
+    this.ensureSchema();
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (filters.group) { conditions.push("selected_group = ?"); params.push(filters.group); }
+    if (filters.deploymentId) { conditions.push("deployment_id = ?"); params.push(filters.deploymentId); }
+    if (filters.since) { conditions.push("hour_start >= ?"); params.push(filters.since); }
+    if (filters.until) { conditions.push("hour_start <= ?"); params.push(filters.until); }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    return this.ctx.storage.sql.exec(`SELECT * FROM usage_rollups_hourly ${where} ORDER BY hour_start DESC`, ...params).toArray().map(mapRollupRow);
+  }
+}
+
+// ─── Row mappers ──────────────────────────────────────────────────
+
+function mapHealthScoreRow(row: import("./storage-adapter").HealthScoreRow): Record<string, unknown> {
+  return {
+    score: row.score, lastSuccessAt: row.lastSuccessAt, lastFailureAt: row.lastFailureAt,
+    failureClass: row.failureClass, updatedAt: row.updatedAt, successCount: row.successCount,
+    failureCount: row.failureCount, consecutiveFailureCount: row.consecutiveFailureCount,
+    latencyEmaMs: row.latencyEmaMs, latencySampleCount: row.latencySampleCount,
+    recentOutcomes: row.recentOutcomes ?? [],
+    rollingMetrics: engine.computeRollingMetrics(row.recentOutcomes ?? []),
+  };
+}
+
+function mapCircuitRow(row: Record<string, unknown>): Record<string, unknown> {
+  return {
+    state: row.state, failureCount: row.failure_count, successCount: row.success_count,
+    openedAt: row.opened_at, halfOpenAfter: row.half_open_after, updatedAt: row.updated_at,
+  };
+}
+
+function mapFailedRequestRow(row: Record<string, unknown>): Record<string, unknown> {
+  return {
+    requestId: row.request_id, timestamp: row.timestamp, originalModel: row.original_model,
+    canonicalTarget: row.canonical_target, selectedGroup: row.selected_group,
+    finalOutcome: row.final_outcome, failureClass: row.failure_class,
+    attemptsCount: row.attempts_count, summary: safeJsonParse(row.summary_json as string),
+    writtenAt: row.written_at,
+  };
+}
+
+function mapReceiptRow(row: Record<string, unknown>): Record<string, unknown> {
+  return {
+    requestId: row.request_id, timestamp: row.timestamp, originalModel: row.original_model,
+    canonicalTarget: row.canonical_target, selectedGroup: row.selected_group,
+    fallbackGroups: safeJsonParse(row.fallback_groups as string),
+    attempts: safeJsonParse(row.attempts_json as string), finalOutcome: row.final_outcome,
+    stream: row.stream === 1, totalDurationMs: (row.total_duration_ms as number | null) ?? undefined,
+  };
+}
+
+function mapUsageEventRow(row: Record<string, unknown>): Record<string, unknown> {
+  return {
+    requestId: row.request_id, attemptIndex: row.attempt_index, timestamp: row.timestamp,
+    canonicalTarget: row.canonical_target, selectedGroup: row.selected_group,
+    deploymentId: row.deployment_id, provider: row.provider, model: row.model,
+    stream: row.stream === 1, finalOutcome: row.final_outcome, usageKind: row.usage_kind,
+    promptTokens: row.prompt_tokens, completionTokens: row.completion_tokens,
+    totalTokens: row.total_tokens, usageSource: row.usage_source,
+  };
+}
+
+function mapRollupRow(row: Record<string, unknown>): Record<string, unknown> {
+  return {
+    hourStart: row.hour_start, selectedGroup: row.selected_group,
+    deploymentId: row.deployment_id, provider: row.provider, model: row.model,
+    requests: row.requests, knownRequests: row.known_requests, unknownRequests: row.unknown_requests,
+    promptTokens: row.prompt_tokens, completionTokens: row.completion_tokens, totalTokens: row.total_tokens,
+  };
+}
+
+function mapCanaryResultRow(row: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: row.id, timestamp: row.timestamp, deploymentId: row.deployment_id,
+    group: row.group_name, success: row.success === 1, failureClass: row.failure_class,
+    latencyMs: row.latency_ms, statusCode: row.status_code,
+  };
+}

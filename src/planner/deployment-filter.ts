@@ -50,21 +50,28 @@ export function filterCandidates(
       continue;
     }
 
-    // Circuit breaker
+    // Circuit breaker — open circuits reject until halfOpenAfter; probe windows cap concurrency at 1.
     const circuit = state.circuits.get(deployment.id);
+    let halfOpenProbe = false;
     if (circuit) {
       if (circuit.state === "open") {
         if (!circuit.halfOpenAfter || now < circuit.halfOpenAfter) {
           rejected.push({ deployment, reason: "circuit_open" });
           continue;
         }
+        halfOpenProbe = true;
+      } else if (circuit.state === "half_open") {
+        halfOpenProbe = true;
       }
     }
 
     // Inflight with learned concurrency
     const learned = state.learnedLimits.get(deployment.id);
     const learnedExpired = (learned?.expiresAt !== null && learned?.expiresAt !== undefined) && learned.expiresAt <= now;
-    const effectiveMax = (learned && !learnedExpired) ? learned.maxParallel : deployment.maxParallelRequests;
+    let effectiveMax = (learned && !learnedExpired) ? learned.maxParallel : deployment.maxParallelRequests;
+    if (halfOpenProbe) {
+      effectiveMax = Math.min(effectiveMax, 1);
+    }
 
     const currentInflight = state.inflight.get(deployment.id) ?? 0;
     if (currentInflight >= effectiveMax) {

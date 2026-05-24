@@ -27,6 +27,11 @@ describe("Encryption helpers", () => {
     await expect(decrypt(ciphertext, "wrong-key")).rejects.toThrow();
   });
 
+  it("rejects truncated or invalid ciphertext", async () => {
+    await expect(decrypt("enc:v1:short", key)).rejects.toThrow("Invalid encrypted payload");
+    await expect(decrypt("not-valid-base64!!!", key)).rejects.toThrow("Invalid encrypted payload");
+  });
+
   it("handles empty strings", async () => {
     const ciphertext = await encrypt("", key);
     const decrypted = await decrypt(ciphertext, key);

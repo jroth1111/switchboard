@@ -3,7 +3,10 @@
 
 const ALGORITHM = "AES-GCM";
 const IV_LENGTH = 12;
-const TAG_LENGTH = 128;
+const TAG_LENGTH = 128; // bits; GCM auth tag is 16 bytes
+const GCM_TAG_BYTES = TAG_LENGTH / 8;
+const ENCRYPTION_PREFIX = "enc:v1:";
+const MIN_ENCRYPTED_BYTES = IV_LENGTH + GCM_TAG_BYTES;
 
 let cachedKeyMaterial: { id: string; key: CryptoKey } | null = null;
 
@@ -44,7 +47,15 @@ export async function encrypt(plaintext: string, encryptionKey: string): Promise
 export async function decrypt(encoded: string, encryptionKey: string): Promise<string> {
   const payload = encoded.startsWith(ENCRYPTION_PREFIX) ? encoded.slice(ENCRYPTION_PREFIX.length) : encoded;
   const key = await deriveKey(encryptionKey);
-  const combined = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
+  let combined: Uint8Array;
+  try {
+    combined = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
+  } catch {
+    throw new Error("Invalid encrypted payload");
+  }
+  if (combined.length < MIN_ENCRYPTED_BYTES) {
+    throw new Error("Invalid encrypted payload");
+  }
 
   const iv = combined.slice(0, IV_LENGTH);
   const ciphertext = combined.slice(IV_LENGTH);
@@ -57,8 +68,6 @@ export async function decrypt(encoded: string, encryptionKey: string): Promise<s
 
   return new TextDecoder().decode(plaintext);
 }
-
-const ENCRYPTION_PREFIX = "enc:v1:";
 
 export function isEncrypted(value: string): boolean {
   return value.startsWith(ENCRYPTION_PREFIX);

@@ -86,6 +86,11 @@ describe("Receipt redaction", () => {
   it("leaves normal text unchanged", () => {
     expect(redact("Hello world")).toBe("Hello world");
   });
+
+  it("redacts embedded secrets in otherwise safe text", () => {
+    expect(redact("prefix sk-abcdefghijklmnop suffix")).toContain("***REDACTED***");
+    expect(redact("prefix sk-abcdefghijklmnop suffix")).not.toContain("sk-abcdefghijklmnop");
+  });
 });
 
 // ─── Structured sanitization ──────────────────────────────────────
@@ -150,6 +155,14 @@ describe("Structured receipt sanitization", () => {
     expect(sanitizeReceipt("Bearer token123")).toBe("<redacted>");
     expect(sanitizeReceipt("basic dXNlcjpwYXNz")).toBe("<redacted>");
     expect(sanitizeReceipt("normal text")).toBe("normal text");
+  });
+
+  it("redacts embedded secrets in non-secret field values", () => {
+    const result = sanitizeReceipt({
+      safe_field: "prefix sk-abcdefghijklmnop suffix",
+    }) as Record<string, unknown>;
+    expect(result.safe_field).toContain("***REDACTED***");
+    expect(String(result.safe_field)).not.toContain("sk-abcdefghijklmnop");
   });
 
   it("redacts private file paths", () => {

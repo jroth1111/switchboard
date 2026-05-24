@@ -177,7 +177,7 @@ export function sanitizeReceipt(value: unknown): unknown {
     if (isPrivatePathLike(lowered)) {
       return REDACTED;
     }
-    return value;
+    return redact(value);
   }
 
   return value;

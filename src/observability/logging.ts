@@ -34,10 +34,10 @@ function formatLog(entry: LogEntry): string {
 export function log(level: LogLevel, message: string, data?: Record<string, unknown>): void {
   if (!shouldLog(level)) return;
   const entry: LogEntry = {
+    ...data,
     level,
     message,
     timestamp: new Date().toISOString(),
-    ...data,
   };
   console.log(formatLog(entry));
 }

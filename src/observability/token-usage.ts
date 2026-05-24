@@ -29,14 +29,24 @@ export interface UsageEventPayload {
   usageSource: string;
 }
 
+function readTokenCount(...candidates: unknown[]): number | undefined {
+  for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined) continue;
+    const value = typeof candidate === "number" ? candidate : Number(candidate);
+    if (!Number.isFinite(value) || value < 0) return undefined;
+    return value;
+  }
+  return undefined;
+}
+
 export function normalizeProviderUsage(
   rawUsage: Record<string, number> | undefined,
   provider: string,
 ): TokenUsage {
   if (!rawUsage) return { kind: "unknown", source: provider };
 
-  const prompt = rawUsage.prompt_tokens ?? rawUsage.input_tokens;
-  const completion = rawUsage.completion_tokens ?? rawUsage.output_tokens;
+  const prompt = readTokenCount(rawUsage.prompt_tokens, rawUsage.input_tokens);
+  const completion = readTokenCount(rawUsage.completion_tokens, rawUsage.output_tokens);
 
   if (prompt === undefined || completion === undefined) {
     return { kind: "unknown", source: provider };

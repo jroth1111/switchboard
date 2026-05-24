@@ -75,14 +75,33 @@ describe("Deployment pre-routing filter", () => {
     expect(result.passed).toHaveLength(1);
   });
 
-  it("rejects half-open probe deployments when inflight already has the single allowed slot", () => {
+  it("keeps open circuits probeable after halfOpenAfter even when quarantine threshold is met", () => {
     const state = createEmptyFilterState();
-    state.circuits.set("deploy-1", { state: "half_open" });
+    const now = Date.now();
+    state.circuits.set("deploy-1", { state: "open", failureCount: 5, halfOpenAfter: now - 1000 });
+    state.healthScores.set("deploy-1", { consecutiveFailureCount: 5 });
+
+    const firstProbe = filterCandidates(
+      [makeDeployment({ maxParallelRequests: 4 })],
+      state,
+      now,
+      "per_key",
+      { quarantineFailureThreshold: 5 },
+    );
+
+    expect(firstProbe.passed).toHaveLength(1);
+
     state.inflight.set("deploy-1", 1);
-    const candidates = [makeDeployment({ maxParallelRequests: 4 })];
-    const result = filterCandidates(candidates, state, Date.now());
-    expect(result.passed).toHaveLength(0);
-    expect(result.rejected[0].reason).toBe("inflight_exhausted");
+    const secondProbe = filterCandidates(
+      [makeDeployment({ maxParallelRequests: 4 })],
+      state,
+      now,
+      "per_key",
+      { quarantineFailureThreshold: 5 },
+    );
+
+    expect(secondProbe.passed).toHaveLength(0);
+    expect(secondProbe.rejected[0].reason).toBe("inflight_exhausted");
   });
 
   it("rejects deployments at inflight capacity", () => {

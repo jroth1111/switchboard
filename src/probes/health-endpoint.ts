@@ -24,6 +24,7 @@ export interface HealthReport {
   status: "healthy" | "degraded" | "unhealthy";
   timestamp: number;
   routeGroups: Record<string, GroupHealth>;
+  dependencies: HealthDependencies;
   requestShapes?: Record<RequestShapeId, RequestShapeDefinition>;
   aliasVisibility?: Record<string, AliasVisibility>;
   deploymentDiagnostics?: Record<string, DeploymentDiagnostics>;
@@ -42,6 +43,16 @@ export interface HealthReport {
   };
   circuitBreakers: Record<string, CircuitState>;
   cooldowns: Record<string, CooldownState>;
+}
+
+export interface HealthDependencies {
+  controlPlaneState: DependencyStatus;
+  receiptHistory: DependencyStatus;
+}
+
+export interface DependencyStatus {
+  status: "ok" | "degraded";
+  reason?: string;
 }
 
 export interface CompleteHealthReport extends HealthReport {
@@ -305,19 +316,6 @@ const CIRCUIT_STATE_RANK: Record<string, number> = {
   open: 3,
 };
 
-function isDeploymentBlocked(
-  deploymentId: string,
-  now: number,
-  circuits?: Record<string, CircuitState>,
-  cooldowns?: Record<string, CooldownState>,
-): boolean {
-  const circuit = circuits?.[deploymentId];
-  const onCooldown = Boolean(cooldowns?.[deploymentId] && cooldowns[deploymentId].until > now);
-  const isCircuitBlocked = circuit?.state === "open"
-    && (!circuit.halfOpenAfter || now < circuit.halfOpenAfter);
-  return isCircuitBlocked || onCooldown;
-}
-
 function groupCircuitState(
   deploymentIds: string[],
   circuits?: Record<string, CircuitState>,
@@ -336,16 +334,44 @@ function groupCircuitState(
 }
 
 export async function buildHealthReport(stateDo: HealthProvider): Promise<CompleteHealthReport> {
-  const health = await stateDo.getHealth() as HealthState;
   const now = Date.now();
+  const dependencies: HealthDependencies = {
+    controlPlaneState: { status: "ok" },
+    receiptHistory: { status: "ok" },
+  };
+  let health: HealthState = {};
+  try {
+    const snapshot = await stateDo.getHealth();
+    if (isRecord(snapshot)) {
+      health = snapshot as HealthState;
+    } else {
+      dependencies.controlPlaneState = { status: "degraded", reason: "invalid_health_snapshot" };
+    }
+  } catch {
+    dependencies.controlPlaneState = { status: "degraded", reason: "health_snapshot_unavailable" };
+  }
 
   const circuits = health.circuits;
   const healthScores = health.healthScores;
   const cooldownsMap = health.cooldowns;
 
-  const receipts = stateDo.getRecentReceipts
-    ? await stateDo.getRecentReceipts(200) as unknown as RouteReceipt[]
-    : getAllReceipts();
+  let receipts: RouteReceipt[];
+  if (stateDo.getRecentReceipts) {
+    try {
+      const recent = await stateDo.getRecentReceipts(200);
+      if (Array.isArray(recent)) {
+        receipts = recent as unknown as RouteReceipt[];
+      } else {
+        receipts = [];
+        dependencies.receiptHistory = { status: "degraded", reason: "invalid_recent_receipts" };
+      }
+    } catch {
+      receipts = [];
+      dependencies.receiptHistory = { status: "degraded", reason: "recent_receipts_unavailable" };
+    }
+  } else {
+    receipts = getAllReceipts();
+  }
   const recentReceipts = receipts.filter((r) => now - r.timestamp < 300_000); // last 5 min
   const recentDeploymentOutcomes = buildRecentDeploymentOutcomes(recentReceipts);
   const filterState = buildFilterState(health);
@@ -359,26 +385,21 @@ export async function buildHealthReport(stateDo: HealthProvider): Promise<Comple
     const deployments = MANIFEST.deploymentsByGroup[groupName] ?? [];
     let totalScore = 0;
     let scoreCount = 0;
-    let blocked = 0;
+    const runtimeAvailability = summarizeRouteGroupAvailability(groupName, deployments, filterState, now);
 
     for (const d of deployments) {
-      const isBlocked = isDeploymentBlocked(d.id, now, circuits, cooldownsMap);
-      if (isBlocked) blocked++;
-
       const hs = healthScores?.[d.id];
-      if (typeof hs?.score === "number" && !isBlocked) {
+      if (typeof hs?.score === "number" && runtimeAvailability.passedDeploymentIds.has(d.id)) {
         totalScore += hs.score;
         scoreCount++;
       }
     }
 
-    const available = deployments.length - blocked;
-
     routeGroups[groupName] = {
-      available: available > 0,
+      available: runtimeAvailability.availableDeployments > 0,
       deployments: deployments.length,
-      availableDeployments: available,
-      blockedDeployments: blocked,
+      availableDeployments: runtimeAvailability.availableDeployments,
+      blockedDeployments: runtimeAvailability.blockedDeployments,
       circuitState: groupCircuitState(deployments.map((d) => d.id), circuits),
       avgHealthScore: scoreCount > 0 ? totalScore / scoreCount : undefined,
     };
@@ -398,7 +419,7 @@ export async function buildHealthReport(stateDo: HealthProvider): Promise<Comple
   let status: HealthReport["status"] = "healthy";
   if (availableGroups === 0) {
     status = "unhealthy";
-  } else if (availableGroups < totalGroups) {
+  } else if (availableGroups < totalGroups || hasDegradedDependency(dependencies)) {
     status = "degraded";
   }
 
@@ -412,6 +433,7 @@ export async function buildHealthReport(stateDo: HealthProvider): Promise<Comple
     status,
     timestamp: now,
     routeGroups,
+    dependencies,
     requestShapes,
     aliasVisibility,
     deploymentDiagnostics,
@@ -838,6 +860,31 @@ function buildFilterState(health: HealthState): FilterState {
   return state;
 }
 
+function summarizeRouteGroupAvailability(
+  groupName: string,
+  deployments: Deployment[],
+  filterState: FilterState,
+  now: number,
+): { availableDeployments: number; blockedDeployments: number; passedDeploymentIds: Set<string> } {
+  const policy = MANIFEST.policies[groupName] ?? MANIFEST.defaultPolicy;
+  const filtered = filterCandidates(deployments, filterState, now, policy.budget.scopeMode, {
+    maxParallelOverride: policy.budget.maxParallelRequests,
+    quarantineFailureThreshold: policy.health.circuitFailureThreshold,
+    suspectMaxParallelDivisor: policy.health.suspectMaxParallelDivisor,
+    rpmLimit: policy.budget.rpmLimit,
+    tokenBudgetPerMinute: policy.budget.tokenBudgetPerMinute,
+  });
+  return {
+    availableDeployments: filtered.passed.length,
+    blockedDeployments: filtered.rejected.length,
+    passedDeploymentIds: new Set(filtered.passed.map((candidate) => candidate.deployment.id)),
+  };
+}
+
+function hasDegradedDependency(dependencies: HealthDependencies): boolean {
+  return Object.values(dependencies).some((dependency) => dependency.status === "degraded");
+}
+
 function buildDeploymentDiagnostics(
   health: HealthState,
   recentOutcomesByDeployment: Map<string, RecentDeploymentOutcome>,
@@ -877,6 +924,10 @@ function buildDeploymentDiagnostics(
     };
   }
   return result;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function buildDeploymentHealthSummary(score: HealthScoreState | undefined): DeploymentHealthSummary | undefined {
@@ -977,7 +1028,9 @@ function effectiveMaxParallelForDeployment(
   if (learned && isLearnedLimitActive(learned, now) && typeof learned.maxParallel === "number") {
     effectiveMax = Math.min(effectiveMax, learned.maxParallel);
   }
-  if (isCircuitHalfOpen(circuit, now)) {
+  if (isCircuitBlocking(circuit, now)) {
+    effectiveMax = 0;
+  } else if (isCircuitHalfOpen(circuit, now)) {
     effectiveMax = Math.min(effectiveMax, 1);
   }
   return effectiveMax;

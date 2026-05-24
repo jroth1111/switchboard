@@ -22,11 +22,15 @@ const VISIBLE_TEXT_TYPES = new Set(["text", "input_text", "output_text", "summar
 const HIDDEN_TEXT_TYPES = new Set(["reasoning", "thinking", "scratchpad", "chain_of_thought", "internal_thought"]);
 const METADATA_TYPES = new Set(["metadata_marker"]);
 const PASSTHROUGH_TYPES = new Set(["image_url", "input_image", "image", "audio", "input_audio", "tool_result"]);
+const VISIBLE_TEXT_KEYS = ["text", "output_text", "input_text", "summary_text", "content"];
 
 export function typedContentPartAction(part: unknown): TypedPartAction {
   if (!isPlainObject(part)) return "unknown";
   const type = partType(part);
-  if (VISIBLE_TEXT_TYPES.has(type)) return type === "text" ? "keep_visible_text" : "normalize_visible_text";
+  if (VISIBLE_TEXT_TYPES.has(type)) {
+    if (type === "text" && typeof part.text === "string") return "keep_visible_text";
+    return extractVisibleText(part) === null ? "unknown" : "normalize_visible_text";
+  }
   if (HIDDEN_TEXT_TYPES.has(type)) return "strip_hidden_reasoning";
   if (METADATA_TYPES.has(type)) return "strip_metadata";
   if (PASSTHROUGH_TYPES.has(type)) return "preserve_structured_part";
@@ -48,12 +52,8 @@ export function normalizeTypedContentParts(data: Record<string, unknown>): Typed
       const type = isPlainObject(part) ? partType(part) : "non_mapping";
 
       if (action === "normalize_visible_text" && isPlainObject(part)) {
-        const text = typeof part.text === "string"
-          ? part.text
-          : typeof part.output_text === "string"
-            ? part.output_text
-            : undefined;
-        if (typeof text === "string") {
+        const text = extractVisibleText(part);
+        if (text !== null) {
           normalized.push({ type: "text", text });
           changed = true;
           receipts.push({ messageIndex, partIndex, partType: type, action });
@@ -119,6 +119,14 @@ export function hasHiddenOnlyTypedContent(data: Record<string, unknown>): boolea
 function partType(part: Record<string, unknown>): string {
   const raw = part.type;
   return typeof raw === "string" && raw.trim() ? raw.trim().toLowerCase() : "unknown";
+}
+
+function extractVisibleText(part: Record<string, unknown>): string | null {
+  for (const key of VISIBLE_TEXT_KEYS) {
+    const value = part[key];
+    if (typeof value === "string") return value;
+  }
+  return null;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

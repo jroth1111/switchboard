@@ -8,6 +8,7 @@ import { validateResponsesContract } from "../providers/chatgpt-responses";
 import { sanitizeClientMetadata, signMetadata } from "../security/internal-metadata";
 import { recordReceipt, sanitizeReceipt, type RouteReceipt } from "../observability/receipt";
 import { readJsonBodyWithLimit, validateBodySize, validateChatRequest, validateContentType, validateResponsesRequest } from "./validation";
+import { verifyAdminAuth } from "./auth";
 export { verifyProxyAuth, verifyAdminAuth } from "./auth";
 import { logInfo, logWarn } from "../observability/logging";
 import { buildHealthReport, verifyHealthAuth } from "../probes/health-endpoint";
@@ -51,7 +52,7 @@ export function migrateFunctionsToTools(body: Record<string, unknown>): void {
 export async function handleChatCompletions(
   request: Request,
   env: Env,
-  _ctx: ExecutionContext,
+  ctx: ExecutionContext,
   client: ClientIdentity,
 ): Promise<Response> {
   const requestId = generateRequestId();
@@ -96,13 +97,13 @@ export async function handleChatCompletions(
     }, 400, requestId, client);
   }
 
-  return handlePreparedModelRequest({ body, env, client, requestId, surface: "chat_completions" });
+  return handlePreparedModelRequest({ body, env, ctx, client, requestId, surface: "chat_completions" });
 }
 
 export async function handleResponses(
   request: Request,
   env: Env,
-  _ctx: ExecutionContext,
+  ctx: ExecutionContext,
   client: ClientIdentity,
 ): Promise<Response> {
   const requestId = generateRequestId();
@@ -144,17 +145,18 @@ export async function handleResponses(
   }
 
   body = sanitizeClientMetadata(body);
-  return handlePreparedModelRequest({ body, env, client, requestId, surface: "responses" });
+  return handlePreparedModelRequest({ body, env, ctx, client, requestId, surface: "responses" });
 }
 
 async function handlePreparedModelRequest(params: {
   body: Record<string, unknown>;
   env: Env;
+  ctx: ExecutionContext;
   client: ClientIdentity;
   requestId: string;
   surface: Surface;
 }): Promise<Response> {
-  const { body, env, client, requestId, surface } = params;
+  const { body, env, ctx, client, requestId, surface } = params;
   const model = body.model as string;
   const modelAuth = authorizeModelForClient(model, client);
   if (!modelAuth.allowed) {
@@ -191,7 +193,7 @@ async function handlePreparedModelRequest(params: {
       totalDurationMs: 0,
     };
     recordReceipt(denialReceipt);
-    persistDenialReceipt(env, denialReceipt);
+    persistDenialReceipt(env, denialReceipt, ctx);
     return errorResponse({
       message: `Model is not allowed for client: ${model}`,
       type: "invalid_request",
@@ -300,7 +302,7 @@ async function handlePreparedModelRequest(params: {
       totalDurationMs: 0,
     };
     recordReceipt(denialReceipt);
-    persistDenialReceipt(env, denialReceipt);
+    persistDenialReceipt(env, denialReceipt, ctx);
     return errorResponse({
       message: clientAdmission.message ?? "client limit exceeded",
       type: "rate_limit",
@@ -312,8 +314,11 @@ async function handlePreparedModelRequest(params: {
   const releaseAdmission = () => {
     if (admissionReleased) return;
     admissionReleased = true;
-    (stateDo as unknown as ControlPlaneStateDO).releaseClientRequest(clientAdmission.reservationId)
-      .catch((e) => logWarn("client_limit_release_failed", { error: String(e) }));
+    waitUntilLogged(
+      ctx,
+      (stateDo as unknown as ControlPlaneStateDO).releaseClientRequest(clientAdmission.reservationId),
+      "client_limit_release_failed",
+    );
   };
 
   // Execute attempt loop
@@ -371,9 +376,9 @@ async function handlePreparedModelRequest(params: {
   // Persist to DO (fire-and-forget for latency)
   const receiptDo = env.CONTROL_PLANE_STATE.get(
     env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME),
-  );
-  receiptDo.storeReceipt(receipt).catch((e) => logWarn("receipt_store_failed", { error: String(e) }));
-  receiptDo.storeClientRequest?.({
+  ) as unknown as ControlPlaneStateDO;
+  waitUntilLogged(ctx, receiptDo.storeReceipt(receipt), "receipt_store_failed");
+  const storeClientRequest = receiptDo.storeClientRequest?.({
     requestId: receipt.requestId,
     timestamp: receipt.timestamp,
     clientId: client.clientId,
@@ -389,7 +394,8 @@ async function handlePreparedModelRequest(params: {
     finalOutcome: receipt.finalOutcome,
     stream: receipt.stream,
     totalDurationMs: receipt.totalDurationMs,
-  }).catch((e) => logWarn("client_request_store_failed", { error: String(e) }));
+  });
+  if (storeClientRequest) waitUntilLogged(ctx, storeClientRequest, "client_request_store_failed");
 
   // Finalize failed requests (exhausted / client_error)
   const finalized = finalizeFailedRequest(receipt);
@@ -397,7 +403,7 @@ async function handlePreparedModelRequest(params: {
     const stateDo = env.CONTROL_PLANE_STATE.get(
       env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME),
     );
-    stateDo.storeFailedRequest({
+    waitUntilLogged(ctx, stateDo.storeFailedRequest({
       requestId: finalized.summary.requestId,
       timestamp: finalized.summary.timestamp,
       originalModel: finalized.summary.originalModel,
@@ -412,7 +418,7 @@ async function handlePreparedModelRequest(params: {
       attemptsCount: finalized.summary.attemptsCount,
       summaryJson: JSON.stringify(finalized.summary),
       receiptJson: JSON.stringify(finalized.sanitizedReceipt),
-    }).catch((e) => logWarn("failed_request_store_failed", { error: String(e) }));
+    }), "failed_request_store_failed");
   }
 
   logInfo("request_end", {
@@ -443,8 +449,7 @@ async function handlePreparedModelRequest(params: {
 
   // Exhausted
   if (envelope.stream) {
-    (stateDo as unknown as ControlPlaneStateDO).releaseClientRequest(clientAdmission.reservationId)
-      .catch((e) => logWarn("client_limit_release_failed", { error: String(e) }));
+    releaseAdmission();
   }
   logWarn("request_exhausted", { requestId, failureClass: result.failureClass, attempts: result.attempts.length });
   return errorResponse({
@@ -454,12 +459,16 @@ async function handlePreparedModelRequest(params: {
   }, 502, requestId, client);
 }
 
-function persistDenialReceipt(env: Env, receipt: RouteReceipt): void {
+function waitUntilLogged(ctx: ExecutionContext, promise: Promise<unknown>, event: string): void {
+  ctx.waitUntil(promise.catch((e) => logWarn(event, { error: String(e) })));
+}
+
+function persistDenialReceipt(env: Env, receipt: RouteReceipt, ctx: ExecutionContext): void {
   const receiptDo = env.CONTROL_PLANE_STATE.get(
     env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME),
-  );
-  receiptDo.storeReceipt(receipt).catch((e) => logWarn("receipt_store_failed", { error: String(e) }));
-  receiptDo.storeClientRequest?.({
+  ) as unknown as ControlPlaneStateDO;
+  waitUntilLogged(ctx, receiptDo.storeReceipt(receipt), "receipt_store_failed");
+  const storeClientRequest = receiptDo.storeClientRequest?.({
     requestId: receipt.requestId,
     timestamp: receipt.timestamp,
     clientId: receipt.clientId ?? "unknown",
@@ -476,7 +485,28 @@ function persistDenialReceipt(env: Env, receipt: RouteReceipt): void {
     finalOutcome: receipt.finalOutcome,
     stream: receipt.stream,
     totalDurationMs: receipt.totalDurationMs,
-  }).catch((e) => logWarn("client_request_store_failed", { error: String(e) }));
+  });
+  if (storeClientRequest) waitUntilLogged(ctx, storeClientRequest, "client_request_store_failed");
+
+  const finalized = finalizeFailedRequest(receipt);
+  if (finalized) {
+    waitUntilLogged(ctx, receiptDo.storeFailedRequest({
+      requestId: finalized.summary.requestId,
+      timestamp: finalized.summary.timestamp,
+      originalModel: finalized.summary.originalModel,
+      route: finalized.summary.route,
+      canonicalTarget: finalized.summary.canonicalTarget,
+      selectedGroup: finalized.summary.selectedGroup,
+      selectedModel: finalized.summary.selectedModel,
+      finalOutcome: finalized.summary.finalOutcome,
+      failureClass: finalized.summary.failureClass,
+      issueCode: finalized.summary.issueCode,
+      requestSource: finalized.summary.requestSource,
+      attemptsCount: finalized.summary.attemptsCount,
+      summaryJson: JSON.stringify(finalized.summary),
+      receiptJson: JSON.stringify(finalized.sanitizedReceipt),
+    }), "failed_request_store_failed");
+  }
 }
 
 export function releaseClientOnStreamEnd(
@@ -530,10 +560,13 @@ function addVersionHeaders(headers: Headers, client: ClientIdentity): void {
 }
 
 export async function handleAdminHealth(
-  _request: Request,
+  request: Request,
   env: Env,
 ): Promise<Response> {
-  // /admin/* routes are already gated by verifyAdminAuth in the worker entrypoint.
+  if (!verifyAdminAuth(request, env.ADMIN_API_KEY)) {
+    return jsonResponse({ error: "unauthorized" }, 401);
+  }
+
   const stateId = env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME);
   const stateDo = env.CONTROL_PLANE_STATE.get(stateId);
   const report = await buildHealthReport(stateDo);
@@ -548,14 +581,15 @@ export async function handleAdminReceipts(
   const id = url.searchParams.get("id");
   const receiptDo = env.CONTROL_PLANE_STATE.get(
     env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME),
-  );
+  ) as unknown as ControlPlaneStateDO;
 
   if (id) {
     const receipt = await receiptDo.getReceipt(id);
     if (!receipt) return jsonResponse({ error: "not found" }, 404);
-    return jsonResponse(receipt);
+    return jsonResponse(sanitizeReceipt(receipt));
   }
-  return jsonResponse(await receiptDo.getRecentReceipts());
+  const recent = await receiptDo.getRecentReceipts();
+  return jsonResponse(recent.map((r) => sanitizeReceipt(r)));
 }
 
 export async function handleAdminClientRequests(
@@ -565,9 +599,9 @@ export async function handleAdminClientRequests(
   const url = new URL(request.url);
   const clientId = url.searchParams.get("client_id") ?? undefined;
   const appId = url.searchParams.get("app_id") ?? undefined;
-  const since = parseOptionalIntParam(url.searchParams.get("since"));
-  const until = parseOptionalIntParam(url.searchParams.get("until"));
-  const limit = parseBoundedIntParam(url.searchParams.get("limit"), 100, 1, 1000);
+  const sinceParam = optionalFiniteQueryNumber(url.searchParams.get("since"));
+  const untilParam = optionalFiniteQueryNumber(url.searchParams.get("until"));
+  const limit = boundedQueryLimit(url.searchParams.get("limit"), 100, 1000);
 
   const stateDo = env.CONTROL_PLANE_STATE.get(
     env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME),
@@ -575,8 +609,8 @@ export async function handleAdminClientRequests(
   const requests = await stateDo.queryClientRequests({
     clientId,
     appId,
-    since,
-    until,
+    since: sinceParam,
+    until: untilParam,
     limit,
   });
   return jsonResponse({ requests, total: requests.length });
@@ -642,8 +676,7 @@ export async function handleAdminCanaryTrigger(
     canaryContext,
   );
 
-  // Persist results to DO
-  for (const r of results) {
+  await Promise.all(results.map((r) =>
     stateDo.storeCanaryResult({
       deploymentId: r.deploymentId,
       group: r.group,
@@ -651,8 +684,8 @@ export async function handleAdminCanaryTrigger(
       failureClass: r.failureClass,
       latencyMs: r.latencyMs,
       statusCode: r.status,
-    }).catch((e) => logWarn("canary_result_store_failed", { error: String(e) }));
-  }
+    }).catch((e) => logWarn("canary_result_store_failed", { error: String(e) })),
+  ));
 
   return jsonResponse({
     triggeredAt: new Date().toISOString(),
@@ -668,7 +701,7 @@ export async function handleAdminCanaryResults(
   env: Env,
 ): Promise<Response> {
   const url = new URL(request.url);
-  const limit = parseBoundedIntParam(url.searchParams.get("limit"), 50, 1, 100);
+  const limit = boundedQueryLimit(url.searchParams.get("limit"), 50, 100);
   const stateDo = env.CONTROL_PLANE_STATE.get(
     env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME),
   ) as unknown as ControlPlaneStateDO;
@@ -762,27 +795,10 @@ async function computeUsageRollupsForWindow(
   }
 }
 
-function parseOptionalIntParam(raw: string | null): number | undefined {
-  if (raw === null) return undefined;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function parseBoundedIntParam(
-  raw: string | null,
-  defaultValue: number,
-  min: number,
-  max: number,
-): number {
-  const parsed = parseOptionalIntParam(raw);
-  if (parsed === undefined) return defaultValue;
-  return Math.min(max, Math.max(min, parsed));
-}
-
 function parseWindow(window: string): number {
   const match = window.match(/^(\d+)(h|d|m)$/);
   if (!match) return 3600000;
-  const value = parseInt(match[1]);
+  const value = parseInt(match[1], 10);
   if (value <= 0) return 3600000;
   switch (match[2]) {
     case "m": return value * 60000;
@@ -874,18 +890,17 @@ type FailedRequestQueryResult =
 function parseFailedRequestQuery(request: Request): FailedRequestQueryResult {
   const url = new URL(request.url);
   const detailPrefix = "/nim/failures/";
-  const pathReceiptId = url.pathname.startsWith(detailPrefix)
-    ? decodeURIComponent(url.pathname.slice(detailPrefix.length))
-    : undefined;
+  const pathReceiptId = decodeOptionalPathSuffix(url.pathname, detailPrefix, "receipt_id");
+  if (pathReceiptId.error) return { ok: false, error: pathReceiptId.error };
   const legacyRequestId = url.searchParams.get("request_id") ?? undefined;
-  const receiptId = normalizeOptionalText(pathReceiptId || legacyRequestId, "receipt_id");
+  const receiptId = normalizeOptionalText(pathReceiptId.value || legacyRequestId, "receipt_id");
   if (receiptId.error) return { ok: false, error: receiptId.error };
 
   const includeReceipt = parseBooleanParam(url.searchParams.get("include_receipt"), "include_receipt");
   if (!includeReceipt.ok) return { ok: false, error: includeReceipt.error };
 
   if (receiptId.value) {
-    const allowedDetailParams = new Set(pathReceiptId ? ["include_receipt"] : ["request_id", "include_receipt"]);
+    const allowedDetailParams = new Set(pathReceiptId.value ? ["include_receipt"] : ["request_id", "include_receipt"]);
     const invalid = firstUnknownParam(url.searchParams, allowedDetailParams);
     if (invalid) return { ok: false, error: `unsupported filter: ${invalid}` };
     return { ok: true, receiptId: receiptId.value, includeReceipt: includeReceipt.value, filters: { limit: 1 } };
@@ -937,6 +952,33 @@ function parseFailedRequestQuery(request: Request): FailedRequestQueryResult {
       limit: limit.value,
     },
   };
+}
+
+function optionalFiniteQueryNumber(value: string | null): number | undefined {
+  if (value === null) return undefined;
+  const normalized = value.trim();
+  if (!normalized) return undefined;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function boundedQueryLimit(value: string | null, defaultLimit: number, maxLimit: number): number {
+  const parsed = optionalFiniteQueryNumber(value);
+  if (parsed === undefined) return defaultLimit;
+  return Math.min(maxLimit, Math.max(1, Math.floor(parsed)));
+}
+
+function decodeOptionalPathSuffix(
+  pathname: string,
+  prefix: string,
+  name: string,
+): { value?: string; error?: string } {
+  if (!pathname.startsWith(prefix)) return {};
+  try {
+    return { value: decodeURIComponent(pathname.slice(prefix.length)) };
+  } catch {
+    return { error: `${name} has invalid percent-encoding` };
+  }
 }
 
 function firstUnknownParam(params: URLSearchParams, allowed: Set<string>): string | undefined {
@@ -1119,8 +1161,8 @@ function positiveNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.ceil(value) : undefined;
 }
 
-function estimatePromptTokens(content: unknown): number {
-  if (typeof content === "string") return Math.ceil(content.length / 4);
-  if (!Array.isArray(content)) return 0;
-  return Math.ceil(JSON.stringify(content).length / 4);
+function estimatePromptTokens(messages: unknown): number {
+  if (typeof messages === "string") return Math.ceil(messages.length / 4);
+  if (!Array.isArray(messages)) return 0;
+  return Math.ceil(JSON.stringify(messages).length / 4);
 }

@@ -22,7 +22,6 @@ const CHATGPT_RESPONSES_ALLOWED_BODY_FIELDS = new Set([
   "include",
   "tools",
   "tool_choice",
-  "reasoning",
   "previous_response_id",
   "truncation",
 ]);
@@ -231,9 +230,11 @@ export function convertResponsesToOpenAI(
   const toolCalls: Array<Record<string, unknown>> = [];
 
   for (const item of output) {
+    if (!item || typeof item !== "object") continue;
     if (item.type === "message") {
       const content = item.content as Array<Record<string, unknown>> ?? [];
       for (const block of content) {
+        if (!block || typeof block !== "object") continue;
         if (block.type === "output_text") {
           textContent.push(block.text as string);
         }

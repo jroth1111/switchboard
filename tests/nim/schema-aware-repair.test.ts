@@ -3,6 +3,8 @@ import {
   repairToolArguments,
   repairToolCallsSchemaAware,
   buildToolSchemaMap,
+  validateAgainstSchema,
+  validateToolCallsAgainstSchemas,
   type ToolParameterSchema,
   type RepairPolicyConfig,
 } from "../../src/nim/repair/schema-aware";
@@ -255,6 +257,30 @@ describe("repairToolArguments: coerce_numeric_string", () => {
     expect(result.changed).toBe(true);
     expect(result.repaired.ratio).toBe(0.8);
   });
+
+  it("coerces numeric strings through JSON Schema union type", () => {
+    const unionSchema: ToolParameterSchema = {
+      type: "object",
+      properties: {
+        count: { type: ["integer", "null"] },
+      },
+    };
+    const result = repairToolArguments("tool", { count: "7" }, unionSchema, defaultPolicy);
+    expect(result.changed).toBe(true);
+    expect(result.repaired.count).toBe(7);
+  });
+
+  it("accepts null through JSON Schema union type", () => {
+    const unionSchema: ToolParameterSchema = {
+      type: "object",
+      properties: {
+        count: { type: ["integer", "null"] },
+      },
+    };
+    const result = repairToolArguments("tool", { count: null }, unionSchema, defaultPolicy);
+    expect(result.changed).toBe(false);
+    expect(result.repairs).toHaveLength(0);
+  });
 });
 
 // ─── Repair: enum_near_miss ───────────────────────────────────────
@@ -310,6 +336,12 @@ describe("repairToolArguments: prune_extra_keys", () => {
     const result = repairToolArguments("tool", { path: "/foo", reasoning: "because" }, schema, conservative);
     expect(result.repaired.reasoning).toBe("because");
     expect(result.repairs.some((r) => r.repairKind === "prune_extra_keys")).toBe(false);
+  });
+
+  it("still reports unknown-key schema issues when destructive repair is disabled", () => {
+    const conservative: RepairPolicyConfig = { ...defaultPolicy, allowDestructive: false };
+    const issues = validateAgainstSchema({ path: "/foo", reasoning: "because" }, schema, conservative);
+    expect(issues.some((issue) => issue.code === "unknown_key" && issue.path === ".reasoning")).toBe(true);
   });
 });
 
@@ -466,6 +498,19 @@ describe("repairToolCallsSchemaAware", () => {
     const repairedFn = result.repaired![0].function as { name: string; arguments: string };
     const repairedArgs = JSON.parse(repairedFn.arguments);
     expect(repairedArgs.queries).toEqual(["error"]);
+  });
+
+  it("schema validation rejects non-object parsed arguments", () => {
+    const result = validateToolCallsAgainstSchemas([
+      {
+        id: "call_1",
+        type: "function",
+        function: { name: "readFile", arguments: "[]" },
+      },
+    ], tools, defaultPolicy);
+
+    expect(result.valid).toBe(false);
+    expect(result.issues[0].issues[0]).toMatchObject({ path: "", code: "type", expected: "object" });
   });
 });
 

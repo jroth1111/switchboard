@@ -34,13 +34,15 @@ export function failedRequestSummaryFromReceipt(receipt: RouteReceipt): FailedRe
     return null;
   }
 
-  if (receipt.attempts.length === 0) {
-    return null;
-  }
-
   const lastAttempt = receipt.attempts[receipt.attempts.length - 1];
   const firstFailure = receipt.attempts.find((a) => a.failureClass);
   const selectedDeploymentId = [...receipt.attempts].reverse().find((a) => a.deploymentId)?.deploymentId;
+  const noAttemptIssueCode = receipt.attempts.length === 0 ? receipt.denialReason : undefined;
+  const failureClass =
+    lastAttempt?.failureClass
+    ?? firstFailure?.failureClass
+    ?? receipt.denialReason
+    ?? (receipt.finalOutcome === "exhausted" ? "exhausted" : undefined);
 
   return {
     requestId: receipt.requestId,
@@ -53,8 +55,8 @@ export function failedRequestSummaryFromReceipt(receipt: RouteReceipt): FailedRe
     selectedDeploymentId,
     requestSource: receipt.appId ?? receipt.clientId ?? "unknown",
     finalOutcome: receipt.finalOutcome,
-    failureClass: lastAttempt?.failureClass ?? firstFailure?.failureClass,
-    issueCode: receipt.finalOutcome === "exhausted" ? "all_groups_exhausted" : undefined,
+    failureClass,
+    issueCode: receipt.finalOutcome === "exhausted" ? "all_groups_exhausted" : noAttemptIssueCode,
     attemptsCount: receipt.attempts.length,
     stream: receipt.stream,
     attempts: receipt.attempts.map((a) => ({

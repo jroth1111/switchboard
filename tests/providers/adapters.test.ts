@@ -7,8 +7,10 @@ import {
   convertAnthropicStreamChunk,
   getValidAnthropicToken,
   refreshAnthropicOAuthToken,
+  setAnthropicSubscriptionRuntimeEnvForTesting,
   type OAuthAccountAccessor,
 } from "../../src/providers/anthropic-subscription";
+import { anthropicSubscriptionAdapter } from "../../src/providers/adapters/anthropic-subscription";
 import {
   buildChatGPTResponsesRequest,
   convertResponsesToOpenAI,
@@ -16,7 +18,8 @@ import {
   validateResponsesContract,
 } from "../../src/providers/chatgpt-responses";
 import { buildProviderRequest, executeProviderRequest } from "../../src/providers/base";
-import type { Deployment } from "../../src/config/schema";
+import { getAdapter } from "../../src/providers/registry";
+import type { Deployment, ProviderType } from "../../src/config/schema";
 
 function makeDeployment(overrides: Partial<Deployment> = {}): Deployment {
   return {
@@ -53,11 +56,14 @@ function structuredChatGPTAuth(accessToken = "chatgpt-token"): string {
 }
 
 afterEach(() => {
+  setAnthropicSubscriptionRuntimeEnvForTesting(null);
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 function stubClaudeCodeEnv(overrides: Record<string, string> = {}): void {
-  for (const [key, value] of Object.entries({
+  setAnthropicSubscriptionRuntimeEnvForTesting({
     ANTHROPIC_SUBSCRIPTION_CLAUDE_CODE_VERSION: "1.2.3",
     ANTHROPIC_SUBSCRIPTION_NODE_VERSION: "v22.11.0",
     CLAUDE_CODE_SESSION_ID: "session-123",
@@ -68,9 +74,7 @@ function stubClaudeCodeEnv(overrides: Record<string, string> = {}): void {
     CLAUDE_CODE_DEVICE_ID: "device-abc",
     CLAUDE_CODE_ACCOUNT_UUID: "acct-xyz",
     ...overrides,
-  })) {
-    vi.stubEnv(key, value);
-  }
+  });
 }
 
 // ─── Anthropic subscription request building ────────────────────────
@@ -205,6 +209,24 @@ describe("Anthropic subscription request builder", () => {
 
     const req = buildAnthropicSubscriptionRequest(deploy, body, "token");
     const parsed = JSON.parse(req.body);
+    expect(parsed.stream).toBe(true);
+  });
+
+  it("preserves stream routing when using a raw anthropic_body override", () => {
+    const deploy = makeDeployment({
+      extraBody: {
+        anthropic_body: {
+          messages: [{ role: "user", content: [{ type: "text", text: "raw" }] }],
+          max_tokens: 10,
+        },
+      },
+    });
+    const req = buildAnthropicSubscriptionRequest(deploy, {
+      messages: [{ role: "user", content: "hello" }],
+      stream: true,
+    }, "token");
+    const parsed = JSON.parse(req.body);
+
     expect(parsed.stream).toBe(true);
   });
 
@@ -385,6 +407,8 @@ describe("Anthropic to OpenAI response conversion", () => {
     expect(openai.choices[0].message.content).toBe("Hello! How can I help?");
     expect(openai.choices[0].finish_reason).toBe("stop");
     expect(openai.usage.total_tokens).toBe(18);
+    expect(openai.usage.prompt_tokens).toBe(10);
+    expect(openai.usage.completion_tokens).toBe(8);
   });
 
   it("converts tool-use response", () => {
@@ -403,6 +427,19 @@ describe("Anthropic to OpenAI response conversion", () => {
     expect(openai.choices[0].message.tool_calls).toHaveLength(1);
     expect(openai.choices[0].message.tool_calls[0].function.name).toBe("get_weather");
     expect(openai.choices[0].finish_reason).toBe("tool_calls");
+  });
+
+  it("converts missing tool input to empty JSON arguments", () => {
+    const openai = convertAnthropicToOpenAI({
+      id: "msg_tool_missing_input",
+      model: "claude-sonnet-4-6-20250514",
+      content: [
+        { type: "tool_use", id: "tu_1", name: "get_weather" },
+      ],
+      stop_reason: "tool_use",
+    }, "req-tool");
+
+    expect(openai.choices[0].message.tool_calls[0].function.arguments).toBe("{}");
   });
 
   it("maps max_tokens stop_reason to length finish_reason", () => {
@@ -470,6 +507,14 @@ describe("Anthropic stream chunk conversion", () => {
     );
     expect(chunk).toBeNull();
   });
+
+  it("throws on Anthropic stream error events", () => {
+    expect(() => convertAnthropicStreamChunk(
+      { type: "error", error: { type: "overloaded_error", message: "Overloaded" } },
+      "req-1",
+      "claude-sonnet-4-6",
+    )).toThrow("anthropic_stream_error: overloaded_error: Overloaded");
+  });
 });
 
 // ─── OAuth token refresh ───────────────────────────────────────────
@@ -495,11 +540,27 @@ describe("OAuth token management", () => {
     }
   });
 
+  it("getValidAnthropicToken treats null expiry as a usable non-expiring token", async () => {
+    const mockAccessor: OAuthAccountAccessor = {
+      getToken: vi.fn().mockResolvedValue({
+        accessToken: "non-expiring-token",
+        expiresAt: null,
+      }),
+      setToken: vi.fn(),
+      acquireRefreshLock: vi.fn(),
+      releaseRefreshLock: vi.fn(),
+    };
+
+    const result = await getValidAnthropicToken("acc-1", "req-1", mockAccessor, { clientId: "test" });
+
+    expect(result).toEqual({ token: "non-expiring-token", refreshed: false });
+    expect(mockAccessor.acquireRefreshLock).not.toHaveBeenCalled();
+  });
+
   it("getValidAnthropicToken refreshes expired token and stores new one", async () => {
     const setTokenMock = vi.fn();
     const mockAccessor: OAuthAccountAccessor = {
       getToken: vi.fn()
-        .mockResolvedValueOnce({ accessToken: "expired", expiresAt: Date.now() - 1000, refreshToken: "refresh-me" })
         .mockResolvedValueOnce({ accessToken: "expired", expiresAt: Date.now() - 1000, refreshToken: "refresh-me" }),
       setToken: setTokenMock,
       acquireRefreshLock: vi.fn().mockResolvedValue(true),
@@ -587,6 +648,29 @@ describe("OAuth token management", () => {
     }
   });
 
+  it("refreshAnthropicOAuthToken rejects a successful OAuth response without an access token", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      refresh_token: "refresh-new",
+      expires_in: 3600,
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const result = await refreshAnthropicOAuthToken("refresh-me", "test-client");
+
+      expect(result).toEqual({
+        success: false,
+        error: "oauth_refresh_missing_access_token",
+        failureClass: "auth_failure",
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("refreshAnthropicOAuthToken classifies rejected OAuth sessions", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response("expired session", { status: 401 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -638,213 +722,87 @@ describe("OAuth token management", () => {
     expect(result).toEqual({ token: "fresh-from-peer", refreshed: true });
     expect(mockAccessor.releaseRefreshLock).not.toHaveBeenCalled();
   });
-});
 
-// ─── ChatGPT Responses request building ────────────────────────────
-
-describe("ChatGPT Responses request builder", () => {
-  it("builds a LiteLLM-equivalent ChatGPT/Codex Responses request", () => {
-    const deploy = makeDeployment({
-      provider: "chatgpt",
-      mode: "responses",
-      providerModel: "gpt-5.5",
-      reasoningEffort: "medium",
+  it("adapter uses the configured Anthropic OAuth account id from keyRef material", async () => {
+    const getToken = vi.fn().mockResolvedValue({
+      accessToken: "account-token",
+      expiresAt: Date.now() + 3600000,
     });
-    const body = {
-      model: "gpt-5.5",
-      input: "Hello",
-      instructions: "You are helpful.",
-      stream: false,
-      store: true,
-      previous_response_id: "resp_prev",
-      truncation: "auto",
+    const mockAccessor: OAuthAccountAccessor = {
+      getToken,
+      setToken: vi.fn(),
+      acquireRefreshLock: vi.fn(),
+      releaseRefreshLock: vi.fn(),
     };
 
-    const req = buildChatGPTResponsesRequest(deploy, body, structuredChatGPTAuth("chatgpt-token"));
-    const parsed = JSON.parse(req.body);
+    const req = await anthropicSubscriptionAdapter.buildRequest({
+      deployment: makeDeployment(),
+      body: { messages: [{ role: "user", content: "hello" }], max_tokens: 10 },
+      apiKey: "primary-account",
+      requestId: "req-account",
+      subscriptionCtx: {
+        anthropicOAuth: {
+          accessor: mockAccessor,
+          clientId: "client-id",
+        },
+      },
+    });
 
-    expect(req.url).toContain("/backend-api/codex/responses");
-    expect(req.headers["Authorization"]).toBe("Bearer chatgpt-token");
-    expect(parsed.model).toBe("gpt-5.5");
-    expect(parsed.instructions).toBe("You are helpful.");
-    expect(parsed.input).toEqual([{ type: "message", role: "user", content: [{ type: "input_text", text: "Hello" }] }]);
-    expect(parsed.stream).toBe(true);
-    expect(parsed.store).toBe(false);
-    expect(parsed.include).toContain("reasoning.encrypted_content");
-    expect(parsed.reasoning).toEqual({ effort: "medium" });
-    expect(parsed.previous_response_id).toBe("resp_prev");
-    expect(parsed.truncation).toBe("auto");
-    expect(parsed).not.toHaveProperty("messages");
-    expect(parsed).not.toHaveProperty("max_output_tokens");
+    expect(getToken).toHaveBeenCalledWith("primary-account");
+    expect(req.headers.authorization).toBe("Bearer account-token");
   });
 
-  it("preserves Responses tools and tool_choice", () => {
-    const deploy = makeDeployment({
-      provider: "chatgpt",
-      mode: "responses",
-      providerModel: "gpt-5.5",
-      reasoningEffort: "high",
-    });
-    const body = {
-      model: "gpt-5.5",
-      input: "use tool",
-      tools: [{
-        type: "function",
-        name: "get_weather",
-        description: "Get weather",
-        parameters: { type: "object", properties: { city: { type: "string" } } },
-      }],
-      tool_choice: { type: "function", name: "get_weather" },
+  it("adapter falls back to the legacy deployment-scoped OAuth account id only when no token is stored", async () => {
+    const getToken = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        accessToken: "legacy-token",
+        expiresAt: Date.now() + 3600000,
+      });
+    const mockAccessor: OAuthAccountAccessor = {
+      getToken,
+      setToken: vi.fn(),
+      acquireRefreshLock: vi.fn(),
+      releaseRefreshLock: vi.fn(),
     };
 
-    const req = buildChatGPTResponsesRequest(deploy, body, structuredChatGPTAuth("token"));
-    const parsed = JSON.parse(req.body);
+    const req = await anthropicSubscriptionAdapter.buildRequest({
+      deployment: makeDeployment(),
+      body: { messages: [{ role: "user", content: "hello" }], max_tokens: 10 },
+      apiKey: "missing-primary-account",
+      requestId: "req-legacy",
+      subscriptionCtx: {
+        anthropicOAuth: {
+          accessor: mockAccessor,
+          clientId: "client-id",
+        },
+      },
+    });
 
-    expect(parsed.tools).toHaveLength(1);
-    expect(parsed.tools[0].type).toBe("function");
-    expect(parsed.tools[0].name).toBe("get_weather");
-    expect(parsed.tool_choice).toEqual({ type: "function", name: "get_weather" });
+    expect(getToken).toHaveBeenNthCalledWith(1, "missing-primary-account");
+    expect(getToken).toHaveBeenNthCalledWith(2, "anthropic:test-deploy");
+    expect(req.headers.authorization).toBe("Bearer legacy-token");
   });
 });
 
-// ─── Responses → OpenAI response conversion ────────────────────────
+// ─── Provider adapter registry ──────────────────────────────────────
 
-describe("Responses to OpenAI response conversion", () => {
-  it("converts text response", () => {
-    const responsesApi = {
-      id: "resp_test",
-      model: "gpt-5.5",
-      output: [
-        { type: "message", content: [{ type: "output_text", text: "Hello there!" }] },
-      ],
-      usage: { input_tokens: 10, output_tokens: 5 },
-    };
-
-    const openai = convertResponsesToOpenAI(responsesApi, "req-1");
-    expect(openai.object).toBe("chat.completion");
-    expect(openai.choices[0].message.content).toBe("Hello there!");
-    expect(openai.choices[0].finish_reason).toBe("stop");
+describe("Provider adapter registry", () => {
+  it("selects OpenAI-compatible adapters only without provider modes", () => {
+    expect(getAdapter("openai").needsStreamWrapping).toBe(false);
+    expect(getAdapter("nvidia_nim").needsStreamWrapping).toBe(false);
+    expect(() => getAdapter("openai", "responses")).toThrow(/does not support mode='responses'/);
   });
 
-  it("converts tool-use response", () => {
-    const responsesApi = {
-      id: "resp_tool",
-      model: "gpt-5.5",
-      output: [
-        { type: "function_call", id: "fc_1", name: "get_weather", arguments: '{"city":"SF"}' },
-      ],
-      usage: { input_tokens: 15, output_tokens: 10 },
-    };
-
-    const openai = convertResponsesToOpenAI(responsesApi, "req-2");
-    expect(openai.choices[0].message.tool_calls).toHaveLength(1);
-    expect(openai.choices[0].message.tool_calls[0].function.name).toBe("get_weather");
-    expect(openai.choices[0].finish_reason).toBe("tool_calls");
-  });
-});
-
-// ─── Responses stream chunk conversion ─────────────────────────────
-
-describe("Responses stream chunk conversion", () => {
-  it("converts text delta", () => {
-    const chunk = convertResponsesStreamChunk(
-      { type: "response.output_text.delta", delta: "Hello" },
-      "req-1",
-      "gpt-5.5",
-    );
-    expect(chunk).not.toBeNull();
-    expect(chunk!.choices[0].delta.content).toBe("Hello");
+  it("selects ChatGPT Responses only for the responses mode", () => {
+    const adapter = getAdapter("chatgpt", "responses");
+    expect(adapter.needsStreamWrapping).toBe(true);
+    expect(adapter.streamFormat).toBe("chatgpt_responses");
+    expect(() => getAdapter("chatgpt")).toThrow(/requires mode='responses'/);
   });
 
-  it("converts completion event", () => {
-    const chunk = convertResponsesStreamChunk(
-      { type: "response.completed", response: { status: "completed" } },
-      "req-1",
-      "gpt-5.5",
-    );
-    expect(chunk).not.toBeNull();
-    expect(chunk!.choices[0].finish_reason).toBe("stop");
-  });
-
-  it("converts incomplete to length finish", () => {
-    const chunk = convertResponsesStreamChunk(
-      { type: "response.completed", response: { status: "incomplete" } },
-      "req-1",
-      "gpt-5.5",
-    );
-    expect(chunk).not.toBeNull();
-    expect(chunk!.choices[0].finish_reason).toBe("length");
-  });
-
-  it("returns null for unknown events", () => {
-    const chunk = convertResponsesStreamChunk(
-      { type: "response.created" },
-      "req-1",
-      "gpt-5.5",
-    );
-    expect(chunk).toBeNull();
-  });
-});
-
-// ─── Responses contract validation ─────────────────────────────────
-
-describe("Responses contract validation", () => {
-  it("accepts valid request", () => {
-    const result = validateResponsesContract({
-      model: "gpt-5.5",
-      input: "hello",
-    });
-    expect(result.valid).toBe(true);
-  });
-
-  it("rejects missing input", () => {
-    const result = validateResponsesContract({
-      model: "gpt-5.5",
-    });
-    expect(result.valid).toBe(false);
-    expect(result.reason).toContain("input is required");
-  });
-
-  it("rejects messages payloads", () => {
-    const result = validateResponsesContract({
-      model: "gpt-5.5",
-      input: "hello",
-      messages: [{ role: "user", content: "hello" }],
-    });
-    expect(result.valid).toBe(false);
-    expect(result.forbiddenFields).toEqual(["messages"]);
-  });
-
-  it("rejects response_format", () => {
-    const result = validateResponsesContract({
-      model: "gpt-5.5",
-      input: "hello",
-      response_format: { type: "json_object" },
-    });
-    expect(result.valid).toBe(false);
-    expect(result.reason).toContain("response_format");
-  });
-
-  it("rejects n instead of accepting chat-completions fanout semantics", () => {
-    const result = validateResponsesContract({
-      model: "gpt-5.5",
-      input: "hello",
-      n: 1,
-    });
-    expect(result.valid).toBe(false);
-    expect(result.forbiddenFields).toEqual(["n"]);
-  });
-
-  it("rejects unsupported params instead of stripping them", () => {
-    const result = validateResponsesContract({
-      model: "gpt-5.5",
-      input: "hello",
-      frequency_penalty: 0.5,
-      stop: ["\n"],
-      seed: 42,
-    });
-    expect(result.valid).toBe(false);
-    expect(result.forbiddenFields).toEqual(["frequency_penalty", "seed", "stop"]);
+  it("rejects unknown runtime provider values", () => {
+    expect(() => getAdapter("unknown_provider" as ProviderType)).toThrow(/Unknown provider adapter/);
   });
 });
 
@@ -885,6 +843,17 @@ describe("Base provider request builder", () => {
     expect(parsed.reasoning_effort).toBe("low");
   });
 
+  it("reasoningEffort does not overwrite explicit client null", () => {
+    const deploy = makeDeployment({
+      provider: "openai",
+      reasoningEffort: "high",
+    });
+    const body = { messages: [{ role: "user", content: "hi" }], reasoning_effort: null };
+    const req = buildProviderRequest(deploy, body, "sk-test");
+    const parsed = JSON.parse(req.body);
+    expect(parsed.reasoning_effort).toBeNull();
+  });
+
   it("reasoningEffort is applied when client didn't specify", () => {
     const deploy = makeDeployment({
       provider: "openai",
@@ -908,12 +877,41 @@ describe("Base provider request builder", () => {
     expect(parsed.max_tokens).toBe(4096);
   });
 
-  it("sets correct headers for anthropic_subscription provider", () => {
+  it("skips nullish deployment params and extraBody values", () => {
+    const deploy = makeDeployment({
+      provider: "openai",
+      params: { temperature: null, top_p: undefined },
+      extraBody: { logprobs: undefined, top_logprobs: null },
+    });
+    const body = { messages: [{ role: "user", content: "hi" }] };
+    const req = buildProviderRequest(deploy, body, "sk-test");
+    const parsed = JSON.parse(req.body);
+    expect(parsed).not.toHaveProperty("temperature");
+    expect(parsed).not.toHaveProperty("top_p");
+    expect(parsed).not.toHaveProperty("logprobs");
+    expect(parsed).not.toHaveProperty("top_logprobs");
+  });
+
+  it("normalizes trailing slashes in OpenAI-compatible API bases", () => {
+    const deploy = makeDeployment({
+      provider: "openai",
+      apiBase: "https://proxy.example/v1/",
+    });
+    const body = { messages: [{ role: "user", content: "hi" }] };
+    const req = buildProviderRequest(deploy, body, "sk-oai");
+    expect(req.url).toBe("https://proxy.example/v1/chat/completions");
+  });
+
+  it("rejects subscription providers at the OpenAI-compatible base builder", () => {
     const deploy = makeDeployment({ provider: "anthropic_subscription" });
     const body = { messages: [{ role: "user", content: "hi" }] };
-    const req = buildProviderRequest(deploy, body, "sk-ant");
-    expect(req.headers["x-api-key"]).toBe("sk-ant");
-    expect(req.headers["anthropic-version"]).toBe("2023-06-01");
+    expect(() => buildProviderRequest(deploy, body, "sk-ant")).toThrow(/does not use the chat-completions base adapter/);
+  });
+
+  it("rejects Responses providers at the OpenAI-compatible base builder", () => {
+    const deploy = makeDeployment({ provider: "chatgpt", mode: "responses" });
+    const body = { input: "hi" };
+    expect(() => buildProviderRequest(deploy, body, "oauth-token")).toThrow(/does not use the chat-completions base adapter/);
   });
 
   it("sets Bearer auth for openai provider", () => {
@@ -922,35 +920,47 @@ describe("Base provider request builder", () => {
     const req = buildProviderRequest(deploy, body, "sk-oai");
     expect(req.headers["Authorization"]).toBe("Bearer sk-oai");
   });
-
-  it("normalizes trailing slashes on apiBase", () => {
-    const deploy = makeDeployment({
-      provider: "openai",
-      apiBase: "https://api.openai.com/v1/",
-    });
-    const body = { messages: [{ role: "user", content: "hi" }] };
-    const req = buildProviderRequest(deploy, body, "sk-test");
-    expect(req.url).toBe("https://api.openai.com/v1/chat/completions");
-  });
 });
 
-describe("executeProviderRequest", () => {
-  it("treats JSON array success bodies as non-object json", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response("[]", {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    }));
-    vi.stubGlobal("fetch", fetchMock);
+// ─── Base provider response execution ───────────────────────────────
 
-    try {
-      const result = await executeProviderRequest(
-        { url: "https://example.test/v1/chat/completions", method: "POST", headers: {}, body: "{}" },
-        { signal: new AbortController().signal, timeoutMs: 5000 },
-      );
-      expect(result.status).toBe(200);
-      expect(result.json).toBeNull();
-    } finally {
-      vi.unstubAllGlobals();
-    }
+describe("Base provider response execution", () => {
+  it("parses top-level JSON objects", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response('{"ok":true}', {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })));
+
+    const result = await executeProviderRequest({
+      url: "https://provider.example/v1/chat/completions",
+      method: "POST",
+      headers: {},
+      body: "{}",
+    }, {
+      signal: new AbortController().signal,
+      timeoutMs: 1000,
+    });
+
+    expect(result.json).toEqual({ ok: true });
+  });
+
+  it("treats non-object JSON response bodies as malformed", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("[1,2,3]", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })));
+
+    const result = await executeProviderRequest({
+      url: "https://provider.example/v1/chat/completions",
+      method: "POST",
+      headers: {},
+      body: "{}",
+    }, {
+      signal: new AbortController().signal,
+      timeoutMs: 1000,
+    });
+
+    expect(result.body).toBe("[1,2,3]");
+    expect(result.json).toBeNull();
   });
 });

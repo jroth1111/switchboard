@@ -14,14 +14,30 @@ function makeSSEBody(events: string[]): ReadableStream<Uint8Array> {
   });
 }
 
+function makeChunkedBody(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+}
+
 async function collectStream(stream: ReadableStream<Uint8Array>): Promise<string[]> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   const chunks: string[] = [];
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(decoder.decode(value, { stream: true }));
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        chunks.push(decoder.decode());
+        break;
+      }
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+  } finally {
+    reader.releaseLock();
   }
   // Split into individual SSE events
   return chunks.join("").split("\n\n").filter((s) => s.trim());
@@ -52,7 +68,37 @@ describe("wrapSubscriptionStream - Anthropic", () => {
     const stream = makeSSEBody(["[DONE]"]);
     const converted = wrapSubscriptionStream(stream, "anthropic_subscription", "req-1", "claude-opus-4-7");
     const events = await collectStream(converted);
-    expect(events[0]).toContain("[DONE]");
+    expect(events).toEqual(["data: [DONE]"]);
+  });
+
+  it("converts provider events split across UTF-8 chunk boundaries", async () => {
+    const anthropicEvent = JSON.stringify({
+      type: "content_block_delta",
+      delta: { type: "text_delta", text: "Hello 🧪" },
+    });
+    const encoded = new TextEncoder().encode(`data: ${anthropicEvent}\n\n`);
+    const emojiStart = encoded.indexOf(0xf0);
+    expect(emojiStart).toBeGreaterThan(0);
+    const stream = makeChunkedBody([
+      encoded.slice(0, emojiStart + 1),
+      encoded.slice(emojiStart + 1, emojiStart + 3),
+      encoded.slice(emojiStart + 3),
+    ]);
+    const converted = wrapSubscriptionStream(stream, "anthropic_subscription", "req-1", "claude-opus-4-7");
+    const events = await collectStream(converted);
+
+    expect(events).toHaveLength(2);
+    const parsed = JSON.parse(events[0].replace("data: ", "")) as Record<string, unknown>;
+    const choices = parsed.choices as Array<Record<string, unknown>>;
+    expect(choices[0].delta).toEqual({ content: "Hello 🧪" });
+    expect(events[1]).toBe("data: [DONE]");
+  });
+
+  it("rejects malformed provider SSE data instead of emitting [DONE]", async () => {
+    const stream = makeSSEBody(["not-json"]);
+    const converted = wrapSubscriptionStream(stream, "anthropic_subscription", "req-1", "claude-opus-4-7");
+
+    await expect(collectStream(converted)).rejects.toThrow("malformed_anthropic_subscription_stream_event");
   });
 });
 

@@ -42,10 +42,12 @@ function shannonEntropy(text: string): number {
 function printableRatio(text: string): number {
   if (text.length === 0) return 0;
   let printable = 0;
-  for (const ch of text) {
-    if (ch.charCodeAt(0) >= 32 && ch.charCodeAt(0) <= 126) printable++;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= 32 && code <= 126) printable++;
     // Count non-control unicode as printable (C0 and C1 control chars excluded)
-    else if (ch.charCodeAt(0) > 127 && ch.charCodeAt(0) !== 0xFEFF) printable++;
+    // 128-159 are C1 control chars, so start at 160
+    else if (code >= 160 && code !== 0xFEFF) printable++;
   }
   return printable / text.length;
 }
@@ -54,12 +56,10 @@ function printableRatio(text: string): number {
 
 const SUCCESS_SHAPED_FAILURE_MAX_CHARS = 1024;
 
-const ERRORISH_PREFIXES = [
-  "error",
-  "{\"error\"",
-  "{\"message\"",
-  "upstream",
-  "provider",
+const PLAIN_ERRORISH_PREFIX_PATTERNS = [
+  /^error(?:\s+(?:code|message))?\s*[:{([_-]/,
+  /^upstream\s+(?:error|failure|timeout|overload)\b/,
+  /^provider\s+(?:error|failure|timeout|overload)\b/,
 ];
 
 const SUCCESS_SHAPED_FAILURE_SIGNATURES = [
@@ -80,13 +80,17 @@ const SUCCESS_SHAPED_FAILURE_SIGNATURES = [
 ];
 
 export function detectSuccessShapedFailure(text: string): SemanticClassification | null {
-  const lowered = text.toLowerCase().trim();
+  const trimmed = text.trim();
+  const lowered = trimmed.toLowerCase();
   if (!lowered || lowered.length > SUCCESS_SHAPED_FAILURE_MAX_CHARS) return null;
 
-  const hasProviderErrorPrefix = ERRORISH_PREFIXES.some((prefix) => lowered.startsWith(prefix));
+  const structuredErrorText = extractStructuredErrorText(trimmed);
+  const providerErrorText = structuredErrorText ?? lowered;
+  const hasProviderErrorPrefix = structuredErrorText !== null ||
+    PLAIN_ERRORISH_PREFIX_PATTERNS.some((pattern) => pattern.test(lowered));
   if (!hasProviderErrorPrefix) return null;
 
-  const signature = SUCCESS_SHAPED_FAILURE_SIGNATURES.find((marker) => lowered.includes(marker));
+  const signature = SUCCESS_SHAPED_FAILURE_SIGNATURES.find((marker) => providerErrorText.includes(marker));
   if (signature) {
     return {
       issue: "success_shaped_failure",
@@ -97,6 +101,50 @@ export function detectSuccessShapedFailure(text: string): SemanticClassification
   }
 
   return null;
+}
+
+function extractStructuredErrorText(text: string): string | null {
+  if (!text.startsWith("{")) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+
+  const object = parsed as Record<string, unknown>;
+  const errorValue = object.error ?? object.errors;
+  const objectType = stringValue(object.object);
+  const type = stringValue(object.type);
+  const code = stringValue(object.code ?? object.error_code);
+  const hasErrorEnvelope =
+    errorValue !== undefined ||
+    objectType === "error" ||
+    /\b(error|rate_limit|quota|overload|timeout|unavailable)\b/.test(`${type} ${code}`);
+
+  if (!hasErrorEnvelope) return null;
+  return collectStringValues(object).join(" ").toLowerCase();
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value.toLowerCase() : "";
+}
+
+function collectStringValues(value: unknown, depth = 0): string[] {
+  if (depth > 4 || value === null || value === undefined) return [];
+  if (typeof value === "string") return [value];
+  if (typeof value === "number" || typeof value === "boolean") return [String(value)];
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectStringValues(item, depth + 1));
+  }
+  if (typeof value === "object") {
+    return Object.values(value as Record<string, unknown>)
+      .flatMap((item) => collectStringValues(item, depth + 1));
+  }
+  return [];
 }
 
 // ─── Truncation detection ─────────────────────────────────────────
@@ -224,12 +272,12 @@ function detectInputEcho(inputText: string, responseText: string, threshold = 0.
   if (!inputText || !responseText || responseText.length < 20) return null;
   const normalize = (s: string) => s.toLowerCase().replace(/[^\w\s]/g, "").split(/\s+/).filter(Boolean);
   const inputTokens = new Set(normalize(inputText));
-  const responseTokens = normalize(responseText);
+  const responseTokensArray = normalize(responseText);
+  const responseTokens = new Set(responseTokensArray);
   if (inputTokens.size === 0) return null;
   let matchCount = 0;
-  for (const t of responseTokens) { if (inputTokens.has(t)) matchCount++; }
-  const uniqueResponseTokens = new Set(responseTokens).size;
-  const unionSize = inputTokens.size + uniqueResponseTokens - matchCount;
+  for (const t of responseTokensArray) { if (inputTokens.has(t)) matchCount++; }
+  const unionSize = inputTokens.size + responseTokens.size - matchCount;
   if (unionSize <= 0) return null;
   const jaccard = matchCount / unionSize;
   if (jaccard > threshold) {

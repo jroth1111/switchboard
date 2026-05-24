@@ -12,7 +12,7 @@ describe("Request transforms", () => {
       requestId: "test",
       originalModel: "nim-primary",
       body: { model: "nim-primary", messages: [{ role: "user", content: "hi" }], max_tokens: 50000 },
-      stream: false, hasTools: false, hasStrictTools: false, hasTypedContent: false, requiresJsonMode: false,
+      stream: false, hasTools: false, hasStrictTools: false, isMultiTool: false, hasTypedContent: false, requiresJsonMode: false, requiresReasoning: false,
     });
     expect(plan).not.toBeNull();
     const clamped = plan!.transforms.find((t) => t.type === "clamp_max_tokens");
@@ -86,13 +86,39 @@ describe("Request transforms", () => {
       requestId: "test",
       originalModel: "nim-primary",
       body,
-      stream: false, hasTools: false, hasStrictTools: false, hasTypedContent: false, requiresJsonMode: false,
+      stream: false, hasTools: false, hasStrictTools: false, isMultiTool: false, hasTypedContent: false, requiresJsonMode: false, requiresReasoning: false,
     });
 
     expect(plan?.transforms.some((t) => t.type === "normalize_typed_content_parts")).toBe(true);
     const result = applyTransforms(body, plan!.transforms);
     const message = (result.messages as Array<Record<string, unknown>>)[0];
     expect(message.content).toEqual([{ type: "text", text: "visible" }]);
+  });
+
+  it("detects and strips user reasoning in typed visible text parts", () => {
+    const body = {
+      model: "nim-primary",
+      messages: [{
+        role: "user",
+        content: [
+          { type: "input_text", text: "Visible <think>hidden</think> answer <think/>" },
+        ],
+      }],
+    };
+    const plan = planRequest({
+      requestId: "test",
+      originalModel: "nim-primary",
+      body,
+      stream: false, hasTools: false, hasStrictTools: false, isMultiTool: false, hasTypedContent: false, requiresJsonMode: false, requiresReasoning: false,
+    });
+
+    expect(plan?.transforms.map((t) => t.type)).toEqual(
+      expect.arrayContaining(["normalize_typed_content_parts", "strip_user_reasoning"]),
+    );
+
+    const result = applyTransforms(body, plan!.transforms);
+    const message = (result.messages as Array<Record<string, unknown>>)[0];
+    expect(message.content).toEqual([{ type: "text", text: "Visible answer" }]);
   });
 });
 
@@ -105,7 +131,7 @@ describe("Content class detection", () => {
         model: "nim-primary",
         messages: [{ role: "user", content: [{ type: "text", text: "describe" }, { type: "image_url", image_url: { url: "data:..." } }] }],
       },
-      stream: false, hasTools: false, hasStrictTools: false, hasTypedContent: true, requiresJsonMode: false,
+      stream: false, hasTools: false, hasStrictTools: false, isMultiTool: false, hasTypedContent: true, requiresJsonMode: false, requiresReasoning: false,
     });
     // nim-primary is rejected due to multimodal content class
     const nimPrimary = candidates.find((c) => c.group === "nim-primary");
@@ -122,7 +148,7 @@ describe("Content class detection", () => {
         model: "nim-primary",
         messages: [{ role: "user", content: [{ type: "input_image", image_url: { url: "data:..." } }] }],
       },
-      stream: false, hasTools: false, hasStrictTools: false, hasTypedContent: true, requiresJsonMode: false,
+      stream: false, hasTools: false, hasStrictTools: false, isMultiTool: false, hasTypedContent: true, requiresJsonMode: false, requiresReasoning: false,
     });
 
     const nimPrimary = candidates.find((c) => c.group === "nim-primary");
@@ -137,7 +163,7 @@ describe("Content class detection", () => {
         model: "gpt-5.5",
         messages: [{ role: "user", content: [{ type: "text", text: "describe" }, { type: "image_url", image_url: { url: "data:..." } }] }],
       },
-      stream: false, hasTools: false, hasStrictTools: false, hasTypedContent: true, requiresJsonMode: false,
+      stream: false, hasTools: false, hasStrictTools: false, isMultiTool: false, hasTypedContent: true, requiresJsonMode: false, requiresReasoning: false,
     });
     expect(plan).not.toBeNull();
   });
@@ -153,7 +179,7 @@ describe("Context window validation", () => {
         messages: [{ role: "user", content: "hi" }],
         max_tokens: 999999, // way over 128k context
       },
-      stream: false, hasTools: false, hasStrictTools: false, hasTypedContent: false, requiresJsonMode: false,
+      stream: false, hasTools: false, hasStrictTools: false, isMultiTool: false, hasTypedContent: false, requiresJsonMode: false, requiresReasoning: false,
     });
     expect(plan).toBeNull();
   });

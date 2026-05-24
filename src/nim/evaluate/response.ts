@@ -108,7 +108,16 @@ export function evaluateResponse(
   }
 
   const content = contentText(evaluatedMessage?.content);
-  const hasToolCalls = !!(evaluatedMessage?.tool_calls && (evaluatedMessage.tool_calls as unknown[]).length > 0);
+  const toolCallsValue = evaluatedMessage?.tool_calls;
+  if (toolCallsValue !== undefined && !Array.isArray(toolCallsValue)) {
+    return {
+      action: "retry_fallback",
+      failureClass: "tool_contract_failure",
+      failureMessage: "tool_calls_not_array",
+      semanticSeverity: "high",
+    };
+  }
+  const hasToolCalls = Array.isArray(toolCallsValue) && toolCallsValue.length > 0;
   const availableTools = Array.isArray(requestBody.tools)
     ? requestBody.tools as Array<Record<string, unknown>>
     : [];
@@ -120,19 +129,17 @@ export function evaluateResponse(
     repetitionMaxRatio: config.repetitionMaxRatio,
   };
 
-  // ── Tool-call validation ─────────────────────────────────────
+  // ── Tool-call validation ──────────────────────────────────────
   if (hasToolCalls && availableTools.length === 0) {
-    const toolCalls = evaluatedMessage!.tool_calls as Array<Record<string, unknown>>;
-    const unrequested = validateToolContract(toolCalls, availableTools);
     return {
       action: "retry_fallback",
       failureClass: "tool_contract_failure",
-      failureMessage: unrequested.reason ?? "unexpected_tool_calls",
+      failureMessage: "tool_calls_without_requested_tools",
       semanticSeverity: "high",
     };
   }
 
-  if (hasToolCalls && availableTools.length > 0) {
+  if (hasToolCalls) {
     const toolCalls = evaluatedMessage!.tool_calls as Array<Record<string, unknown>>;
     let candidateToolCalls = toolCalls;
     if (config.enableToolRepair) {
@@ -174,6 +181,13 @@ export function evaluateResponse(
             };
           }
         }
+        const detail = schemaResult.issues[0]?.issues[0]?.path ?? "schema_mismatch";
+        return {
+          action: "retry_fallback",
+          failureClass: "tool_contract_failure",
+          failureMessage: `schema_invalid_after_repair: ${detail}`,
+          semanticSeverity: "high",
+        };
       }
     }
 
@@ -230,26 +244,6 @@ export function evaluateResponse(
       }
     }
 
-    if (contractResult.valid) {
-      const schemaResult = validateToolCallsAgainstSchemas(
-        candidateToolCalls,
-        availableTools,
-        config.repairPolicy,
-      );
-      if (!schemaResult.valid) {
-        const detail = schemaResult.issues[0]?.issues[0]?.path ?? "schema_mismatch";
-        const prefix = candidateToolCalls !== toolCalls
-          ? "schema_invalid_after_repair"
-          : "schema_invalid";
-        return {
-          action: "retry_fallback",
-          failureClass: "tool_contract_failure",
-          failureMessage: `${prefix}: ${detail}`,
-          semanticSeverity: "high",
-        };
-      }
-    }
-
     if (!contractResult.valid) {
       return {
         action: "retry_fallback",
@@ -260,6 +254,20 @@ export function evaluateResponse(
     }
 
     if (candidateToolCalls !== toolCalls) {
+      // M2: when schema-aware repair is disabled, still validate schema so jsonrepair
+      // doesn't silently produce schema-invalid arguments.
+      if (!config.enableSchemaAwareRepair && config.repairPolicy) {
+        const schemaCheck = validateToolCallsAgainstSchemas(candidateToolCalls, availableTools, config.repairPolicy);
+        if (!schemaCheck.valid) {
+          const detail = schemaCheck.issues[0]?.issues[0]?.path ?? "schema_mismatch";
+          return {
+            action: "retry_fallback",
+            failureClass: "tool_contract_failure",
+            failureMessage: `schema_invalid_after_repair: ${detail}`,
+            semanticSeverity: "high",
+          };
+        }
+      }
       const patched = patchResponseToolCalls(evaluatedResponse, candidateToolCalls);
       return { action: "repair_accept", repairedResponse: patched, repairRecords: [{ toolName: "", fieldPath: "choices[0].message.tool_calls", repairKind: "tool_name_alias", before: "malformed", after: "repaired" }] };
     }

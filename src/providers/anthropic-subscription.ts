@@ -35,6 +35,16 @@ export interface AnthropicOAuthRefreshOptions {
   tokenUrl?: string;
 }
 
+let runtimeEnvForTesting: Record<string, string | undefined> | null = null;
+
+export function setAnthropicSubscriptionRuntimeEnvForTesting(
+  env: Record<string, string | undefined> | null,
+): void {
+  runtimeEnvForTesting = env;
+  generatedSessionId = null;
+  generatedDeviceId = null;
+}
+
 export async function refreshAnthropicOAuthToken(
   refreshToken: string,
   clientId: string,
@@ -74,21 +84,21 @@ export async function refreshAnthropicOAuthToken(
     }
 
     const data = await resp.json() as Record<string, unknown>;
-    const accessToken = data.access_token;
-    if (typeof accessToken !== "string" || !accessToken) {
+    const accessToken = nonEmptyString(data.access_token);
+    if (!accessToken) {
       return {
         success: false,
-        error: "missing access_token in OAuth response",
+        error: "oauth_refresh_missing_access_token",
         failureClass: "auth_failure",
       };
     }
-    const expiresIn = (data.expires_in as number) ?? 3600;
+    const expiresIn = oauthExpiresInSeconds(data.expires_in);
 
     return {
       success: true,
       token: {
         accessToken,
-        refreshToken: (data.refresh_token as string) ?? refreshToken,
+        refreshToken: nonEmptyString(data.refresh_token) ?? refreshToken,
         expiresAt: Date.now() + expiresIn * 1000 - 60000, // 1min safety margin
       },
     };
@@ -121,8 +131,8 @@ export async function getValidAnthropicToken(
     return { error: "no_token_stored", failureClass: "oauth_session_failure" };
   }
 
-  // Token still valid? Missing expiry means use the stored access token until refresh is required.
-  if (!stored.expiresAt || stored.expiresAt > Date.now()) {
+  // Token still valid?
+  if (isUsableOAuthToken(stored)) {
     return { token: stored.accessToken, refreshed: false };
   }
 
@@ -134,7 +144,7 @@ export async function getValidAnthropicToken(
     for (const delayMs of [100, 250, 500]) {
       await sleep(delayMs);
       const retried = await oauthDo.getToken(accountId);
-      if (retried && (!retried.expiresAt || retried.expiresAt > Date.now())) {
+      if (retried && isUsableOAuthToken(retried)) {
         return { token: retried.accessToken, refreshed: true };
       }
     }
@@ -142,19 +152,12 @@ export async function getValidAnthropicToken(
   }
 
   try {
-    const current = await oauthDo.getToken(accountId);
-    if (!current) {
-      return { error: "no_token_stored", failureClass: "oauth_session_failure" };
-    }
-    if (!current.expiresAt || current.expiresAt > Date.now()) {
-      return { token: current.accessToken, refreshed: true };
-    }
-    if (!current.refreshToken) {
+    if (!stored.refreshToken) {
       return { error: "no_refresh_token", failureClass: "oauth_session_failure" };
     }
 
     const result = await refreshAnthropicOAuthToken(
-      current.refreshToken,
+      stored.refreshToken,
       oauthConfig.clientId,
       oauthConfig.clientSecret,
       { tokenUrl: oauthConfig.tokenUrl },
@@ -181,6 +184,22 @@ export async function getValidAnthropicToken(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isUsableOAuthToken(token: OAuthTokenSet): boolean {
+  return token.accessToken.length > 0
+    && (token.expiresAt === null || token.expiresAt === undefined || token.expiresAt > Date.now());
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function oauthExpiresInSeconds(value: unknown): number {
+  const parsed = typeof value === "number"
+    ? value
+    : typeof value === "string" ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 3600;
 }
 
 // ─── Build Anthropic subscription request ──────────────────────────
@@ -266,6 +285,7 @@ export function buildAnthropicSubscriptionRequest(
     delete raw.betas;
     raw.model ??= model;
     raw.messages ??= requestParams.messages ?? [];
+    if (requestParams.stream === true) raw.stream ??= true;
     anthropicBody = orderBody(stripAbsent(raw));
     betas = normalizeBetas(rawBetas, model);
   } else {
@@ -424,7 +444,7 @@ export function convertAnthropicToOpenAI(
     type: "function",
     function: {
       name: b.name,
-      arguments: typeof b.input === "string" ? b.input : JSON.stringify(b.input),
+      arguments: stringifyToolInput(b.input),
     },
   }));
 
@@ -576,6 +596,9 @@ export function convertAnthropicStreamChunk(
       return null;
     }
 
+    case "error":
+      throw new Error(`anthropic_stream_error: ${anthropicStreamErrorMessage(event.error)}`);
+
     case "content_block_stop":
     case "message_stop":
     case "ping":
@@ -595,6 +618,24 @@ function mapAnthropicStopReason(reason: string | null | undefined): string {
   return "stop";
 }
 
+function stringifyToolInput(input: unknown): string {
+  if (typeof input === "string") return input;
+  const encoded = JSON.stringify(input ?? {});
+  return typeof encoded === "string" ? encoded : "{}";
+}
+
+function anthropicStreamErrorMessage(error: unknown): string {
+  if (isRecord(error)) {
+    const type = typeof error.type === "string" ? error.type : undefined;
+    const message = typeof error.message === "string" ? error.message : undefined;
+    if (type && message) return `${type}: ${message}`;
+    if (message) return message;
+    if (type) return type;
+  }
+  if (typeof error === "string" && error.length > 0) return error;
+  return "unknown";
+}
+
 function convertToAnthropicMessages(messages: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
   const result: Array<Record<string, unknown>> = [];
   for (const msg of messages) {
@@ -606,7 +647,14 @@ function convertToAnthropicMessages(messages: Array<Record<string, unknown>>): A
     if (role === "assistant") {
       const entry: Record<string, unknown> = { role: "assistant", content: anthropicContentParts(content) };
       if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
-        const blocks = Array.isArray(entry.content) ? [...entry.content as Array<Record<string, unknown>>] : [];
+        let blocks: Array<Record<string, unknown>>;
+        if (Array.isArray(entry.content)) {
+          blocks = [...entry.content as Array<Record<string, unknown>>];
+        } else if (typeof entry.content === "string" && entry.content) {
+          blocks = [{ type: "text", text: entry.content }];
+        } else {
+          blocks = [];
+        }
         for (const tc of msg.tool_calls as Array<Record<string, unknown>>) {
           const fn = tc.function as Record<string, unknown>;
           let input: unknown;
@@ -983,10 +1031,10 @@ function supportsContextManagement(model: string): boolean {
 
 function supportsThinking(model: string): boolean {
   const canonical = canonicalModelName(model);
-  return !canonical.includes("claude-3-")
+  return canonical.includes("3-7-sonnet") || (!canonical.includes("claude-3-")
     && (canonical.includes("sonnet-4")
       || canonical.includes("opus-4")
-      || canonical.includes("haiku-4"));
+      || canonical.includes("haiku-4")));
 }
 
 function supportsAdaptiveThinking(model: string): boolean {
@@ -1109,8 +1157,7 @@ function jsonObjectFromEnv(name: string): Record<string, unknown> {
 }
 
 function envValue(name: string): string | undefined {
-  const processLike = (globalThis as { process?: { env?: Record<string, string | undefined>; version?: string; platform?: string; arch?: string } }).process;
-  const value = processLike?.env?.[name];
+  const value = runtimeEnvForTesting?.[name];
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
@@ -1131,7 +1178,7 @@ function positiveInteger(value: string | undefined): number | null {
 }
 
 function dedupe(values: string[]): string[] {
-  return [...new Set(values)];
+  return Array.from(new Set(values));
 }
 
 let generatedSessionId: string | null = null;
@@ -1162,31 +1209,17 @@ function claudeCodeUserAgent(): string {
 }
 
 function runtimeVersion(): string {
-  const processLike = (globalThis as { process?: { version?: string } }).process;
   return envValue("ANTHROPIC_SUBSCRIPTION_NODE_VERSION")
     ?? envValue("CLAUDE_CODE_NODE_VERSION")
-    ?? processLike?.version
     ?? "v22.11.0";
 }
 
 function runtimeOs(): string {
-  const processLike = (globalThis as { process?: { platform?: string } }).process;
-  const value = processLike?.platform ?? "";
-  if (value === "darwin") return "MacOS";
-  if (value === "win32") return "Windows";
-  if (value === "linux") return "Linux";
-  if (value === "freebsd") return "FreeBSD";
-  if (value === "openbsd") return "OpenBSD";
-  return value ? `Other:${value}` : "Unknown";
+  return "Unknown";
 }
 
 function runtimeArch(): string {
-  const processLike = (globalThis as { process?: { arch?: string } }).process;
-  const value = processLike?.arch ?? "";
-  if (value === "x64") return "x64";
-  if (value === "arm64") return "arm64";
-  if (value === "ia32") return "x32";
-  return value || "unknown";
+  return "unknown";
 }
 
 function apiTimeoutMs(): number {

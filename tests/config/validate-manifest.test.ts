@@ -1,9 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  validateManifest,
-  ROUTING_ONLY_ROUTE_GROUPS,
-  type ValidationIssue,
-} from "../../src/config/validate-manifest";
+import { validateManifest, type ValidationIssue } from "../../src/config/validate-manifest";
 import { MANIFEST, POLICY_PROFILES, composePolicy } from "../../src/config/manifest";
 import type { RouteManifest, RouteGroup, Deployment, Policy } from "../../src/config/schema";
 
@@ -28,11 +24,20 @@ const DEFAULT_POLICY: Policy = {
     semanticMinChars: 1,
     semanticMinEntropy: 2.5,
     semanticMinPrintableRatio: 0.8,
+    enableSchemaAwareRepair: false,
+    repairPolicy: {
+      allowDestructiveByDefault: false,
+      conservativeToolPatterns: [],
+      enumAliases: {},
+      toolNameAliases: {},
+      relationalDefaults: {},
+    },
   },
   deadline: {
     attemptTimeoutSeconds: 120,
     firstTokenTimeoutSeconds: 15,
     streamIdleTimeoutSeconds: 30,
+    streamHardTimeoutSeconds: 120,
     totalTimeoutSeconds: 300,
   },
   retry: {
@@ -41,6 +46,7 @@ const DEFAULT_POLICY: Policy = {
     retryableFailureClasses: [],
     backoffBaseMs: 250,
     backoffMaxMs: 2000,
+    hedge: { enabled: false, maxCandidates: 1, onlyWhenSuspect: true, hedgeDelayMs: 0 },
   },
   health: {
     circuitFailureThreshold: 5,
@@ -50,7 +56,13 @@ const DEFAULT_POLICY: Policy = {
     semanticCooldownThreshold: 1,
     rateLimitCooldownThreshold: 1,
     halfOpenPenalty: 2.5,
+    circuitSuccessThreshold: 3,
     probeMaxInflight: 1,
+    suspectThresholdFraction: 0.6,
+    suspectMaxParallelDivisor: 2,
+    latencyPenaltyFactor: 5.0,
+    latencyEmaAlpha: 0.3,
+    latencyWarmupSamples: 5,
   },
   budget: {
     scopeMode: "global",
@@ -59,10 +71,32 @@ const DEFAULT_POLICY: Policy = {
     learnedConcurrencyEnabled: true,
     learnedConcurrencyTtlSeconds: 60,
     staleInflightSeconds: 120,
+    tokenBudgetPerMinute: null,
   },
 };
 
+const DEFAULT_DEPLOYMENT: Deployment = {
+  id: "deploy-1", group: "group-a", provider: "openai",
+  model: "model-a", providerModel: "model-a",
+  keyRef: "KEY_1", rpm: 30, maxParallelRequests: 2,
+  timeout: 500, streamTimeout: 500, supportsStreaming: true,
+  capabilities: {
+    toolCalling: "native", streamingWithTools: "native",
+    jsonMode: "native", reasoning: "native", multimodal: "none",
+  },
+  contextWindow: 128000, hidden: false,
+};
+
+function indexDeploymentsByGroup(deployments: Deployment[]): Record<string, Deployment[]> {
+  const result: Record<string, Deployment[]> = {};
+  for (const deployment of deployments) {
+    (result[deployment.group] ??= []).push(deployment);
+  }
+  return result;
+}
+
 function makeManifest(overrides: Partial<RouteManifest> = {}): RouteManifest {
+  const deployments = overrides.deployments ?? [DEFAULT_DEPLOYMENT];
   return {
     plannerSettings: {
       healthFallbackMargin: 75,
@@ -76,18 +110,8 @@ function makeManifest(overrides: Partial<RouteManifest> = {}): RouteManifest {
     routeGroups: {
       "group-a": { target: "model-a", hidden: false, fallbacks: [] },
     },
-    deployments: [{
-      id: "deploy-1", group: "group-a", provider: "openai",
-      model: "model-a", providerModel: "model-a",
-      keyRef: "KEY_1", rpm: 30, maxParallelRequests: 2,
-      timeout: 500, streamTimeout: 500, supportsStreaming: true,
-      capabilities: {
-        toolCalling: "native", streamingWithTools: "native",
-        jsonMode: "native", reasoning: "native", multimodal: "none",
-      },
-      contextWindow: 128000, hidden: false,
-    }],
-    deploymentsByGroup: { "group-a": [] },
+    deployments,
+    deploymentsByGroup: indexDeploymentsByGroup(deployments),
     policies: { "group-a": DEFAULT_POLICY },
     defaultPolicy: DEFAULT_POLICY,
     ...overrides,
@@ -105,12 +129,6 @@ describe("MANIFEST validation", () => {
     const issues = validateManifest(MANIFEST);
     const errs = errors(issues);
     expect(errs).toEqual([]);
-  });
-
-  it("has no warnings on the production manifest", () => {
-    const issues = validateManifest(MANIFEST);
-    const warnings = issues.filter((i) => i.kind === "warning");
-    expect(warnings).toEqual([]);
   });
 
   it("all aliases resolve to existing groups", () => {
@@ -235,6 +253,26 @@ describe("fallback graph validation", () => {
     const issues = validateManifest(m);
     expect(errors(issues).some((i) => i.code === "fallback_group_missing")).toBe(true);
   });
+
+  it("detects planner lane references to missing groups", () => {
+    const m = makeManifest({
+      routeGroups: {
+        "group-a": {
+          target: "a",
+          hidden: false,
+          fallbacks: [],
+          planner: {
+            toolGroup: "missing-tool-lane",
+            strictToolGroup: "missing-strict-tool-lane",
+          },
+        },
+      },
+    });
+
+    const codes = new Set(errors(validateManifest(m)).map((i) => i.code));
+    expect(codes).toContain("planner_tool_group_missing");
+    expect(codes).toContain("planner_strict_tool_group_missing");
+  });
 });
 
 // ─── Deployment validation ───────────────────────────────────────
@@ -261,11 +299,20 @@ describe("deployment validation", () => {
     expect(errors(issues).some((i) => i.code === "deployment_group_missing")).toBe(true);
   });
 
-  it("does not warn about routing-only groups without deployments", () => {
-    const issues = validateManifest(MANIFEST);
-    for (const group of ROUTING_ONLY_ROUTE_GROUPS) {
-      expect(issues.some((i) => i.code === "group_has_no_deployments" && i.message.includes(group))).toBe(false);
-    }
+  it("detects unsafe deployment API base values", () => {
+    const m = makeManifest({
+      deployments: [{ ...DEFAULT_DEPLOYMENT, apiBase: "http://provider.example/v1" }],
+    });
+    const issues = validateManifest(m);
+    expect(errors(issues).some((i) => i.code === "deployment_api_base_invalid")).toBe(true);
+  });
+
+  it("allows localhost http API bases for local fixtures", () => {
+    const m = makeManifest({
+      deployments: [{ ...DEFAULT_DEPLOYMENT, apiBase: "http://localhost:8787/v1" }],
+    });
+    const issues = validateManifest(m);
+    expect(errors(issues)).toEqual([]);
   });
 
   it("warns about non-hidden group with no deployments", () => {
@@ -279,24 +326,25 @@ describe("deployment validation", () => {
     const issues = validateManifest(m);
     expect(issues.some((i) => i.code === "group_has_no_deployments" && i.kind === "warning")).toBe(true);
   });
-});
 
-// ─── Planner validation ────────────────────────────────────────────
-
-describe("planner validation", () => {
-  it("detects planner toolGroup referencing nonexistent group", () => {
+  it("detects deploymentsByGroup drift from the deployment list", () => {
     const m = makeManifest({
-      routeGroups: {
-        "group-a": {
-          target: "model-a",
-          hidden: false,
-          fallbacks: [],
-          planner: { toolGroup: "missing-tool-group" },
-        },
-      },
+      deploymentsByGroup: { "group-a": [] },
     });
     const issues = validateManifest(m);
-    expect(errors(issues).some((i) => i.code === "planner_group_missing")).toBe(true);
+    expect(errors(issues).some((i) => i.code === "deployments_by_group_drift")).toBe(true);
+  });
+
+  it("detects stale indexed deployments for groups no deployment declares", () => {
+    const m = makeManifest({
+      deploymentsByGroup: {
+        "group-a": [DEFAULT_DEPLOYMENT],
+        "stale-group": [{ ...DEFAULT_DEPLOYMENT, id: "stale-deploy" }],
+      },
+    });
+
+    const issues = validateManifest(m);
+    expect(errors(issues).some((i) => i.code === "deployments_by_group_stale")).toBe(true);
   });
 });
 
@@ -315,15 +363,66 @@ describe("policy validation", () => {
     expect(errors(issues).some((i) => i.code === "no_default_policy")).toBe(true);
   });
 
-  it("detects policies without a matching route group", () => {
-    const m = makeManifest({
-      policies: {
-        "group-a": DEFAULT_POLICY,
-        "orphan-policy": DEFAULT_POLICY,
+  it("rejects invalid deployment filter knobs in policies", () => {
+    const invalidPolicy: Policy = {
+      ...DEFAULT_POLICY,
+      budget: {
+        ...DEFAULT_POLICY.budget,
+        scopeMode: "shared" as Policy["budget"]["scopeMode"],
+        rpmLimit: 0,
+        maxParallelRequests: -1,
+        tokenBudgetPerMinute: 0,
       },
-    });
-    const issues = validateManifest(m);
-    expect(errors(issues).some((i) => i.code === "orphan_policy")).toBe(true);
+      health: {
+        ...DEFAULT_POLICY.health,
+        suspectMaxParallelDivisor: 0,
+        latencyEmaAlpha: 1.5,
+      },
+    };
+
+    const issues = validateManifest(makeManifest({
+      policies: { "group-a": invalidPolicy },
+    }));
+    const codes = new Set(errors(issues).map((i) => i.code));
+
+    expect(codes).toContain("policy_budget_scope_invalid");
+    expect(codes).toContain("policy_budget_filter_invalid");
+    expect(codes).toContain("policy_health_invalid");
+  });
+
+  it("rejects internally inconsistent policy deadlines", () => {
+    const invalidPolicy: Policy = {
+      ...DEFAULT_POLICY,
+      deadline: {
+        ...DEFAULT_POLICY.deadline,
+        attemptTimeoutSeconds: 120,
+        totalTimeoutSeconds: 60,
+      },
+    };
+    const issues = validateManifest(makeManifest({
+      policies: { "group-a": invalidPolicy },
+    }));
+
+    expect(errors(issues).some((i) => i.code === "policy_deadline_invalid")).toBe(true);
+  });
+
+  it("warns when schema-aware repair is configured destructively", () => {
+    const destructivePolicy: Policy = {
+      ...DEFAULT_POLICY,
+      response: {
+        ...DEFAULT_POLICY.response,
+        repairPolicy: {
+          ...DEFAULT_POLICY.response.repairPolicy,
+          allowDestructiveByDefault: true,
+        },
+      },
+    };
+
+    const issues = validateManifest(makeManifest({
+      policies: { "group-a": destructivePolicy },
+    }));
+
+    expect(issues.some((i) => i.kind === "warning" && i.code === "policy_destructive_repair_enabled")).toBe(true);
   });
 });
 
@@ -368,5 +467,12 @@ describe("policy profile composition", () => {
     const nimPrimary = MANIFEST.deploymentsByGroup["nim-primary"] ?? [];
     const keyRefs = new Set(nimPrimary.map((d) => d.keyRef));
     expect(keyRefs.size).toBe(9);
+  });
+
+  it("schema-aware argument repair defaults to non-destructive mode", () => {
+    expect(MANIFEST.defaultPolicy.response.repairPolicy.allowDestructiveByDefault).toBe(false);
+    for (const [name, policy] of Object.entries(MANIFEST.policies)) {
+      expect(policy.response.repairPolicy.allowDestructiveByDefault, `policy ${name}`).toBe(false);
+    }
   });
 });

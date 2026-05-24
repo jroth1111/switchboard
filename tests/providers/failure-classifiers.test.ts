@@ -34,6 +34,14 @@ describe("classifyAnthropicFailure", () => {
     expect(result.cooldownSeconds).toBe(60);
   });
 
+  it("classifies 403 subscription quota failures as subscription_limit", () => {
+    const result = classifyAnthropicFailure(403, '{"error":"subscription quota exceeded"}');
+    expect(result.failureClass).toBe("subscription_limit");
+    expect(result.affectsHealth).toBe(false);
+    expect(result.affectsAccount).toBe(true);
+    expect(result.cooldownSeconds).toBe(300);
+  });
+
   it("classifies 429 with usage tier as subscription_limit (account-scoped)", () => {
     const result = classifyAnthropicFailure(429, '{"error":"usage limit exceeded for tier"}');
     expect(result.failureClass).toBe("subscription_limit");
@@ -48,6 +56,13 @@ describe("classifyAnthropicFailure", () => {
     expect(result.affectsHealth).toBe(true);
     expect(result.affectsAccount).toBe(false);
     expect(result.cooldownSeconds).toBe(60);
+  });
+
+  it("classifies 429 rate limit text as retryable rate_limit_overload", () => {
+    const result = classifyAnthropicFailure(429, '{"error":"rate limit exceeded"}');
+    expect(result.failureClass).toBe("rate_limit_overload");
+    expect(result.affectsHealth).toBe(true);
+    expect(result.affectsAccount).toBe(false);
   });
 
   it("classifies 400 with context as context_length_exceeded", () => {
@@ -102,6 +117,9 @@ describe("classifyChatGPTFailure", () => {
     expect(result.failureClass).toBe("subscription_limit");
     expect(result.cooldownSeconds).toBe(300);
     expect(result.affectsAccount).toBe(true);
+
+    const result2 = classifyChatGPTFailure(403, "subscription limit reached");
+    expect(result2.failureClass).toBe("subscription_limit");
   });
 
   it("classifies 403 without quota keywords as oauth_session_failure", () => {
@@ -125,6 +143,22 @@ describe("classifyChatGPTFailure", () => {
   it("classifies 400 with context as context_length_exceeded", () => {
     const result = classifyChatGPTFailure(400, "maximum context length exceeded");
     expect(result.failureClass).toBe("context_length_exceeded");
+  });
+
+  it("classifies 404 ChatGPT model errors as invalid_model", () => {
+    const result = classifyChatGPTFailure(404, "model not found");
+    expect(result.failureClass).toBe("invalid_model");
+    expect(result.affectsHealth).toBe(false);
+    expect(result.affectsAccount).toBe(false);
+    expect(result.cooldownSeconds).toBe(300);
+  });
+
+  it("classifies named unavailable ChatGPT model errors as invalid_model", () => {
+    const result = classifyChatGPTFailure(400, "model gpt-5.5 is not available");
+    expect(result.failureClass).toBe("invalid_model");
+    expect(result.affectsHealth).toBe(false);
+    expect(result.affectsAccount).toBe(false);
+    expect(result.cooldownSeconds).toBe(300);
   });
 
   it("classifies 429 as rate_limit_overload (health + account)", () => {

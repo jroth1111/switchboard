@@ -63,22 +63,20 @@ export function filterCandidates(
       continue;
     }
 
-    // Circuit breaker — open circuits reject until halfOpenAfter; probe windows cap concurrency at 1.
+    // Circuit breaker
     const circuit = state.circuits.get(deployment.id);
-    let halfOpenProbe = false;
     if (circuit) {
       if (circuit.state === "open") {
         if (!circuit.halfOpenAfter || now < circuit.halfOpenAfter) {
           rejected.push({ deployment, reason: "circuit_open" });
           continue;
         }
-        halfOpenProbe = true;
-      } else if (circuit.state === "half_open") {
-        halfOpenProbe = true;
       }
     }
 
-    const isRecoveryState = circuit && (circuit.state === "half_open" || circuit.state === "suspect");
+    const inHalfOpenRecovery =
+      circuit?.state === "open" && circuit.halfOpenAfter !== undefined && circuit.halfOpenAfter <= now;
+    const isRecoveryState = circuit && (circuit.state === "half_open" || circuit.state === "suspect" || inHalfOpenRecovery);
     if ((options.quarantineFailureThreshold ?? 0) > 0 && !isRecoveryState) {
       const consecutiveFailures = state.healthScores.get(deployment.id)?.consecutiveFailureCount ?? 0;
       const circuitFailures = circuit?.failureCount ?? 0;
@@ -95,8 +93,8 @@ export function filterCandidates(
     if ((options.maxParallelOverride ?? 0) > 0) {
       effectiveMax = Math.min(effectiveMax, options.maxParallelOverride!);
     }
-    if (halfOpenProbe) {
-      effectiveMax = Math.min(effectiveMax, 1);
+    if (circuit?.state === "half_open" || inHalfOpenRecovery) {
+      effectiveMax = 1;
     } else if (circuit?.state === "suspect" && (options.suspectMaxParallelDivisor ?? 0) > 0) {
       effectiveMax = Math.max(1, Math.floor(effectiveMax / options.suspectMaxParallelDivisor!));
     }

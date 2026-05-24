@@ -29,36 +29,60 @@ export interface UsageEventPayload {
   usageSource: string;
 }
 
-function readTokenCount(...candidates: unknown[]): number | undefined {
-  for (const candidate of candidates) {
-    if (candidate === null || candidate === undefined) continue;
-    const value = typeof candidate === "number" ? candidate : Number(candidate);
-    if (!Number.isFinite(value) || value < 0) return undefined;
-    return value;
-  }
-  return undefined;
-}
-
 export function normalizeProviderUsage(
-  rawUsage: Record<string, number> | undefined,
+  rawUsage: Record<string, unknown> | undefined,
   provider: string,
 ): TokenUsage {
   if (!rawUsage) return { kind: "unknown", source: provider };
 
-  const prompt = readTokenCount(rawUsage.prompt_tokens, rawUsage.input_tokens);
-  const completion = readTokenCount(rawUsage.completion_tokens, rawUsage.output_tokens);
+  const prompt = readTokenCount(rawUsage, ["prompt_tokens", "input_tokens"]);
+  const completion = readTokenCount(rawUsage, ["completion_tokens", "output_tokens"]);
+  const total = readTokenCount(rawUsage, ["total_tokens", "total"]);
 
   if (prompt === undefined || completion === undefined) {
+    if (total !== undefined) {
+      return {
+        kind: "estimated",
+        promptTokens: 0,
+        completionTokens: total,
+        totalTokens: total,
+        source: `${provider}:total_tokens`,
+      };
+    }
     return { kind: "unknown", source: provider };
   }
 
+  const componentSum = prompt + completion;
+  const accountedTotal = Math.max(total ?? componentSum, componentSum);
+  const accountedCompletion = completion + (accountedTotal - componentSum);
   return {
     kind: "known",
     promptTokens: prompt,
-    completionTokens: completion,
-    totalTokens: prompt + completion,
+    completionTokens: accountedCompletion,
+    totalTokens: accountedTotal,
     source: provider,
   };
+}
+
+function readTokenCount(rawUsage: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const parsed = parseTokenCount(rawUsage[key]);
+    if (parsed !== undefined) return parsed;
+  }
+  return undefined;
+}
+
+function parseTokenCount(value: unknown): number | undefined {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value < 0) return undefined;
+    return Math.ceil(value);
+  }
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+    return Math.ceil(parsed);
+  }
+  return undefined;
 }
 
 export function usageEventFromTokenUsage(

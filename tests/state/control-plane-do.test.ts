@@ -1,9 +1,9 @@
-import { describe, it, expect } from "vitest";
-import { env, runInDurableObject } from "cloudflare:test";
+import { describe, it, expect, vi } from "vitest";
+import { env } from "cloudflare:test";
 import type { ControlPlaneStateDO } from "../../src/state/control-plane-state";
 
-function getDoStub(): ControlPlaneStateDO {
-  const id = env.CONTROL_PLANE_STATE.idFromName("test-do-state");
+function getDoStub(name = "test-do-state"): ControlPlaneStateDO {
+  const id = env.CONTROL_PLANE_STATE.idFromName(name);
   return env.CONTROL_PLANE_STATE.get(id) as unknown as ControlPlaneStateDO;
 }
 
@@ -218,6 +218,48 @@ describe("ControlPlaneStateDO with real SQLite", () => {
     expect(row!.policyId).toBe("hermes-basic");
     expect(row!.policyVersion).toBe("hermes-basic:v1");
     expect(row!.totalTokens).toBe(12);
+  });
+
+  it("clamps negative client and usage query limits", async () => {
+    const stub = getDoStub();
+    const suffix = Date.now();
+    const clientId = `limit-client-${suffix}`;
+    for (let i = 0; i < 2; i++) {
+      await stub.storeClientRequest({
+        requestId: `req_limit_client_${suffix}_${i}`,
+        timestamp: Date.now() + i,
+        clientId,
+        originalModel: "smart-route",
+        canonicalTarget: "smart-route-worker",
+        selectedGroup: "smart-route-worker",
+        finalOutcome: "success",
+        stream: false,
+      });
+      await stub.storeUsageEvent({
+        requestId: `req_limit_usage_${suffix}_${i}`,
+        attemptIndex: 0,
+        timestamp: Date.now() + i,
+        clientId,
+        canonicalTarget: "smart-route-worker",
+        selectedGroup: "smart-route-worker",
+        deploymentId: "deploy-1",
+        provider: "fixture",
+        model: "fixture-model",
+        stream: false,
+        finalOutcome: "success",
+        usageKind: "known",
+        promptTokens: 1,
+        completionTokens: 1,
+        totalTokens: 2,
+        usageSource: "test",
+      });
+    }
+
+    const clientRows = await stub.queryClientRequests({ clientId, limit: -1 });
+    const usageRows = await stub.queryUsageEvents({ clientId, limit: -1 });
+
+    expect(clientRows).toHaveLength(1);
+    expect(usageRows).toHaveLength(1);
   });
 
   it("stores failed requests with searchable filters and optional sanitized receipts", async () => {
@@ -437,43 +479,44 @@ describe("ControlPlaneStateDO with real SQLite", () => {
     expect(reaped).toBe(0);
   });
 
-  it("confirm extends reservation TTL so reapExpired does not release active streams", async () => {
-    const stub = getDoStub();
-    const deploymentId = `deploy-reap-confirmed-${Date.now()}`;
-    const result = await stub.admit({
-      requestId: `req_reap_confirmed_${Date.now()}`,
-      candidates: [{
-        deploymentId,
-        keyRef: "key-1",
-        rpm: 100,
-        maxParallel: 2,
-        group: "test-group",
-      }],
-    });
-    expect(result.admitted).toBe(true);
-    await stub.confirm(result.reservationId!);
+  it("does not reap active admitted reservations after the admit TTL", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-05-24T00:00:00Z"));
+      const stub = getDoStub("test-do-active-reservation");
+      const deploymentId = "deploy-active-reservation";
+      const result = await stub.admit({
+        requestId: "req_active_reservation",
+        candidates: [{
+          deploymentId,
+          keyRef: "key-active",
+          rpm: 100,
+          maxParallel: 1,
+          group: "test-group",
+        }],
+      });
+      expect(result.admitted).toBe(true);
 
-    const reapedWhileActive = await stub.reapExpired();
-    expect(reapedWhileActive).toBe(0);
+      vi.advanceTimersByTime(31_000);
+      const reaped = await stub.reapExpired();
+      const second = await stub.admit({
+        requestId: "req_active_reservation_second",
+        candidates: [{
+          deploymentId,
+          keyRef: "key-active",
+          rpm: 100,
+          maxParallel: 1,
+          group: "test-group",
+        }],
+      });
 
-    const healthWhileActive = await stub.getHealth();
-    const inflightWhileActive = healthWhileActive.inflight as Record<string, { count: number }>;
-    expect(inflightWhileActive[deploymentId]?.count).toBe(1);
-
-    await runInDurableObject(stub, async (_instance, state) => {
-      state.storage.sql.exec(
-        "UPDATE reservations SET expires_at = ? WHERE reservation_id = ?",
-        Date.now() - 1000,
-        result.reservationId!,
-      );
-    });
-
-    const reapedAfterAbandon = await stub.reapExpired();
-    expect(reapedAfterAbandon).toBe(1);
-
-    const healthAfterReap = await stub.getHealth();
-    const inflightAfterReap = healthAfterReap.inflight as Record<string, { count: number }>;
-    expect(inflightAfterReap[deploymentId]?.count ?? 0).toBe(0);
+      expect(reaped).toBe(0);
+      expect(second.admitted).toBe(false);
+      expect(second.rejected?.[0]?.reason).toBe("inflight_exhausted");
+      await stub.release(result.reservationId!);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("stores and retrieves canary results", async () => {

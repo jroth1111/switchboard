@@ -10,12 +10,16 @@ export interface ValidationIssue {
   detail?: string;
 }
 
+/** Route groups that forward to other groups and intentionally own no deployments. */
+export const ROUTING_ONLY_ROUTE_GROUPS = new Set(["nim-secondary"]);
+
 export function validateManifest(m: RouteManifest): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
 
   validateAliases(m, issues);
   validateFallbackGraph(m, issues);
   validateDeployments(m, issues);
+  validatePlannerRefs(m, issues);
   validatePolicies(m, issues);
 
   return issues;
@@ -169,6 +173,7 @@ function validateDeployments(m: RouteManifest, issues: ValidationIssue[]): void 
 
   for (const group of Object.keys(m.routeGroups)) {
     const rg = m.routeGroups[group];
+    if (ROUTING_ONLY_ROUTE_GROUPS.has(group)) continue;
     // Only warn about groups that are reachable (non-hidden, or a fallback target)
     if (!groupsWithDeployments.has(group) && (!rg.hidden || fallbackTargets.has(group))) {
       issues.push({
@@ -183,6 +188,27 @@ function validateDeployments(m: RouteManifest, issues: ValidationIssue[]): void 
   }
 }
 
+// ─── Planner references ──────────────────────────────────────────────
+
+function validatePlannerRefs(m: RouteManifest, issues: ValidationIssue[]): void {
+  for (const [group, rg] of Object.entries(m.routeGroups)) {
+    const planner = rg.planner;
+    if (!planner) continue;
+
+    for (const field of ["toolGroup", "strictToolGroup"] as const) {
+      const ref = planner[field];
+      if (!ref) continue;
+      if (!(ref in m.routeGroups)) {
+        issues.push({
+          kind: "error",
+          code: "planner_group_missing",
+          message: `Route group "${group}" planner.${field} references "${ref}" which is not a route group`,
+        });
+      }
+    }
+  }
+}
+
 // ─── Policy existence ──────────────────────────────────────────────
 
 function validatePolicies(m: RouteManifest, issues: ValidationIssue[]): void {
@@ -192,6 +218,16 @@ function validatePolicies(m: RouteManifest, issues: ValidationIssue[]): void {
         kind: "warning",
         code: "missing_policy",
         message: `Route group "${group}" has no policy (will use default)`,
+      });
+    }
+  }
+
+  for (const group of Object.keys(m.policies)) {
+    if (!(group in m.routeGroups)) {
+      issues.push({
+        kind: "error",
+        code: "orphan_policy",
+        message: `Policy "${group}" has no matching route group`,
       });
     }
   }

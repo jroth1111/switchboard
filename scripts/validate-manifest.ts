@@ -3,8 +3,11 @@
 // Usage: node scripts/validate-manifest.ts
 
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { MANIFEST, ROUTE_MANIFEST_VERSION } from "../src/config/manifest.ts";
+import { ROUTING_ONLY_ROUTE_GROUPS, validateManifest } from "../src/config/validate-manifest.ts";
 import { buildManifestSnapshot, canonicalJson } from "./manifest-snapshot.ts";
 import { loadLocalSecretEnv, validateChatGPTStructuredAuthSurface } from "./chatgpt-auth-secrets.ts";
 
@@ -15,7 +18,8 @@ interface ValidationError {
 
 const errors: ValidationError[] = [];
 const requiredScheduledCrons = ["*/2 * * * *", "*/5 * * * *", "0 * * * *"];
-const litellmConfigPath = "../../.litellm/config.yaml";
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const litellmConfigPath = join(repoRoot, ".litellm", "config.yaml");
 const approvedMissingLiteLLMAliases: Record<string, string> = {};
 
 function error(msg: string) {
@@ -26,68 +30,15 @@ function warn(msg: string) {
   errors.push({ severity: "warning", message: msg });
 }
 
-// 1. All aliases resolve to valid route groups
-for (const [alias, target] of Object.entries(MANIFEST.aliases)) {
-  const rg = MANIFEST.routeGroups[target];
-  if (!rg) {
-    error(`Alias '${alias}' -> '${target}' has no route group`);
-  }
+// Core manifest checks (aliases, fallbacks, cycles, deployments, policies, planner refs).
+for (const issue of validateManifest(MANIFEST)) {
+  const message = issue.detail ? `${issue.message} — ${issue.detail}` : issue.message;
+  if (issue.kind === "error") error(`[${issue.code}] ${message}`);
+  else warn(`[${issue.code}] ${message}`);
 }
 
-// 2. All fallback groups exist
-for (const [group, rg] of Object.entries(MANIFEST.routeGroups)) {
-  for (const fb of rg.fallbacks) {
-    if (!MANIFEST.routeGroups[fb]) {
-      error(`Group '${group}' references fallback '${fb}' which doesn't exist`);
-    }
-  }
-}
-
-// 3. Fallback graph is acyclic
-function detectCycles(): string[] {
-  const cycles: string[] = [];
-  const visited = new Set<string>();
-  const stack = new Set<string>();
-
-  function dfs(group: string, path: string[]): boolean {
-    if (stack.has(group)) {
-      cycles.push(path.concat(group).join(" -> "));
-      return true;
-    }
-    if (visited.has(group)) return false;
-
-    visited.add(group);
-    stack.add(group);
-    const rg = MANIFEST.routeGroups[group];
-    if (rg) {
-      for (const fb of rg.fallbacks) {
-        dfs(fb, path.concat(group));
-      }
-    }
-    stack.delete(group);
-    return false;
-  }
-
-  for (const group of Object.keys(MANIFEST.routeGroups)) {
-    dfs(group, []);
-  }
-  return cycles;
-}
-
-const cycles = detectCycles();
-for (const cycle of cycles) {
-  warn(`Fallback cycle detected: ${cycle}`);
-}
-
-// 4. All deployments reference existing groups
-for (const d of MANIFEST.deployments) {
-  if (!MANIFEST.routeGroups[d.group]) {
-    error(`Deployment '${d.id}' references group '${d.group}' which doesn't exist`);
-  }
-}
-
-// 5. Visible alias targets have deployments (unless known routing-only groups)
-const routingOnlyGroups = new Set(["nim-secondary"]);
+// Visible alias targets have deployments (unless known routing-only groups)
+const routingOnlyGroups = ROUTING_ONLY_ROUTE_GROUPS;
 for (const [alias, target] of Object.entries(MANIFEST.aliases)) {
   const rg = MANIFEST.routeGroups[target];
   if (!rg || rg.hidden) continue;
@@ -98,15 +49,7 @@ for (const [alias, target] of Object.entries(MANIFEST.aliases)) {
   }
 }
 
-// 6. Policies exist for all groups
-for (const group of Object.keys(MANIFEST.routeGroups)) {
-  const policy = MANIFEST.policies[group] ?? MANIFEST.defaultPolicy;
-  if (!policy) {
-    error(`No policy for group '${group}' and no default policy`);
-  }
-}
-
-// 7. Default policy has all required fields
+// Default policy has all required fields
 const dp = MANIFEST.defaultPolicy;
 if (dp) {
   if (!dp.retry.retryableFailureClasses) error("Default policy missing retryableFailureClasses");
@@ -114,7 +57,7 @@ if (dp) {
   if (dp.deadline.totalTimeoutSeconds <= 0) error("Default policy totalTimeoutSeconds must be > 0");
 }
 
-// 8. NIM paths have terminal fallbacks
+// NIM paths have terminal fallbacks
 const nimGroups = Object.keys(MANIFEST.routeGroups).filter((g) => g.startsWith("nim-"));
 for (const nimGroup of nimGroups) {
   const rg = MANIFEST.routeGroups[nimGroup];
@@ -123,18 +66,18 @@ for (const nimGroup of nimGroups) {
   }
 }
 
-// 9. Runtime configs include every scheduled maintenance task the worker handles
+// Runtime configs include every scheduled maintenance task the worker handles
 for (const configPath of ["wrangler.jsonc", "wrangler.dev.jsonc"]) {
   validateScheduledCrons(configPath, requiredScheduledCrons);
 }
 
-// 10. Versioned manifest snapshot exists and matches the compiled manifest shape
+// Versioned manifest snapshot exists and matches the compiled manifest shape
 validateManifestSnapshot("config/route-manifest.snapshot.json");
 
-// 11. LiteLLM alias parity: Switchboard must meet or supersede the local LiteLLM catalog.
+// LiteLLM alias parity: Switchboard must meet or supersede the local LiteLLM catalog.
 validateLiteLLMAliasParity(litellmConfigPath);
 
-// 12. ChatGPT subscription lanes must prefer structured auth material.
+// ChatGPT subscription lanes must prefer structured auth material.
 validateChatGPTSubscriptionAuthRefs();
 validateChatGPTSubscriptionRuntimeAuth();
 

@@ -40,16 +40,28 @@ function isSafeObjectKey(key: string): boolean {
   return !POLLUTING_KEYS.has(key);
 }
 
+function isInternalMetadataKey(key: string): boolean {
+  return INTERNAL_PREFIXES.some((prefix) => key.toLowerCase().startsWith(prefix));
+}
+
+function shouldDropClientKey(key: string): boolean {
+  return !isSafeObjectKey(key) || isInternalMetadataKey(key);
+}
+
 export function sanitizeClientMetadata(body: Record<string, unknown>): Record<string, unknown> {
   const cleaned = { ...body };
   // Strip internal-namespaced metadata from the incoming request
-  if (cleaned.metadata && typeof cleaned.metadata === "object") {
-    const meta: Record<string, unknown> = Object.create(null);
-    for (const [key, value] of Object.entries(cleaned.metadata as Record<string, unknown>)) {
-      if (!isSafeObjectKey(key) || INTERNAL_PREFIXES.some((prefix) => key.toLowerCase().startsWith(prefix))) continue;
-      meta[key] = value;
+  if (cleaned.metadata != null) {
+    if (typeof cleaned.metadata !== "object" || Array.isArray(cleaned.metadata)) {
+      cleaned.metadata = Object.create(null) as Record<string, unknown>;
+    } else {
+      const meta: Record<string, unknown> = Object.create(null);
+      for (const [key, value] of Object.entries(cleaned.metadata as Record<string, unknown>)) {
+        if (shouldDropClientKey(key)) continue;
+        meta[key] = value;
+      }
+      cleaned.metadata = meta;
     }
-    cleaned.metadata = meta;
   }
   // Hoist extra_body fields to top level and strip the extra_body key.
   // extra_body is a client-side convention for passing params that shouldn't
@@ -57,15 +69,12 @@ export function sanitizeClientMetadata(body: Record<string, unknown>): Record<st
   if (cleaned.extra_body && typeof cleaned.extra_body === "object" && !Array.isArray(cleaned.extra_body)) {
     const extra = cleaned.extra_body as Record<string, unknown>;
     for (const [k, v] of Object.entries(extra)) {
-      if (isSafeObjectKey(k) && !(k in cleaned)) cleaned[k] = v;
+      if (isSafeObjectKey(k) && !Object.hasOwn(cleaned, k)) cleaned[k] = v;
     }
     delete cleaned.extra_body;
-    // Strip internal-prefixed fields that were hoisted from extra_body
-    for (const key of Object.keys(cleaned)) {
-      if (INTERNAL_PREFIXES.some(p => key.toLowerCase().startsWith(p))) {
-        delete cleaned[key];
-      }
-    }
+  }
+  for (const key of Object.keys(cleaned)) {
+    if (shouldDropClientKey(key)) delete cleaned[key];
   }
   return cleaned;
 }

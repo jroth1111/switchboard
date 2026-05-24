@@ -13,6 +13,33 @@ describe("sanitizeClientMetadata", () => {
     expect((result.metadata as Record<string, unknown>).user_id).toBe("123");
   });
 
+  it("strips top-level internal-prefixed keys (case-insensitive)", () => {
+    const body = {
+      model: "glm-5.1",
+      messages: [],
+      "x-nim-forged": "a",
+      "X-ROUTE-FORGE": "b",
+      "x-control-flag": true,
+      safe: "ok",
+    };
+    const result = sanitizeClientMetadata(body);
+    expect(result["x-nim-forged"]).toBeUndefined();
+    expect(result["X-ROUTE-FORGE"]).toBeUndefined();
+    expect(result["x-control-flag"]).toBeUndefined();
+    expect(result.safe).toBe("ok");
+  });
+
+  it("replaces array metadata with an empty object", () => {
+    const body = {
+      model: "glm-5.1",
+      messages: [],
+      metadata: [{ "x-nim-nested": "forged" }],
+    };
+    const result = sanitizeClientMetadata(body);
+    expect(Array.isArray(result.metadata)).toBe(false);
+    expect(result.metadata).toEqual({});
+  });
+
   it("strips x-route- prefixed metadata keys", () => {
     const body = {
       model: "glm-5.1",

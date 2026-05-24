@@ -260,7 +260,7 @@ function requiredToolArgs(availableTools: Array<Record<string, unknown>>): Map<s
     const required = parameters?.required;
     if (typeof name !== "string" || !name.trim() || !Array.isArray(required)) continue;
     const names = new Set(required.filter((item): item is string => typeof item === "string" && !!item.trim()));
-    if (names.size > 0) result.set(name as string, names);
+    if (names.size > 0) result.set((name as string).trim(), names);
   }
   return result;
 }

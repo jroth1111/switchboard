@@ -1021,6 +1021,31 @@ describe("Admin client requests", () => {
       },
     });
   });
+
+  it("defaults omitted since, until, and limit query params", async () => {
+    const queryClientRequests = vi.fn(async () => []);
+    const stateDo = { queryClientRequests };
+    const env = {
+      CONTROL_PLANE_STATE: {
+        idFromName: vi.fn(() => "control-plane-id"),
+        get: vi.fn(() => stateDo),
+      },
+    } as unknown as Env;
+
+    const response = await handleAdminClientRequests(
+      new Request("https://example.test/admin/client-requests?client_id=hermes-alice"),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(queryClientRequests).toHaveBeenCalledWith({
+      clientId: "hermes-alice",
+      appId: undefined,
+      since: undefined,
+      until: undefined,
+      limit: 100,
+    });
+  });
 });
 
 describe("NIM failed request observability", () => {

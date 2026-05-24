@@ -44,6 +44,14 @@ function makeDeployment(overrides: Partial<Deployment> = {}): Deployment {
   };
 }
 
+function structuredChatGPTAuth(accessToken = "chatgpt-token"): string {
+  return JSON.stringify({
+    access_token: accessToken,
+    refresh_token: "chatgpt-refresh-token",
+    id_token: "chatgpt-id-token",
+  });
+}
+
 afterEach(() => {
   vi.unstubAllEnvs();
 });
@@ -652,7 +660,7 @@ describe("ChatGPT Responses request builder", () => {
       truncation: "auto",
     };
 
-    const req = buildChatGPTResponsesRequest(deploy, body, "chatgpt-token");
+    const req = buildChatGPTResponsesRequest(deploy, body, structuredChatGPTAuth("chatgpt-token"));
     const parsed = JSON.parse(req.body);
 
     expect(req.url).toContain("/backend-api/codex/responses");
@@ -689,7 +697,7 @@ describe("ChatGPT Responses request builder", () => {
       tool_choice: { type: "function", name: "get_weather" },
     };
 
-    const req = buildChatGPTResponsesRequest(deploy, body, "token");
+    const req = buildChatGPTResponsesRequest(deploy, body, structuredChatGPTAuth("token"));
     const parsed = JSON.parse(req.body);
 
     expect(parsed.tools).toHaveLength(1);

@@ -110,12 +110,11 @@ export type ResponseInputItem = Record<string, unknown>;
 
 export interface ChatGPTSubscriptionAuth {
   accessToken: string;
-  source: "structured" | "legacy";
+  source: "structured";
 }
 
 interface ChatGPTSubscriptionAuthOptions {
   credentialName?: string;
-  allowLegacyAccessToken?: boolean;
 }
 
 // ─── Build ChatGPT Responses request ───────────────────────────────
@@ -131,7 +130,6 @@ export function buildChatGPTResponsesRequest(
   }
   const auth = resolveChatGPTSubscriptionAuth(authMaterial, {
     credentialName: "ChatGPT Responses subscription auth",
-    allowLegacyAccessToken: true,
   });
   const accessToken = auth.accessToken;
   validateDeploymentContract(deployment, accessToken);
@@ -188,17 +186,10 @@ export function resolveChatGPTSubscriptionAuth(
     return parseStructuredChatGPTAuth(raw, credentialName);
   }
 
-  if (!options.allowLegacyAccessToken) {
-    throw chatgptAuthError(
-      `${credentialName} must be structured JSON with required fields: `
-      + CHATGPT_SUBSCRIPTION_AUTH_REQUIRED_FIELDS.join(", "),
-    );
-  }
-
-  return {
-    accessToken: validateChatGPTAccessToken(raw, credentialName),
-    source: "legacy",
-  };
+  throw chatgptAuthError(
+    `${credentialName} must be structured JSON with required fields: `
+    + CHATGPT_SUBSCRIPTION_AUTH_REQUIRED_FIELDS.join(", "),
+  );
 }
 
 function parseStructuredChatGPTAuth(raw: string, credentialName: string): ChatGPTSubscriptionAuth {

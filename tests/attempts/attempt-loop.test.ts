@@ -452,7 +452,7 @@ describe("Provider format conversion integration", () => {
     const contract = validateResponsesContract(body);
     expect(contract.valid).toBe(true);
 
-    const req = buildChatGPTResponsesRequest(deploy, body, "token");
+    const req = buildChatGPTResponsesRequest(deploy, body, structuredChatGPTAuth());
     const parsed = JSON.parse(req.body);
     expect(parsed.model).toBe("gpt-5.5");
     expect(parsed.instructions).toBe("Be helpful.");
@@ -574,6 +574,32 @@ describe("ChatGPT Responses auth resolution in the attempt loop", () => {
       expect(result.attempts[0].failureClass).toBe("oauth_session_failure");
       expect(result.attempts[0].failureMessage).toContain("CHATGPT_AUTH_FILE must contain structured ChatGPT subscription auth JSON");
       expect(result.attempts[0].failureMessage).not.toContain(".secrets/chatgpt-auth.json");
+      expect(result.attempts[0].failureMessage).not.toContain("legacy-token");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("rejects legacy CHATGPT_OAUTH-only auth before provider fetch", async () => {
+    const envelope = makeResponsesEnvelope();
+    const plan = planRequest(envelope)!;
+    const state = makeAttemptState();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const result = await executeAttemptLoop(
+        envelope,
+        plan,
+        state as unknown as Parameters<typeof executeAttemptLoop>[2],
+        { CHATGPT_OAUTH: "legacy-token" },
+        AbortSignal.timeout(5_000),
+      );
+
+      expect(result.success).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(result.attempts[0].failureClass).toBe("oauth_session_failure");
+      expect(result.attempts[0].failureMessage).toContain("requires structured CHATGPT_AUTH_JSON or CHATGPT_AUTH_FILE");
       expect(result.attempts[0].failureMessage).not.toContain("legacy-token");
     } finally {
       vi.unstubAllGlobals();

@@ -328,6 +328,7 @@ export class ControlPlaneStateDO extends DurableObject {
     this.ensureColumn("client_request_events", "denial_reason", "TEXT");
     this.ensureColumn("client_request_events", "session_id", "TEXT");
     this.ensureColumn("client_request_events", "trace_id", "TEXT");
+    this.ensureColumn("client_request_events", "properties_json", "TEXT");
     this.ensureColumn("client_inflight", "estimated_tokens", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("usage_events", "team_id", "TEXT");
     this.ensureColumn("client_inflight", "team_id", "TEXT");
@@ -563,7 +564,7 @@ export class ControlPlaneStateDO extends DurableObject {
     appId?: string; userHash?: string; policyId?: string;
     policyVersion?: string; routeVersion?: string; denialReason?: string;
     routeDecision?: unknown;
-    sessionId?: string; traceId?: string;
+    sessionId?: string; traceId?: string; properties?: Record<string, string>;
     originalModel: string; canonicalTarget: string; selectedGroup: string;
     finalOutcome: string; stream: boolean; totalDurationMs?: number;
   }): Promise<void> {
@@ -571,13 +572,14 @@ export class ControlPlaneStateDO extends DurableObject {
     this.ctx.storage.sql.exec(
       `INSERT OR REPLACE INTO client_request_events
          (request_id, timestamp, client_id, app_id, user_hash, policy_id, policy_version, route_version, denial_reason,
-          route_decision_json, session_id, trace_id, original_model, canonical_target, selected_group, final_outcome, stream, total_duration_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          route_decision_json, session_id, trace_id, properties_json, original_model, canonical_target, selected_group, final_outcome, stream, total_duration_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       event.requestId, event.timestamp, event.clientId,
       event.appId ?? null, event.userHash ?? null, event.policyId ?? null,
       event.policyVersion ?? null, event.routeVersion ?? null, event.denialReason ?? null,
       event.routeDecision ? JSON.stringify(event.routeDecision) : null,
       event.sessionId ?? null, event.traceId ?? null,
+      event.properties ? JSON.stringify(event.properties) : null,
       event.originalModel, event.canonicalTarget, event.selectedGroup,
       event.finalOutcome, event.stream ? 1 : 0, event.totalDurationMs ?? null,
     );
@@ -806,7 +808,8 @@ export class ControlPlaneStateDO extends DurableObject {
   }
 
   async queryClientRequests(filters: {
-    clientId?: string; appId?: string; since?: number; until?: number; limit?: number;
+    clientId?: string; appId?: string; sessionId?: string; traceId?: string;
+    since?: number; until?: number; limit?: number;
   }): Promise<Record<string, unknown>[]> {
     this.ensureSchema();
     const limit = clampLimit(filters.limit, 1000, 5000);
@@ -814,6 +817,8 @@ export class ControlPlaneStateDO extends DurableObject {
     const params: unknown[] = [];
     if (filters.clientId) { conditions.push("client_id = ?"); params.push(filters.clientId); }
     if (filters.appId) { conditions.push("app_id = ?"); params.push(filters.appId); }
+    if (filters.sessionId) { conditions.push("session_id = ?"); params.push(filters.sessionId); }
+    if (filters.traceId) { conditions.push("trace_id = ?"); params.push(filters.traceId); }
     if (filters.since) { conditions.push("timestamp >= ?"); params.push(filters.since); }
     if (filters.until) { conditions.push("timestamp <= ?"); params.push(filters.until); }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -968,7 +973,8 @@ export class ControlPlaneStateDO extends DurableObject {
   }
 
   async queryUsageEvents(filters: {
-    group?: string; deploymentId?: string; clientId?: string; appId?: string; since?: number; until?: number; limit?: number;
+    group?: string; deploymentId?: string; clientId?: string; appId?: string; teamId?: string;
+    since?: number; until?: number; limit?: number;
   }): Promise<Record<string, unknown>[]> {
     this.ensureSchema();
     const limit = clampLimit(filters.limit, 1000, 5000);
@@ -978,6 +984,7 @@ export class ControlPlaneStateDO extends DurableObject {
     if (filters.deploymentId) { conditions.push("deployment_id = ?"); params.push(filters.deploymentId); }
     if (filters.clientId) { conditions.push("client_id = ?"); params.push(filters.clientId); }
     if (filters.appId) { conditions.push("app_id = ?"); params.push(filters.appId); }
+    if (filters.teamId) { conditions.push("team_id = ?"); params.push(filters.teamId); }
     if (filters.since) { conditions.push("timestamp >= ?"); params.push(filters.since); }
     if (filters.until) { conditions.push("timestamp <= ?"); params.push(filters.until); }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -1108,6 +1115,7 @@ function mapClientRequestRow(row: Record<string, unknown>): Record<string, unkno
     policyId: row.policy_id ?? undefined, policyVersion: row.policy_version ?? undefined,
     routeVersion: row.route_version ?? undefined, denialReason: row.denial_reason ?? undefined,
     sessionId: row.session_id ?? undefined, traceId: row.trace_id ?? undefined,
+    properties: row.properties_json ? safeJsonParse(row.properties_json as string) : undefined,
     routeDecision: row.route_decision_json ? safeJsonParse(row.route_decision_json as string) : undefined,
     originalModel: row.original_model,
     canonicalTarget: row.canonical_target, selectedGroup: row.selected_group,
@@ -1120,7 +1128,8 @@ function mapUsageEventRow(row: Record<string, unknown>): Record<string, unknown>
   return {
     requestId: row.request_id, attemptIndex: row.attempt_index, timestamp: row.timestamp,
     clientId: row.client_id ?? undefined, appId: row.app_id ?? undefined,
-    userHash: row.user_hash ?? undefined, policyId: row.policy_id ?? undefined,
+    userHash: row.user_hash ?? undefined, teamId: row.team_id ?? undefined,
+    policyId: row.policy_id ?? undefined,
     policyVersion: row.policy_version ?? undefined, routeVersion: row.route_version ?? undefined,
     canonicalTarget: row.canonical_target, selectedGroup: row.selected_group,
     deploymentId: row.deployment_id, provider: row.provider, model: row.model,

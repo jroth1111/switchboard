@@ -1,5 +1,14 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+function resolveCiChatGptAuthFixturePath(cwd: string): string | null {
+  const candidates = [
+    fileURLToPath(new URL("../config/fixtures/chatgpt-auth.ci.json", import.meta.url)),
+    join(cwd, "config/fixtures/chatgpt-auth.ci.json"),
+  ];
+  return candidates.find((path) => existsSync(path)) ?? null;
+}
 
 const DEFAULT_SECRET_FILES = [".dev.vars", ".env", ".env.local"];
 const DEFAULT_SECRET_DIRS = [".secrets"];
@@ -40,6 +49,18 @@ export function loadLocalSecretEnv(cwd = process.cwd(), processEnv: NodeJS.Proce
     if (typeof value === "string" && value.trim()) {
       values[key] = value.trim();
       localSecretSurfacePresent = true;
+    }
+  }
+
+  if (!localSecretSurfacePresent && processEnv.CI === "true") {
+    const fixturePath = resolveCiChatGptAuthFixturePath(cwd);
+    if (fixturePath) {
+      try {
+        values.CHATGPT_AUTH_JSON = readFileSync(fixturePath, "utf8").trim();
+        localSecretSurfacePresent = true;
+      } catch (err) {
+        loadErrors.push(`chatgpt-auth.ci.json: ${(err as Error).message}`);
+      }
     }
   }
 

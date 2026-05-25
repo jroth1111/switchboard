@@ -15,3 +15,10 @@ CHATGPT_AUTH_JSON='{"access_token":"","refresh_token":"","id_token":""}'
 ANTHROPIC_OAUTH_ACCOUNT=
 ANTHROPIC_CLIENT_ID=
 ANTHROPIC_CLIENT_SECRET=
+
+# Optional multi-account JSON arrays (see tests/providers/*-pool.test.ts).
+CHATGPT_AUTH_ACCOUNTS=
+ANTHROPIC_OAUTH_ACCOUNTS=
+
+# Per-client policy + team limits (see config/client-keys.example.json).
+CLIENT_KEYS_JSON=

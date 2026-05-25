@@ -3,6 +3,7 @@
 import { MANIFEST, ROUTE_MANIFEST_VERSION } from "../config/manifest";
 import type { FailureClass, Surface } from "../config/schema";
 import { planRequest, applyTransforms, type RequestEnvelope } from "../planner/planner";
+import { applyModelSuffixToBody } from "../planner/model-suffix";
 import { executeAttemptLoop } from "../attempts/attempt-loop";
 import { validateResponsesContract } from "../providers/chatgpt-responses";
 import { sanitizeClientMetadata, signMetadata } from "../security/internal-metadata";
@@ -165,7 +166,8 @@ async function handlePreparedModelRequest(params: {
   surface: Surface;
 }): Promise<Response> {
   const { body, env, ctx, client, requestId, surface } = params;
-  const model = body.model as string;
+  const suffixRewrite = applyModelSuffixToBody(body);
+  const model = suffixRewrite.model;
   const modelAuth = authorizeModelForClient(model, client);
   if (!modelAuth.allowed) {
     const denialReceipt: RouteReceipt = {
@@ -220,7 +222,7 @@ async function handlePreparedModelRequest(params: {
   // Build envelope
   const envelope: RequestEnvelope = {
     requestId,
-    originalModel: model,
+    originalModel: suffixRewrite.originalModel,
     surface,
     clientId: client.clientId,
     appId: client.appId,
@@ -235,7 +237,7 @@ async function handlePreparedModelRequest(params: {
     isMultiTool: Array.isArray(body.tools) && (body.tools as unknown[]).length >= 2,
     hasTypedContent: surface === "responses" ? detectResponsesTypedContent(body) : detectTypedContent(body),
     requiresJsonMode: surface === "chat_completions" ? body.response_format !== undefined : body.text !== undefined,
-    requiresReasoning: !!(body.reasoning || body.reasoning_effort || (body.extra_body as Record<string, unknown>)?.reasoning_effort),
+    requiresReasoning: suffixRewrite.requiresReasoning || !!(body.reasoning || body.reasoning_effort || (body.extra_body as Record<string, unknown>)?.reasoning_effort),
   };
 
   logInfo("request_start", {

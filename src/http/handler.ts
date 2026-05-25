@@ -495,6 +495,8 @@ function persistReceiptAsync(
     routeVersion: clientFields?.routeVersion ?? receipt.routeVersion,
     denialReason: clientFields?.denialReason ?? receipt.denialReason,
     routeDecision: receipt.routeDecision,
+    sessionId: receipt.sessionId,
+    traceId: receipt.traceId,
     originalModel: receipt.originalModel,
     canonicalTarget: receipt.canonicalTarget,
     selectedGroup: receipt.selectedGroup,
@@ -798,9 +800,10 @@ export async function handleAdminUsage(
     promptTokens: acc.promptTokens + Number(r.promptTokens ?? 0),
     completionTokens: acc.completionTokens + Number(r.completionTokens ?? 0),
     totalTokens: acc.totalTokens + Number(r.totalTokens ?? 0),
+    estimatedCostUsd: acc.estimatedCostUsd + Number(r.estimatedCostUsd ?? 0),
   }), {
     requests: 0, knownRequests: 0, unknownRequests: 0,
-    promptTokens: 0, completionTokens: 0, totalTokens: 0,
+    promptTokens: 0, completionTokens: 0, totalTokens: 0, estimatedCostUsd: 0,
   });
 
   return jsonResponse({

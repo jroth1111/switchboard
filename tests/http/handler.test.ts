@@ -1053,6 +1053,7 @@ describe("Admin usage", () => {
         promptTokens: 10,
         completionTokens: 5,
         totalTokens: 15,
+        estimatedCostUsd: 0.05,
       }];
     });
     const stateDo = { computeHourlyRollups, queryRollups };
@@ -1075,6 +1076,7 @@ describe("Admin usage", () => {
       expect(response.status).toBe(200);
       expect(body.rollupSince).toBe(Date.UTC(2026, 4, 24, 3, 0, 0));
       expect((body.totals as Record<string, number>).requests).toBe(2);
+      expect((body.totals as Record<string, number>).estimatedCostUsd).toBeCloseTo(0.05);
     } finally {
       vi.useRealTimers();
     }

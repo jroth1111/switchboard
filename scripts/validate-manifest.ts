@@ -7,7 +7,7 @@ import { MANIFEST, ROUTE_MANIFEST_VERSION } from "../src/config/manifest.ts";
 import { ROUTING_ONLY_ROUTE_GROUPS, validateManifest } from "../src/config/validate-manifest.ts";
 import { buildManifestSnapshot, canonicalJson } from "./manifest-snapshot.ts";
 import { loadLocalSecretEnv, validateChatGPTStructuredAuthSurface } from "./chatgpt-auth-secrets.ts";
-import { FREE_MODEL_ENDPOINTS } from "../src/ops/sync-free-models.ts";
+import { collectFreeModelSuggestions, FREE_MODEL_ENDPOINTS } from "../src/ops/sync-free-models.ts";
 
 interface ValidationError {
   severity: "error" | "warning";
@@ -126,6 +126,15 @@ function validateManifestSnapshot(snapshotPath: string): void {
   }
 }
 
+async function validateSyncFreeModelsModule(): Promise<void> {
+  const mockFetch: typeof fetch = async () => new Response(JSON.stringify({ data: [] }), { status: 200 });
+  try {
+    await collectFreeModelSuggestions(mockFetch);
+  } catch (err) {
+    error(`[sync_free_models] collectFreeModelSuggestions failed: ${(err as Error).message}`);
+  }
+}
+
 function validateChatGPTSubscriptionAuthRefs(): void {
   const legacyRefs = MANIFEST.deployments
     .filter((deployment) => deployment.provider === "chatgpt" && deployment.mode === "responses")
@@ -164,6 +173,8 @@ function validateChatGPTSubscriptionRuntimeAuth(): void {
     else warn(issue.message);
   }
 }
+
+await validateSyncFreeModelsModule();
 
 // Report
 console.log("=== Manifest Validation ===\n");

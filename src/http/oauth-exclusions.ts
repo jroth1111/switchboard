@@ -1,5 +1,8 @@
 import { MANIFEST } from "../config/manifest";
 
+/** Provider keys accepted in manifest/client oauthExcludedModels maps. */
+export const OAUTH_EXCLUSION_PROVIDER_KEYS = new Set(["anthropic", "chatgpt", "nim", "openai"]);
+
 export function oauthProviderKeyForGroup(groupName: string): string | undefined {
   const dep = MANIFEST.deploymentsByGroup[groupName]?.[0];
   if (!dep) return undefined;

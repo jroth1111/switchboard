@@ -41,12 +41,23 @@ Plan and artifacts: [competitive-audit-2026-05-25.md](competitive-audit-2026-05-
 | P3-2 | Done | `CLIENT_KEYS_JSON` teams: RPM, concurrency, **token budget**; client `teamId` |
 | P3-1, P3-3, P3-4 | Rejected | Per plan |
 
+## Post-merge audit (2026-05-25)
+
+| Check | Result |
+|-------|--------|
+| PR #2 audit docs | Merged |
+| PR #18 integration | Merged |
+| PR #3–#17 drafts | Merged via integration history; do not cherry-pick individually |
+| `extractRequestMetadata` → receipts + client requests | Wired |
+| Admin JSON usage `totals.estimatedCostUsd` | Wired |
+| GitHub Actions `ci.yml` | `validate` + `test` + `bundle-size` |
+| `oauthExcludedModels` manifest validation | Provider keys enforced at validate |
+
 ## Residual / operator-owned
 
-- **OAuth exclusions:** `manifest.oauthExcludedModels` defaults to `{}`; operators set provider → model list (VibeProxy-style).
+- **OAuth exclusions:** `manifest.oauthExcludedModels` defaults to `{}`; operators set provider → model list (`anthropic`, `chatgpt`, `nim`, `openai`).
 - **Billing:** `estimated_cost_usd` uses heuristic pricing, not invoice-grade.
 - **Live smoke / strict validate:** Subscription routes need `CHATGPT_AUTH_JSON` or `CHATGPT_AUTH_FILE`. In `CI=true` without secrets, `pnpm validate` warns instead of failing on missing ChatGPT auth.
-- **Draft PRs:** #3–#17 were superseded by #18 (merged); individual draft branches should not be merged separately.
 
 ## Verification
 

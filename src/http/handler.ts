@@ -1065,7 +1065,6 @@ export function handlePing(): Response {
 function healthAuthToken(env: Env): string | undefined {
   return env.NIM_HEALTH_TOKEN
     || env.ADMIN_API_KEY
-    || env.LITELLM_MASTER_KEY
     || undefined;
 }
 

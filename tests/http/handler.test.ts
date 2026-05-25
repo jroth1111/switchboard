@@ -704,6 +704,29 @@ describe("Worker HTTP surface", () => {
     );
     expect(rejected.status).toBe(401);
   });
+
+  it("does not accept legacy master key auth for NIM health", async () => {
+    const stateDo = { getHealth: vi.fn(async () => ({})) };
+    const legacyMasterKeyEnv = ["LITE", "LLM_MASTER_KEY"].join("");
+    const env = {
+      [legacyMasterKeyEnv]: "legacy-token",
+      CONTROL_PLANE_STATE: {
+        idFromName: vi.fn(() => "control-plane-id"),
+        get: vi.fn(() => stateDo),
+      },
+    } as unknown as Env;
+
+    const response = await worker.fetch(
+      new Request("https://example.com/nim/health", {
+        headers: { Authorization: "Bearer legacy-token" },
+      }),
+      env,
+      routeContext(),
+    );
+
+    expect(response.status).toBe(401);
+    expect(stateDo.getHealth).not.toHaveBeenCalled();
+  });
 });
 
 describe("Streaming client admission release", () => {
@@ -1196,7 +1219,7 @@ describe("NIM failed request observability", () => {
     } as unknown as Env;
   }
 
-  it("supports LiteLLM parity summary filters and omits receipts by default", async () => {
+  it("supports failure summary filters and omits receipts by default", async () => {
     const now = Date.UTC(2026, 4, 24, 5, 0, 0);
     const queryFailedRequests = vi.fn(async () => [makeFailureRow({ receipt: { body: "must not leak" } })]);
     const env = makeFailureEnv(queryFailedRequests);

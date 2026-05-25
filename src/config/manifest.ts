@@ -261,6 +261,10 @@ export const MANIFEST: RouteManifest = {
     "claude-opus-4-20250514": "anthropic-subscription-opus-4-7-high",
     "claude-opus-4-6": "anthropic-subscription-opus-4-7-high",
     "claude-opus-4-6-fast": "anthropic-subscription-opus-4-7-high",
+    // VibeProxy GHCP / editor IDs (ModelAliasMapper.swift)
+    "ghcp-op-46": "anthropic-subscription-opus-4-7-high",
+    "ghcp-son-46": "anthropic-subscription-sonnet-4-6-high",
+    "ghcp-haik-45": "anthropic-subscription-sonnet-4-6-low",
     "opus-4-7": "anthropic-subscription-opus-4-7-high",
     "opus-4.7": "anthropic-subscription-opus-4-7-high",
     "opus-4-7-low": "anthropic-subscription-opus-4-7-low",

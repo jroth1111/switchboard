@@ -743,6 +743,18 @@ export async function handleAdminUsage(
       since: rollupSince,
     });
 
+  const format = url.searchParams.get("format") ?? "json";
+  if (format === "csv") {
+    const header = "hour_start,selected_group,deployment_id,provider,model,requests,prompt_tokens,completion_tokens,total_tokens";
+    const lines = rollups.map((r) => [
+      r.hourStart, r.selectedGroup, r.deploymentId, r.provider, r.model,
+      r.requests, r.promptTokens, r.completionTokens, r.totalTokens,
+    ].map((v) => String(v ?? "")).join(","));
+    return new Response([header, ...lines].join("\n"), {
+      headers: { "Content-Type": "text/csv; charset=utf-8" },
+    });
+  }
+
   const totals = rollups.reduce<Record<string, number>>((acc, r) => ({
     requests: acc.requests + Number(r.requests ?? 0),
     knownRequests: acc.knownRequests + Number(r.knownRequests ?? 0),

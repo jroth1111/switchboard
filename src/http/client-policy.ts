@@ -6,6 +6,8 @@ export interface ClientPolicy {
   allowedModels?: string[];
   deniedModels?: string[];
   deniedRouteGroups?: string[];
+  /** VibeProxy-style provider -> model ids or "*" to hide subscription-backed routes. */
+  oauthExcludedModels?: Record<string, string[]>;
   allowHiddenRoutes?: boolean;
   rpmLimit?: number;
   maxConcurrency?: number;
@@ -87,6 +89,9 @@ export function authorizeModelForClient(model: string, client: ClientIdentity): 
   if (group.hidden && !client.policy.allowHiddenRoutes) return { allowed: false, reason: "hidden_route" };
 
   const modelKeys = modelIdentitySet(model, canonical.canonicalTarget);
+  if (isOAuthExcluded(canonical.canonicalTarget, modelKeys, client.policy.oauthExcludedModels)) {
+    return { allowed: false, reason: "oauth_provider_excluded" };
+  }
   if (client.policy.deniedModels?.some((entry) => modelKeys.has(entry))) {
     return { allowed: false, reason: "model_denied" };
   }
@@ -172,6 +177,7 @@ function parseClientKeys(raw: string | undefined): ParsedClientConfig[] {
           allowedModels: stringList(cfg.allowedModels),
           deniedModels: stringList(cfg.deniedModels),
           deniedRouteGroups: stringList(cfg.deniedRouteGroups),
+          oauthExcludedModels: parseOAuthExcludedModels(cfg.oauthExcludedModels),
           allowHiddenRoutes: cfg.allowHiddenRoutes === true,
           rpmLimit: positiveInteger(cfg.rpmLimit),
           maxConcurrency: positiveInteger(cfg.maxConcurrency),
@@ -182,6 +188,43 @@ function parseClientKeys(raw: string | undefined): ParsedClientConfig[] {
     });
   }
   return clients;
+}
+
+function parseOAuthExcludedModels(value: unknown): Record<string, string[]> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: Record<string, string[]> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof key !== "string" || !key.trim()) continue;
+    const list = stringList(raw);
+    if (list?.length) out[key.trim()] = list;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function oauthProviderKeyForGroup(groupName: string): string | undefined {
+  const dep = MANIFEST.deploymentsByGroup[groupName]?.[0];
+  if (!dep) return undefined;
+  switch (dep.provider) {
+    case "anthropic_subscription": return "anthropic";
+    case "chatgpt": return "chatgpt";
+    case "nvidia_nim": return "nim";
+    case "openai": return "openai";
+    default: return dep.provider;
+  }
+}
+
+function isOAuthExcluded(
+  groupName: string,
+  modelKeys: Set<string>,
+  exclusions?: Record<string, string[]>,
+): boolean {
+  if (!exclusions) return false;
+  const providerKey = oauthProviderKeyForGroup(groupName);
+  if (!providerKey) return false;
+  const list = exclusions[providerKey];
+  if (!list?.length) return false;
+  if (list.includes("*")) return true;
+  return list.some((entry) => modelKeys.has(entry));
 }
 
 function modelIdentitySet(requestedModel: string, canonicalTarget: string): Set<string> {
@@ -198,6 +241,9 @@ function routeGroupAllowedForFallback(groupName: string, client: ClientIdentity)
   if (client.policy.deniedRouteGroups?.includes(groupName)) return { allowed: false, reason: "route_group_denied" };
   if (group.hidden && !client.policy.allowHiddenRoutes) return { allowed: false, reason: "hidden_route" };
   const modelKeys = modelIdentitySet(groupName, groupName);
+  if (isOAuthExcluded(groupName, modelKeys, client.policy.oauthExcludedModels)) {
+    return { allowed: false, reason: "oauth_provider_excluded" };
+  }
   if (client.policy.deniedModels?.some((entry) => modelKeys.has(entry))) {
     return { allowed: false, reason: "model_denied" };
   }

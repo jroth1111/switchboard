@@ -1,0 +1,25 @@
+{
+  "teams": {
+    "engineering": {
+      "rpmLimit": 500,
+      "maxConcurrency": 20,
+      "tokenBudgetPerMinute": 500000
+    }
+  },
+  "clients": [
+    {
+      "id": "hermes-alice",
+      "appId": "hermes",
+      "token_sha256": "<sha256-hex-of-bearer-token>",
+      "policyId": "hermes-basic",
+      "teamId": "engineering",
+      "allowedModels": ["smart-route", "nim-primary"],
+      "rpmLimit": 60,
+      "maxConcurrency": 4,
+      "tokenBudgetPerMinute": 120000,
+      "oauthExcludedModels": {
+        "anthropic": ["claude-3-5-haiku-20241022"]
+      }
+    }
+  ]
+}

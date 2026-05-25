@@ -1,0 +1,5 @@
+{
+  "access_token": "ci-fixture-access-token",
+  "refresh_token": "ci-fixture-refresh-token",
+  "id_token": "ci-fixture-id-token"
+}

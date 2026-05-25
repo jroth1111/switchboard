@@ -172,8 +172,8 @@ describe("End-to-end plan -> admit -> evaluate flow", () => {
     // 1. Plan
     const envelope: RequestEnvelope = {
       requestId: "req-e2e-1",
-      originalModel: "glm-5.1",
-      body: { model: "glm-5.1", messages: [{ role: "user", content: "Hello" }] },
+      originalModel: "nim-primary",
+      body: { model: "nim-primary", messages: [{ role: "user", content: "Hello" }] },
       stream: false,
       hasTools: false,
       hasStrictTools: false,

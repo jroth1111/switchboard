@@ -702,7 +702,7 @@ async function handleNonStreamingAttempt(
       canonicalTarget: plan.canonicalTarget, selectedGroup: group,
       deploymentId: admission.deploymentId!, provider: deployment.provider,
       model: deployment.providerModel, stream: false, finalOutcome: evaluation.action,
-      ...usageEventFromTokenUsage(tokenUsage),
+      ...usageEventFromTokenUsage(tokenUsage, deployment.provider),
     });
 
     return { success: true, response: resp, attempts };
@@ -729,7 +729,7 @@ async function handleNonStreamingAttempt(
       canonicalTarget: plan.canonicalTarget, selectedGroup: group,
       deploymentId: admission.deploymentId!, provider: deployment.provider,
       model: deployment.providerModel, stream: false, finalOutcome: "fail_client",
-      ...usageEventFromTokenUsage(clientUsage),
+      ...usageEventFromTokenUsage(clientUsage, deployment.provider),
     });
     const errResp = new Response(
       openAIErrorJson(evaluation.failureClass, evaluation.failureMessage ?? "request failed", envelope.requestId),
@@ -769,7 +769,7 @@ async function handleNonStreamingAttempt(
     canonicalTarget: plan.canonicalTarget, selectedGroup: group,
     deploymentId: admission.deploymentId!, provider: deployment.provider,
     model: deployment.providerModel, stream: false, finalOutcome: evaluation.action,
-    ...usageEventFromTokenUsage(retryUsage),
+    ...usageEventFromTokenUsage(retryUsage, deployment.provider),
   });
   return null;
 }
@@ -916,7 +916,7 @@ async function handleStreamingAttempt(
         deploymentId: admission.deploymentId!, provider: deployment.provider,
         model: deployment.providerModel, stream: true,
         finalOutcome: streamDone.wasAborted ? "stream_abort" : "success",
-        ...usageEventFromTokenUsage(streamUsage),
+        ...usageEventFromTokenUsage(streamUsage, deployment.provider),
       }).catch((e) => logWarn("fire_forget_failed", { error: String(e) }));
     }).finally(() => {
       clearTimeout(releaseDeadlineTimer);

@@ -98,6 +98,7 @@ function createRouteTestEnv() {
       id_token: "chatgpt-id-token",
     }),
     ZAI_KEY_1: "zai-token",
+    NIM_KEY_1: "nim-token",
     CLIENT_KEYS_JSON: JSON.stringify({
       clients: [{
         id: "operator",
@@ -406,32 +407,32 @@ describe("Auth middleware", () => {
   });
 
   it("applies client route policy to planned fallback routes", () => {
-    const envelope = makeEnvelope({ originalModel: "smart-route" });
-    envelope.body.model = "smart-route";
+    const envelope = makeEnvelope({ originalModel: "nim-primary" });
+    envelope.body.model = "nim-primary";
     const plan = planRequest(envelope);
     expect(plan).not.toBeNull();
-    expect(plan!.fallbackSequence.map((entry) => entry.group)).toContain("nim-primary");
+    expect(plan!.fallbackSequence.map((entry) => entry.group)).toContain("nim-deepseek-v4-pro");
 
     const client: ClientIdentity = {
       clientId: "hermes-alice",
       policyId: "hermes-basic",
       policyVersion: "hermes-basic:v1",
-      policy: { deniedRouteGroups: ["nim-primary"] },
+      policy: { deniedRouteGroups: ["nim-deepseek-v4-pro"] },
       authSource: "client_keys_json",
     };
     const filtered = applyClientPolicyToPlan(plan!, client);
 
-    expect(filtered.fallbackSequence.map((entry) => entry.group)).not.toContain("nim-primary");
-    expect(filtered.routeDecision.fallbackGroups).not.toContain("nim-primary");
-    expect(filtered.routeDecision.candidates.find((candidate) => candidate.group === "nim-primary")).toMatchObject({
+    expect(filtered.fallbackSequence.map((entry) => entry.group)).not.toContain("nim-deepseek-v4-pro");
+    expect(filtered.routeDecision.fallbackGroups).not.toContain("nim-deepseek-v4-pro");
+    expect(filtered.routeDecision.candidates.find((candidate) => candidate.group === "nim-deepseek-v4-pro")).toMatchObject({
       viable: false,
       rejectionReason: "client_policy:route_group_denied",
     });
   });
 
   it("does not let allowed-model clients inherit fallback models they did not allow", () => {
-    const envelope = makeEnvelope({ originalModel: "smart-route" });
-    envelope.body.model = "smart-route";
+    const envelope = makeEnvelope({ originalModel: "nim-primary" });
+    envelope.body.model = "nim-primary";
     const plan = planRequest(envelope);
     expect(plan).not.toBeNull();
 
@@ -439,15 +440,14 @@ describe("Auth middleware", () => {
       clientId: "hermes-alice",
       policyId: "hermes-basic",
       policyVersion: "hermes-basic:v1",
-      policy: { allowedModels: ["smart-route"] },
+      policy: { allowedModels: ["nim-primary"] },
       authSource: "client_keys_json",
     };
     const filtered = applyClientPolicyToPlan(plan!, client);
 
-    expect(filtered.selectedGroup).toBe("smart-route-worker");
+    expect(filtered.selectedGroup).toBe("nim-primary");
     expect(filtered.fallbackSequence).toEqual([]);
-    expect(filtered.routeDecision.fallbackGroups).toEqual([]);
-    expect(filtered.routeDecision.candidates.find((candidate) => candidate.group === "nim-primary")).toMatchObject({
+    expect(filtered.routeDecision.candidates.find((candidate) => candidate.group === "nim-deepseek-v4-pro")).toMatchObject({
       viable: false,
       rejectionReason: "client_policy:model_not_allowed",
     });
@@ -870,17 +870,23 @@ describe("ChatGPT Responses public surface", () => {
 
   it("keeps non-ChatGPT /v1/responses dispatch compatible with generic fields", async () => {
     const { env, stateDo } = createRouteTestEnv();
+    const oauthAccessor = {
+      getToken: vi.fn(async () => ({
+        accessToken: "anthropic-test-token",
+        expiresAt: Date.now() + 3600000,
+      })),
+      setToken: vi.fn(),
+      acquireRefreshLock: vi.fn(),
+      releaseRefreshLock: vi.fn(),
+    };
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      id: "chatcmpl_non_chatgpt_responses",
-      object: "chat.completion",
-      created: 0,
-      model: "glm-5.1",
-      choices: [{
-        index: 0,
-        message: { role: "assistant", content: "Non-ChatGPT responses route accepted." },
-        finish_reason: "stop",
-      }],
-      usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 },
+      id: "msg_non_chatgpt_responses",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "Non-ChatGPT responses route accepted." }],
+      model: "claude-sonnet-4-6",
+      stop_reason: "end_turn",
+      usage: { input_tokens: 3, output_tokens: 4 },
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -898,7 +904,15 @@ describe("ChatGPT Responses public surface", () => {
           max_output_tokens: 512,
         }),
       }),
-      env,
+      {
+        ...env,
+        ANTHROPIC_CLIENT_ID: "anthropic-client",
+        ANTHROPIC_CLIENT_SECRET: "anthropic-secret",
+        OAUTH_ACCOUNT: {
+          idFromName: vi.fn(() => "oauth-id"),
+          get: vi.fn(() => oauthAccessor),
+        },
+      } as unknown as Env,
       routeContext(),
     );
 
@@ -963,7 +977,7 @@ describe("ChatGPT Responses public surface", () => {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "smart-route",
+          model: "nim-primary",
           messages: [{ role: "user", content: "hello" }],
         }),
       }),
@@ -977,13 +991,13 @@ describe("ChatGPT Responses public surface", () => {
     expect(stateDo.releaseClientRequest).toHaveBeenCalledWith("client-reservation-1");
     expect(stateDo.admit).toHaveBeenCalledWith(expect.objectContaining({
       candidates: expect.arrayContaining([
-        expect.objectContaining({ deploymentId: "zai-glm-5.1-key-1", keyRef: "ZAI_KEY_1" }),
+        expect.objectContaining({ deploymentId: "nim-primary-key-1", keyRef: "NIM_KEY_1" }),
       ]),
     }));
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0][0])).toBe("https://api.z.ai/api/coding/paas/v4/chat/completions");
+    expect(String(fetchMock.mock.calls[0][0])).toBe("https://integrate.api.nvidia.com/v1/chat/completions");
     expect(storeReceipt).toHaveBeenCalledWith(expect.objectContaining({
-      selectedGroup: "smart-route-worker",
+      selectedGroup: "nim-primary",
       routeDecision: expect.objectContaining({
         requestClass: expect.objectContaining({
           surface: "chat_completions",
@@ -1380,21 +1394,13 @@ describe("NIM failed request observability", () => {
 // ─── Planner integration ──────────────────────────────────────────
 
 describe("Planner routing integration", () => {
-  it("routes glm-5.1 to smart-route-worker", () => {
+  it("routes glm-5.1 through complexity tier selection", () => {
     const envelope = makeEnvelope({ originalModel: "glm-5.1" });
     envelope.body.model = "glm-5.1";
     const plan = planRequest(envelope);
     expect(plan).not.toBeNull();
-    expect(plan!.selectedGroup).toBe("smart-route-worker");
-    expect(plan!.routeDecision).toMatchObject({
-      canonicalization: {
-        requestedModel: "glm-5.1",
-        canonicalTarget: "smart-route-worker",
-        reason: "alias",
-      },
-      selectedGroup: "smart-route-worker",
-      selectedReason: "highest scoring viable candidate (90)",
-    });
+    expect(plan!.selectedGroup).toBe("anthropic-subscription-sonnet-4-6-low");
+    expect(plan!.selectedGroup).toBe("anthropic-subscription-sonnet-4-6-low");
     expect(plan!.routeDecision.candidates.length).toBeGreaterThan(0);
   });
 

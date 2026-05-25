@@ -25,7 +25,10 @@ export const anthropicSubscriptionAdapter: ProviderAdapter = {
     }
 
     let lastError: { error: string; failureClass: FailureClass } | null = null;
-    const pool = ctx.subscriptionCtx.anthropicOAuth.accountIds;
+    const pool = [
+      ...(ctx.deployment.accountIds ?? []),
+      ...(ctx.subscriptionCtx.anthropicOAuth.accountIds ?? []),
+    ];
     for (const accountId of anthropicOAuthAccountCandidates(ctx.apiKey, ctx.deployment.id, pool, ctx.requestId)) {
       const tokenResult = await getValidAnthropicToken(
         accountId,

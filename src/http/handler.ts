@@ -243,6 +243,7 @@ async function handlePreparedModelRequest(params: {
     policyId: client.policyId,
     policyVersion: client.policyVersion,
     routeVersion: ROUTE_MANIFEST_VERSION,
+    teamId: client.policy.teamId,
     body,
     stream: body.stream === true,
     hasTools: !!(body.tools && (body.tools as unknown[]).length > 0),
@@ -304,6 +305,7 @@ async function handlePreparedModelRequest(params: {
     teamId: admissionLimits.teamId,
     teamRpmLimit: admissionLimits.teamRpmLimit,
     teamMaxConcurrency: admissionLimits.teamMaxConcurrency,
+    teamTokenBudgetPerMinute: admissionLimits.teamTokenBudgetPerMinute,
     rpmLimit: admissionLimits.rpmLimit,
     maxConcurrency: admissionLimits.maxConcurrency,
     tokenBudgetPerMinute: admissionLimits.tokenBudgetPerMinute,
@@ -1172,6 +1174,8 @@ const CLIENT_DENIAL_FAILURE: Record<string, FailureClass> = {
   client_token_budget_exceeded: "rate_limit_quota_window",
   team_rpm_exceeded: "rate_limit_overload",
   team_concurrency_exceeded: "rate_limit_concurrency",
+  team_token_budget_exceeded: "rate_limit_quota_window",
+  team_token_estimate_required: "rate_limit_quota_window",
 };
 
 function errorResponse(

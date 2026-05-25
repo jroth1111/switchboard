@@ -327,6 +327,8 @@ export class ControlPlaneStateDO extends DurableObject {
     this.ensureColumn("client_request_events", "route_version", "TEXT");
     this.ensureColumn("client_request_events", "denial_reason", "TEXT");
     this.ensureColumn("client_inflight", "estimated_tokens", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("usage_events", "team_id", "TEXT");
+    this.ensureColumn("client_inflight", "team_id", "TEXT");
     this.ensureColumn("failed_request_receipts", "route", "TEXT");
     this.ensureColumn("failed_request_receipts", "selected_model", "TEXT");
     this.ensureColumn("failed_request_receipts", "issue_code", "TEXT");
@@ -584,6 +586,7 @@ export class ControlPlaneStateDO extends DurableObject {
     teamId?: string;
     teamRpmLimit?: number | null;
     teamMaxConcurrency?: number | null;
+    teamTokenBudgetPerMinute?: number | null;
     rpmLimit?: number | null; maxConcurrency?: number | null; tokenBudgetPerMinute?: number | null; estimatedTokens?: number | null;
   }): Promise<{ admitted: boolean; reservationId: string; teamReservationId?: string; reason?: string; message?: string; resetAt?: number }> {
     this.ensureSchema();
@@ -662,6 +665,51 @@ export class ControlPlaneStateDO extends DurableObject {
         }
       }
 
+      if (req.teamId && req.teamTokenBudgetPerMinute && req.teamTokenBudgetPerMinute > 0) {
+        const rows = this.ctx.storage.sql.exec(
+          `SELECT COALESCE(SUM(total_tokens), 0) AS total
+           FROM usage_events
+           WHERE team_id = ? AND timestamp >= ? AND timestamp < ?`,
+          req.teamId, windowStart, windowStart + 60000,
+        ).toArray();
+        const used = Number(rows[0]?.total ?? 0);
+        const inflightRows = this.ctx.storage.sql.exec(
+          "SELECT COALESCE(SUM(estimated_tokens), 0) AS total FROM client_inflight WHERE team_id = ?",
+          req.teamId,
+        ).toArray();
+        const reserved = Number(inflightRows[0]?.total ?? 0);
+        const estimated = typeof req.estimatedTokens === "number" && Number.isFinite(req.estimatedTokens) && req.estimatedTokens >= 0
+          ? Math.ceil(req.estimatedTokens)
+          : null;
+        if (used >= req.teamTokenBudgetPerMinute) {
+          return {
+            admitted: false,
+            reservationId,
+            reason: "team_token_budget_exceeded",
+            message: "team token budget exceeded",
+            resetAt: windowStart + 60000,
+          };
+        }
+        if (estimated === null) {
+          return {
+            admitted: false,
+            reservationId,
+            reason: "team_token_estimate_required",
+            message: "team token estimate required",
+            resetAt: windowStart + 60000,
+          };
+        }
+        if (used + reserved + estimated > req.teamTokenBudgetPerMinute) {
+          return {
+            admitted: false,
+            reservationId,
+            reason: "team_token_budget_exceeded",
+            message: "team token budget exceeded",
+            resetAt: windowStart + 60000,
+          };
+        }
+      }
+
       if (req.tokenBudgetPerMinute && req.tokenBudgetPerMinute > 0) {
         const rows = this.ctx.storage.sql.exec(
           `SELECT COALESCE(SUM(total_tokens), 0) AS total
@@ -723,24 +771,27 @@ export class ControlPlaneStateDO extends DurableObject {
           req.clientId, userHash, windowStart,
         );
       }
-      if (teamClientId && req.teamMaxConcurrency && req.teamMaxConcurrency > 0) {
+      const teamNeedsInflight = teamClientId && (
+        (req.teamMaxConcurrency && req.teamMaxConcurrency > 0)
+        || (req.teamTokenBudgetPerMinute && req.teamTokenBudgetPerMinute > 0)
+      );
+      if (teamNeedsInflight) {
         this.ctx.storage.sql.exec(
           `INSERT OR REPLACE INTO client_inflight
-             (reservation_id, request_id, client_id, user_hash, estimated_tokens, created_at, expires_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+             (reservation_id, request_id, client_id, user_hash, estimated_tokens, team_id, created_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           `${teamClientId}:${req.requestId}`, req.requestId, teamClientId, "",
-          Math.max(0, Math.ceil(req.estimatedTokens ?? 0)), now, now + 10 * 60000,
+          Math.max(0, Math.ceil(req.estimatedTokens ?? 0)), req.teamId ?? null, now, now + 10 * 60000,
         );
       }
       this.ctx.storage.sql.exec(
         `INSERT OR REPLACE INTO client_inflight
-           (reservation_id, request_id, client_id, user_hash, estimated_tokens, created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        reservationId, req.requestId, req.clientId, userHash, Math.max(0, Math.ceil(req.estimatedTokens ?? 0)), now, now + 10 * 60000,
+           (reservation_id, request_id, client_id, user_hash, estimated_tokens, team_id, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        reservationId, req.requestId, req.clientId, userHash,
+        Math.max(0, Math.ceil(req.estimatedTokens ?? 0)), req.teamId ?? null, now, now + 10 * 60000,
       );
-      const teamReservationId = teamClientId && req.teamMaxConcurrency && req.teamMaxConcurrency > 0
-        ? `${teamClientId}:${req.requestId}`
-        : undefined;
+      const teamReservationId = teamNeedsInflight ? `${teamClientId}:${req.requestId}` : undefined;
       return { admitted: true, reservationId, teamReservationId };
     });
   }
@@ -886,7 +937,7 @@ export class ControlPlaneStateDO extends DurableObject {
 
   async storeUsageEvent(event: {
     requestId: string; attemptIndex: number; timestamp: number;
-    clientId?: string; appId?: string; userHash?: string; policyId?: string;
+    clientId?: string; appId?: string; userHash?: string; teamId?: string; policyId?: string;
     policyVersion?: string; routeVersion?: string;
     canonicalTarget: string; selectedGroup: string; deploymentId: string;
     provider: string; model: string; stream: boolean; finalOutcome: string;
@@ -896,13 +947,13 @@ export class ControlPlaneStateDO extends DurableObject {
     this.ensureSchema();
     this.ctx.storage.sql.exec(
       `INSERT OR REPLACE INTO usage_events
-         (request_id, attempt_index, timestamp, client_id, app_id, user_hash, policy_id, policy_version, route_version,
+         (request_id, attempt_index, timestamp, client_id, app_id, user_hash, team_id, policy_id, policy_version, route_version,
           canonical_target, selected_group,
           deployment_id, provider, model, stream, final_outcome,
           usage_kind, prompt_tokens, completion_tokens, total_tokens, usage_source, estimated_cost_usd)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       event.requestId, event.attemptIndex, event.timestamp,
-      event.clientId ?? null, event.appId ?? null, event.userHash ?? null, event.policyId ?? null,
+      event.clientId ?? null, event.appId ?? null, event.userHash ?? null, event.teamId ?? null, event.policyId ?? null,
       event.policyVersion ?? null, event.routeVersion ?? null,
       event.canonicalTarget, event.selectedGroup, event.deploymentId,
       event.provider, event.model, event.stream ? 1 : 0, event.finalOutcome,

@@ -280,7 +280,7 @@ export async function executeAttemptLoop(
         emitUnknownUsage(stateDo, {
           requestId: envelope.requestId, attemptIndex, canonicalTarget: plan.canonicalTarget,
           clientId: envelope.clientId, appId: envelope.appId,
-          userHash: envelope.userHash, policyId: envelope.policyId,
+          userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
           selectedGroup: group, deploymentId: admission.deploymentId!, provider: deployment.provider,
           model: deployment.providerModel, stream: false, finalOutcome: "retry_fallback", usageSource: deployment.provider,
@@ -523,7 +523,7 @@ async function runHedgeLane(
     emitUnknownUsage(stateDo, {
       requestId: envelope.requestId, attemptIndex: lane.attemptIndex, canonicalTarget: plan.canonicalTarget,
       clientId: envelope.clientId, appId: envelope.appId,
-      userHash: envelope.userHash, policyId: envelope.policyId,
+      userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
       selectedGroup: lane.group, deploymentId: lane.admission.deploymentId!, provider: lane.deployment.provider,
       model: lane.deployment.providerModel, stream: false, finalOutcome: "retry_fallback", usageSource: lane.deployment.provider,
@@ -614,7 +614,7 @@ async function handleNonStreamingAttempt(
     emitUnknownUsage(stateDo, {
       requestId: envelope.requestId, attemptIndex: currentAttemptIndex, canonicalTarget: plan.canonicalTarget,
       clientId: envelope.clientId, appId: envelope.appId,
-      userHash: envelope.userHash, policyId: envelope.policyId,
+      userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
       selectedGroup: group, deploymentId: admission.deploymentId!, provider: deployment.provider,
       model: deployment.providerModel, stream: false, finalOutcome: "retry_fallback", usageSource: deployment.provider,
@@ -698,7 +698,7 @@ async function handleNonStreamingAttempt(
     emitUsageEvent(stateDo, {
       requestId: envelope.requestId, attemptIndex: currentAttemptIndex, timestamp: Date.now(),
       clientId: envelope.clientId, appId: envelope.appId,
-      userHash: envelope.userHash, policyId: envelope.policyId,
+      userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
       canonicalTarget: plan.canonicalTarget, selectedGroup: group,
       deploymentId: admission.deploymentId!, provider: deployment.provider,
@@ -725,7 +725,7 @@ async function handleNonStreamingAttempt(
     emitUsageEvent(stateDo, {
       requestId: envelope.requestId, attemptIndex: currentAttemptIndex, timestamp: Date.now(),
       clientId: envelope.clientId, appId: envelope.appId,
-      userHash: envelope.userHash, policyId: envelope.policyId,
+      userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
       canonicalTarget: plan.canonicalTarget, selectedGroup: group,
       deploymentId: admission.deploymentId!, provider: deployment.provider,
@@ -765,7 +765,7 @@ async function handleNonStreamingAttempt(
   emitUsageEvent(stateDo, {
     requestId: envelope.requestId, attemptIndex: currentAttemptIndex, timestamp: Date.now(),
     clientId: envelope.clientId, appId: envelope.appId,
-    userHash: envelope.userHash, policyId: envelope.policyId,
+    userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
     canonicalTarget: plan.canonicalTarget, selectedGroup: group,
     deploymentId: admission.deploymentId!, provider: deployment.provider,
@@ -853,7 +853,7 @@ async function handleStreamingAttempt(
       emitUnknownUsage(stateDo, {
         requestId: envelope.requestId, attemptIndex: currentAttemptIndex, canonicalTarget: plan.canonicalTarget,
         clientId: envelope.clientId, appId: envelope.appId,
-        userHash: envelope.userHash, policyId: envelope.policyId,
+        userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
         selectedGroup: group, deploymentId: admission.deploymentId!, provider: deployment.provider,
         model: deployment.providerModel, stream: true, finalOutcome: "stream_abort", usageSource: deployment.provider,
@@ -911,7 +911,7 @@ async function handleStreamingAttempt(
       stateDo.storeUsageEvent?.({
         requestId: envelope.requestId, attemptIndex: currentAttemptIndex, timestamp: Date.now(),
         clientId: envelope.clientId, appId: envelope.appId,
-        userHash: envelope.userHash, policyId: envelope.policyId,
+        userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
         canonicalTarget: plan.canonicalTarget, selectedGroup: group,
         deploymentId: admission.deploymentId!, provider: deployment.provider,
@@ -950,7 +950,7 @@ async function handleStreamingAttempt(
     emitUnknownUsage(stateDo, {
       requestId: envelope.requestId, attemptIndex: currentAttemptIndex, canonicalTarget: plan.canonicalTarget,
       clientId: envelope.clientId, appId: envelope.appId,
-      userHash: envelope.userHash, policyId: envelope.policyId,
+      userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
       selectedGroup: group, deploymentId: admission.deploymentId!, provider: deployment.provider,
       model: deployment.providerModel, stream: true, finalOutcome: "retry_fallback", usageSource: deployment.provider,
@@ -1024,7 +1024,7 @@ function handleProviderHttpError(
   emitUnknownUsage(stateDo, {
     requestId: envelope.requestId, attemptIndex: currentAttemptIndex, canonicalTarget: plan.canonicalTarget,
     clientId: envelope.clientId, appId: envelope.appId,
-    userHash: envelope.userHash, policyId: envelope.policyId,
+    userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
     selectedGroup: group, deploymentId: admission.deploymentId!, provider: deployment.provider,
     model: deployment.providerModel, stream: isStream, finalOutcome: "retry_fallback", usageSource: deployment.provider,
@@ -1393,7 +1393,7 @@ function emitUsageEvent(stateObj: AttemptStateAccessor, event: UsageEventPayload
 
 function emitUnknownUsage(stateObj: AttemptStateAccessor, params: {
   requestId: string; attemptIndex: number; canonicalTarget: string;
-  clientId?: string; appId?: string; userHash?: string; policyId?: string;
+  clientId?: string; appId?: string; userHash?: string; teamId?: string; policyId?: string;
   policyVersion?: string; routeVersion?: string;
   selectedGroup: string; deploymentId: string; provider: string;
   model: string | undefined; stream: boolean; finalOutcome: string; usageSource: string;
@@ -1401,7 +1401,7 @@ function emitUnknownUsage(stateObj: AttemptStateAccessor, params: {
   emitUsageEvent(stateObj, {
     requestId: params.requestId, attemptIndex: params.attemptIndex, timestamp: Date.now(),
     clientId: params.clientId, appId: params.appId,
-    userHash: params.userHash, policyId: params.policyId,
+    userHash: params.userHash, teamId: params.teamId, policyId: params.policyId,
     policyVersion: params.policyVersion, routeVersion: params.routeVersion,
     canonicalTarget: params.canonicalTarget, selectedGroup: params.selectedGroup,
     deploymentId: params.deploymentId, provider: params.provider, model: params.model ?? "",

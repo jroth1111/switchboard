@@ -26,6 +26,7 @@ export interface RequestEnvelope {
   policyId?: string;
   policyVersion?: string;
   routeVersion?: string;
+  teamId?: string;
   body: Record<string, unknown>;
   stream: boolean;
   hasTools: boolean;

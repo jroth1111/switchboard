@@ -420,6 +420,40 @@ describe("ControlPlaneStateDO with real SQLite", () => {
     expect(admission.reason).toBe("client_token_estimate_required");
   });
 
+  it("durably enforces team token budget across members sharing team_id", async () => {
+    const stub = getDoStub();
+    const teamId = `team-budget-${Date.now()}`;
+    await stub.storeUsageEvent({
+      requestId: `req_team_budget_usage_${Date.now()}`,
+      attemptIndex: 0,
+      timestamp: Date.now(),
+      clientId: "member-a",
+      teamId,
+      canonicalTarget: "smart-route-worker",
+      selectedGroup: "smart-route-worker",
+      deploymentId: "deploy-1",
+      provider: "fixture",
+      model: "fixture-model",
+      stream: false,
+      finalOutcome: "success",
+      usageKind: "known",
+      promptTokens: 6,
+      completionTokens: 4,
+      totalTokens: 10,
+      usageSource: "test",
+    });
+
+    const admission = await stub.admitClientRequest({
+      requestId: `req_team_budget_blocked_${Date.now()}`,
+      clientId: "member-b",
+      teamId,
+      teamTokenBudgetPerMinute: 10,
+      estimatedTokens: 1,
+    });
+    expect(admission.admitted).toBe(false);
+    expect(admission.reason).toBe("team_token_budget_exceeded");
+  });
+
   it("computes client usage rollups", async () => {
     const stub = getDoStub();
     const hour = Math.floor(Date.now() / 3600000) * 3600000;

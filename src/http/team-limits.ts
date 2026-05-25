@@ -1,6 +1,7 @@
 export interface TeamLimits {
   rpmLimit?: number;
   maxConcurrency?: number;
+  tokenBudgetPerMinute?: number;
 }
 
 export interface ClientAdmissionLimits {
@@ -10,6 +11,7 @@ export interface ClientAdmissionLimits {
   teamId?: string;
   teamRpmLimit: number | null;
   teamMaxConcurrency: number | null;
+  teamTokenBudgetPerMinute: number | null;
 }
 
 export function parseTeamLimits(raw: string | undefined): Map<string, TeamLimits> {
@@ -29,9 +31,13 @@ export function parseTeamLimits(raw: string | undefined): Map<string, TeamLimits
     const limits: TeamLimits = {};
     const rpm = positiveInteger(entry.rpmLimit);
     const concurrency = positiveInteger(entry.maxConcurrency);
+    const tokenBudget = positiveInteger(entry.tokenBudgetPerMinute);
     if (rpm) limits.rpmLimit = rpm;
     if (concurrency) limits.maxConcurrency = concurrency;
-    if (limits.rpmLimit || limits.maxConcurrency) teams.set(id.trim(), limits);
+    if (tokenBudget) limits.tokenBudgetPerMinute = tokenBudget;
+    if (limits.rpmLimit || limits.maxConcurrency || limits.tokenBudgetPerMinute) {
+      teams.set(id.trim(), limits);
+    }
   }
   return teams;
 }
@@ -53,6 +59,7 @@ export function resolveClientAdmissionLimits(
     teamId: policy.teamId,
     teamRpmLimit: team?.rpmLimit ?? null,
     teamMaxConcurrency: team?.maxConcurrency ?? null,
+    teamTokenBudgetPerMinute: team?.tokenBudgetPerMinute ?? null,
   };
 }
 

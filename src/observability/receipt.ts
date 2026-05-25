@@ -23,6 +23,9 @@ export interface RouteReceipt {
   finalOutcome: "success" | "repaired_success" | "client_error" | "exhausted";
   stream: boolean;
   totalDurationMs?: number;
+  sessionId?: string;
+  traceId?: string;
+  properties?: Record<string, string>;
 }
 
 export interface ReceiptAttempt {

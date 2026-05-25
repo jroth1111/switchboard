@@ -13,6 +13,7 @@ export const SPECIAL_TOKENS: Array<{ re: string; label: string }> = [
   { re: "\\[INST\\]", label: "llama_inst" },
   { re: "\\[\\/INST\\]", label: "llama_inst_close" },
   // DeepSeek tokens (use Unicode fullwidth pipe ｜ and word-joiner ▁ — not covered by <|...|>)
+  { re: "<｜[^｜]+｜>", label: "fullwidth_pipe_special" },
   { re: "<｜begin▁of▁sentence｜>", label: "deepseek_bos" },
   { re: "<｜end▁of▁sentence｜>", label: "deepseek_eos" },
   { re: "<｜User｜>", label: "deepseek_user" },
@@ -23,7 +24,7 @@ export const SPECIAL_TOKENS: Array<{ re: string; label: string }> = [
 ];
 
 // Combined alternation regex for efficient removal (global).
-const SPECIAL_TOKEN_RE = new RegExp(SPECIAL_TOKENS.map((t) => t.re).join("|"), "g");
+const SPECIAL_TOKEN_RE = new RegExp(SPECIAL_TOKENS.map((t) => t.re).join("|"), "gi");
 
 export function repairSpecialTokens(text: string): string {
   return text.replace(SPECIAL_TOKEN_RE, "");

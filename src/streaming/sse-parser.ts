@@ -20,11 +20,7 @@ export class SSEParser {
     this.buffer += normalized;
     // Guard against unbounded buffer growth
     if (this.buffer.length > MAX_SSE_FRAME_SIZE) {
-      let cutPoint = MAX_SSE_FRAME_SIZE;
-      // Don't cut inside a surrogate pair (astral-plane characters split across UTF-16 code units)
-      const code = this.buffer.charCodeAt(cutPoint - 1);
-      if (code >= 0xD800 && code <= 0xDBFF) cutPoint--;
-      this.buffer = this.buffer.slice(0, cutPoint);
+      throw new Error(`sse_frame_too_large: ${this.buffer.length} > ${MAX_SSE_FRAME_SIZE}`);
     }
     const result: SSEEvent[] = [];
 
@@ -97,6 +93,14 @@ export async function* parseSSEStream(
   const reader = stream.getReader();
   const decoder = new TextDecoder();
 
+  const abortHandler = () => {
+    reader.cancel(new DOMException("Aborted", "AbortError")).catch(() => {});
+  };
+  if (signal) {
+    if (signal.aborted) abortHandler();
+    else signal.addEventListener("abort", abortHandler, { once: true });
+  }
+
   try {
     while (true) {
       if (signal?.aborted) break;
@@ -107,18 +111,28 @@ export async function* parseSSEStream(
         yield evt;
       }
     }
-    // Flush any incomplete UTF-8 sequence held by the decoder
-    const trailing = decoder.decode();
-    if (trailing) {
-      for (const evt of parser.feed(trailing)) {
+    if (!signal?.aborted) {
+      // Flush remaining decoder bytes (partial UTF-8 at stream end)
+      const remaining = decoder.decode();
+      if (remaining) {
+        for (const evt of parser.feed(remaining)) {
+          yield evt;
+        }
+      }
+      // Flush remaining
+      for (const evt of parser.flush()) {
         yield evt;
       }
     }
-    // Flush remaining SSE framing in the parser buffer
-    for (const evt of parser.flush()) {
-      yield evt;
+  } catch (err) {
+    if (signal?.aborted && err instanceof DOMException && err.name === "AbortError") {
+      return;
     }
+    throw err;
   } finally {
+    if (signal) {
+      signal.removeEventListener("abort", abortHandler);
+    }
     reader.cancel().catch(() => {});
     reader.releaseLock();
   }
@@ -126,7 +140,7 @@ export async function* parseSSEStream(
 
 /** Extract content delta from an OpenAI-format SSE data payload. */
 export function extractDelta(data: string): { content?: string; toolCalls?: unknown[]; finishReason?: string; usage?: Record<string, number> } | null {
-  if (data === "[DONE]") return { finishReason: "done" };
+  if (data.trim() === "[DONE]") return { finishReason: "done" };
   try {
     const json = JSON.parse(data) as Record<string, unknown>;
     const choices = json.choices as Array<Record<string, unknown>> | undefined;
@@ -157,7 +171,7 @@ export function extractDelta(data: string): { content?: string; toolCalls?: unkn
 
 /** Extract raw usage from an SSE data payload, regardless of choices. */
 export function extractUsage(data: string): Record<string, number> | undefined {
-  if (data === "[DONE]") return undefined;
+  if (data.trim() === "[DONE]") return undefined;
   try {
     const json = JSON.parse(data) as Record<string, unknown>;
     if (json.usage && typeof json.usage === "object") {

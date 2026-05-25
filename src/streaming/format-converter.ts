@@ -18,10 +18,35 @@ export function wrapSubscriptionStream(
   const encoder = new TextEncoder();
   const reader = upstream.getReader();
   let doneSent = false;
+  let readerReleased = false;
 
   // Anthropic: track mapping from content block index to tool call index
   const toolCallIndexMap = new Map<number, number>();
   let nextToolCallIdx = 0;
+  const releaseReader = () => {
+    if (readerReleased) return;
+    readerReleased = true;
+    try {
+      reader.releaseLock();
+    } catch {
+      // reader may already be released after cancellation/error
+    }
+  };
+  const emitConvertedEvent = (
+    evt: SSEEvent,
+    controller: ReadableStreamDefaultController<Uint8Array>,
+  ): boolean => {
+    // Build tool call index mapping (content block index → sequential tool call index)
+    trackToolCallIndex(evt, format, toolCallIndexMap, () => nextToolCallIdx++);
+    const converted = convertEvent(evt, format, requestId, model, toolCallIndexMap);
+    if (!converted) return false;
+    if (converted === "data: [DONE]\n\n") {
+      if (doneSent) return false;
+      doneSent = true;
+    }
+    controller.enqueue(encoder.encode(converted));
+    return true;
+  };
 
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
@@ -29,48 +54,36 @@ export function wrapSubscriptionStream(
         while (true) {
           const { done, value } = await reader.read();
           if (done) {
-            const trailing = decoder.decode();
-            if (trailing) {
-              for (const evt of parser.feed(trailing)) {
-                trackToolCallIndex(evt, format, toolCallIndexMap, () => nextToolCallIdx++);
-                const converted = convertEvent(evt, format, requestId, model, toolCallIndexMap);
-                if (converted) {
-                  if (converted === "data: [DONE]\n\n") doneSent = true;
-                  controller.enqueue(encoder.encode(converted));
-                }
+            // Flush remaining decoder bytes (partial UTF-8 at stream end)
+            const remaining = decoder.decode();
+            if (remaining) {
+              for (const evt of parser.feed(remaining)) {
+                emitConvertedEvent(evt, controller);
               }
             }
             // Flush remaining parser buffer
             for (const evt of parser.flush()) {
-              const converted = convertEvent(evt, format, requestId, model, toolCallIndexMap);
-              if (converted) {
-                if (converted === "data: [DONE]\n\n") doneSent = true;
-                controller.enqueue(encoder.encode(converted));
-              }
+              emitConvertedEvent(evt, controller);
             }
             // Subscription providers don't send [DONE] natively — emit it for OpenAI clients
             if (!doneSent) {
               controller.enqueue(encoder.encode("data: [DONE]\n\n"));
             }
+            releaseReader();
             controller.close();
             return;
           }
 
           const text = decoder.decode(value, { stream: true });
           const events = parser.feed(text);
+          let producedOutput = false;
 
           for (const evt of events) {
-            // Build tool call index mapping (content block index → sequential tool call index)
-            trackToolCallIndex(evt, format, toolCallIndexMap, () => nextToolCallIdx++);
-            const converted = convertEvent(evt, format, requestId, model, toolCallIndexMap);
-            if (converted) {
-              if (converted === "data: [DONE]\n\n") doneSent = true;
-              controller.enqueue(encoder.encode(converted));
-            }
+            producedOutput = emitConvertedEvent(evt, controller) || producedOutput;
           }
 
           // Only yield if we produced output; otherwise keep pulling
-          if (events.length > 0) return;
+          if (producedOutput) return;
         }
       } catch (err) {
         // Propagate the error — the pre-buffer pipeline will detect it
@@ -78,12 +91,20 @@ export function wrapSubscriptionStream(
         // correctly records a stream_interruption failure instead of
         // false success. Previously this emitted finish_reason: "stop"
         // + [DONE], masking the failure from health tracking.
+        try { await reader.cancel(err); } catch { /* already failed/canceled */ }
+        releaseReader();
         try { controller.error(err); } catch { /* already closed */ }
         throw err;
       }
     },
-    cancel() {
-      reader.cancel().catch(() => {});
+    async cancel(reason) {
+      try {
+        await reader.cancel(reason);
+      } catch {
+        // upstream may already be closed
+      } finally {
+        releaseReader();
+      }
     },
   });
 }
@@ -96,15 +117,16 @@ function convertEvent(
   toolCallIndexMap?: Map<number, number>,
 ): string | null {
   const data = evt.data;
-  if (!data || data === "[DONE]") {
-    return data === "[DONE]" ? "data: [DONE]\n\n" : null;
+  const trimmedData = data.trim();
+  if (!trimmedData || trimmedData === "[DONE]") {
+    return trimmedData === "[DONE]" ? "data: [DONE]\n\n" : null;
   }
 
   let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(data) as Record<string, unknown>;
+    parsed = JSON.parse(trimmedData) as Record<string, unknown>;
   } catch {
-    return null;
+    throw new Error(`malformed_${format}_stream_event`);
   }
 
   let converted: Record<string, unknown> | null;

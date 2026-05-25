@@ -252,6 +252,130 @@ describe("State engine health recording", () => {
     expect(limit).toBeDefined();
     expect(limit!.maxParallel).toBeLessThan(2);
   });
+
+  it("keeps overload rate limits out of health decay and circuit poisoning", () => {
+    const store = new InMemoryStorageAdapter();
+    recordSuccess(store, "deploy-1");
+    const before = store.getHealthScore("deploy-1")!;
+
+    recordFailure(store, "deploy-1", "rate_limit_overload", 30, 1, 300);
+
+    const after = store.getHealthScore("deploy-1")!;
+    expect(after.score).toBe(before.score);
+    expect(after.recentOutcomes?.at(-1)?.failureClass).toBe("rate_limit_overload");
+    expect(store.getCircuit("deploy-1")).toBeNull();
+    expect(store.getCooldown("deploy-1", Date.now())).toBe(true);
+  });
+
+  it("learns lower concurrency from concurrency rate limits without health decay or circuit poisoning", () => {
+    const store = new InMemoryStorageAdapter();
+    recordSuccess(store, "deploy-1");
+    const before = store.getHealthScore("deploy-1")!;
+
+    recordFailure(store, "deploy-1", "rate_limit_concurrency", 10, 1, 300, undefined, false, 300, {
+      inflightAtDispatch: 8,
+      maxParallelAtDispatch: 8,
+    });
+
+    const after = store.getHealthScore("deploy-1")!;
+    const learned = store.getLearnedLimit("deploy-1", Date.now());
+    expect(after.score).toBe(before.score);
+    expect(learned?.maxParallel).toBe(4);
+    expect(learned?.reason).toBe("rate_limit_concurrency");
+    expect(store.getCircuit("deploy-1")).toBeNull();
+    expect(store.getCooldown("deploy-1", Date.now())).toBe(true);
+  });
+
+  it.each(["rate_limit_overload", "rate_limit_concurrency"] as const)(
+    "does not quarantine repeated %s pressure",
+    (failureClass) => {
+      const store = new InMemoryStorageAdapter();
+      const c = candidate("deploy-1", "key-1", 35, 2);
+
+      for (let i = 0; i < 5; i++) {
+        recordFailure(store, "deploy-1", failureClass, 0, 3, 300, undefined, false, 300, {
+          inflightAtDispatch: 2,
+          maxParallelAtDispatch: 2,
+        });
+      }
+
+      const health = store.getHealthScore("deploy-1")!;
+      expect(health.score).toBe(100);
+      expect(health.consecutiveFailureCount).toBe(0);
+      expect(store.getCircuit("deploy-1")).toBeNull();
+      expect(admit(store, {
+        requestId: "req-pressure",
+        candidates: [c],
+        quarantineFailureThreshold: 3,
+      }).admitted).toBe(true);
+    },
+  );
+
+  it("records quota-window cooldown pressure without first-failure health decay or circuit open", () => {
+    const store = new InMemoryStorageAdapter();
+    recordSuccess(store, "deploy-1");
+    const before = store.getHealthScore("deploy-1")!;
+
+    recordFailure(store, "deploy-1", "rate_limit_quota_window", 60, 1, 300);
+
+    const after = store.getHealthScore("deploy-1")!;
+    expect(after.score).toBe(before.score);
+    expect(after.failureClass).toBe("rate_limit_quota_window");
+    expect(store.getCircuit("deploy-1")).toBeNull();
+    expect(store.getCooldown("deploy-1", Date.now())).toBe(true);
+  });
+
+  it.each(["rate_limit_quota_window", "transport_timeout", "transport_error", "stream_interruption"] as const)(
+    "keeps repeated %s pressure out of health decay, quarantine, and circuit state",
+    (failureClass) => {
+      const store = new InMemoryStorageAdapter();
+      recordSuccess(store, "deploy-1");
+      const before = store.getHealthScore("deploy-1")!;
+
+      for (let i = 0; i < 3; i++) {
+        recordFailure(store, "deploy-1", failureClass, 0, 1, 300, undefined, false, 300, {
+          transportCooldownThreshold: 2,
+        });
+      }
+
+      const after = store.getHealthScore("deploy-1")!;
+      expect(after.score).toBe(before.score);
+      expect(after.recentOutcomes?.at(-1)?.failureClass).toBe(failureClass);
+      expect(after.consecutiveFailureCount).toBe(0);
+      expect(store.getCircuit("deploy-1")).toBeNull();
+      expect(admit(store, {
+        requestId: "req-pressure-threshold",
+        candidates: [candidate("deploy-1")],
+        quarantineFailureThreshold: 1,
+      }).admitted).toBe(true);
+    },
+  );
+
+  it("marks malformed success as suspect pressure without opening the circuit", () => {
+    const store = new InMemoryStorageAdapter();
+    recordSuccess(store, "deploy-1");
+    const before = store.getHealthScore("deploy-1")!;
+
+    recordFailure(store, "deploy-1", "malformed_response", 0, 1, 300);
+
+    const after = store.getHealthScore("deploy-1")!;
+    const circuit = store.getCircuit("deploy-1");
+    expect(after.score).toBe(before.score);
+    expect(after.recentOutcomes?.at(-1)?.invalidSuccess).toBe(true);
+    expect(circuit?.state).toBe("suspect");
+    expect(circuit?.failureCount).toBe(1);
+  });
+
+  it("still opens circuits and decays health for repeated true server failures", () => {
+    const store = new InMemoryStorageAdapter();
+    recordSuccess(store, "deploy-1");
+
+    recordFailure(store, "deploy-1", "server_5xx", 0, 2, 300);
+    recordFailure(store, "deploy-1", "server_5xx", 0, 2, 300);
+
+    expect(store.getHealthScore("deploy-1")!.score).toBeLessThan(100);
+    expect(store.getCircuit("deploy-1")?.state).toBe("open");
+  });
 });
 
 // ─── Cooldown clearing ──────────────────────────────────────────────
@@ -309,7 +433,8 @@ describe("State engine end-to-end scenario", () => {
     release(store, r2.reservationId!);
     recordSuccess(store, "deploy-2");
 
-    // deploy-2 health should be high
+    expect(store.getHealthScore("deploy-1")!.score).toBe(100);
+    expect(store.getCircuit("deploy-1")).toBeNull();
     expect(store.getHealthScore("deploy-2")!.score).toBeGreaterThan(0);
   });
 
@@ -362,6 +487,43 @@ describe("State engine end-to-end scenario", () => {
     const r2 = admit(store, { requestId: "req-2", candidates: [c], halfOpenPenalty: 2 });
     expect(r2.admitted).toBe(false);
     expect(r2.rejected?.[0]?.reason).toBe("inflight_exhausted");
+  });
+
+  it("does not erase outstanding reservations when entering half-open", () => {
+    const store = new InMemoryStorageAdapter();
+    const c = candidate("deploy-1", "key-1", 100, 2);
+
+    const active = admit(store, { requestId: "req-active", candidates: [c] });
+    expect(active.admitted).toBe(true);
+    store.setCircuit("deploy-1", {
+      state: "open",
+      failureCount: 5,
+      successCount: 0,
+      halfOpenAfter: Date.now() - 1000,
+      updatedAt: Date.now() - 1000,
+    });
+
+    const probe = admit(store, { requestId: "req-probe", candidates: [c] });
+    expect(probe.admitted).toBe(false);
+    expect(probe.rejected?.[0]?.reason).toBe("inflight_exhausted");
+  });
+
+  it("caps learned concurrency at the deployment maxParallel", () => {
+    const store = new InMemoryStorageAdapter();
+    const c = candidate("deploy-1", "key-1", 100, 1);
+    store.setLearnedLimit("deploy-1", {
+      maxParallel: 5,
+      reason: "learned:success",
+      expiresAt: Date.now() + 60_000,
+    });
+
+    const first = admit(store, { requestId: "req-learned-1", candidates: [c] });
+    const second = admit(store, { requestId: "req-learned-2", candidates: [c] });
+
+    expect(first.admitted).toBe(true);
+    expect(first.effectiveMaxParallel).toBe(1);
+    expect(second.admitted).toBe(false);
+    expect(second.rejected?.[0]?.reason).toBe("inflight_exhausted");
   });
 
   it("enforces group-level RPM limit", () => {

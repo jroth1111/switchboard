@@ -132,20 +132,11 @@ export async function probeDeployment(
     headers["Authorization"] = `Bearer ${apiKey}`;
   }
 
-  let body: string;
-  if (deployment.provider === "anthropic_subscription") {
-    body = JSON.stringify({
-      model: deployment.providerModel,
-      max_tokens: 16,
-      messages: [{ role: "user", content: config.probePrompt }],
-    });
-  } else {
-    body = JSON.stringify({
-      model: deployment.providerModel,
-      max_tokens: 16,
-      messages: [{ role: "user", content: config.probePrompt }],
-    });
-  }
+  const body = JSON.stringify({
+    model: deployment.providerModel,
+    max_tokens: 16,
+    messages: [{ role: "user", content: config.probePrompt }],
+  });
 
   try {
     const response = await fetch(url, {
@@ -179,15 +170,16 @@ export async function probeDeployment(
       };
     }
 
-    // Verify response has content
+    // Verify the provider returned model content, not merely a non-empty JSON envelope.
     const respBody = await response.text();
-    const hasContent = respBody.length >= config.expectedMinLength;
+    const inspection = inspectProbeResponseBody(deployment.provider, respBody);
+    const hasContent = inspection.text.trim().length >= config.expectedMinLength;
 
     return {
       deploymentId: deployment.id,
       group: deployment.group,
-      success: hasContent,
-      failureClass: hasContent ? undefined : "empty_response",
+      success: hasContent && !inspection.failureClass,
+      failureClass: inspection.failureClass ?? (hasContent ? undefined : "empty_response"),
       latencyMs,
       status: response.status,
       timestamp: Date.now(),
@@ -414,6 +406,78 @@ function countConsecutiveCanaryFailures(rows: CanaryHistoryRow[]): number {
     if (failures >= MAX_COUNTED_FAILURES) break;
   }
   return failures;
+}
+
+function inspectProbeResponseBody(
+  provider: Deployment["provider"],
+  body: string,
+): { text: string; failureClass?: FailureClass } {
+  const trimmed = body.trim();
+  if (!trimmed) return { text: "" };
+
+  const parsed = parseJsonRecord(trimmed);
+  if (!parsed) return { text: trimmed };
+  if (hasSuccessShapedErrorEnvelope(parsed)) {
+    return { text: "", failureClass: "success_shaped_failure" };
+  }
+
+  if (provider === "anthropic_subscription") {
+    return { text: extractText(parsed.content) };
+  }
+  return { text: extractOpenAiCompatibleText(parsed) || extractResponsesText(parsed) };
+}
+
+function parseJsonRecord(body: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Plain text probe fixtures are valid reachability responses.
+  }
+  return null;
+}
+
+function hasSuccessShapedErrorEnvelope(body: Record<string, unknown>): boolean {
+  if (isRecord(body.error)) return true;
+  if (typeof body.error === "string" && body.error.trim()) return true;
+  if (typeof body.type === "string" && body.type.toLowerCase().includes("error")) return true;
+  return false;
+}
+
+function extractOpenAiCompatibleText(body: Record<string, unknown>): string {
+  const choices = Array.isArray(body.choices) ? body.choices : [];
+  const parts: string[] = [];
+  for (const choice of choices) {
+    if (!isRecord(choice)) continue;
+    if (isRecord(choice.message)) parts.push(extractText(choice.message.content));
+    if (isRecord(choice.delta)) parts.push(extractText(choice.delta.content));
+    parts.push(extractText(choice.text));
+  }
+  return parts.join("");
+}
+
+function extractResponsesText(body: Record<string, unknown>): string {
+  if (typeof body.output_text === "string") return body.output_text;
+  const output = Array.isArray(body.output) ? body.output : [];
+  return output.map((item) => isRecord(item) ? extractText(item.content) : "").join("");
+}
+
+function extractText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return "";
+  return value.map((part) => {
+    if (typeof part === "string") return part;
+    if (!isRecord(part)) return "";
+    if (typeof part.text === "string") return part.text;
+    if (typeof part.content === "string") return part.content;
+    return "";
+  }).join("");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 // ─── Reap expired leases across all DO shards ─────────────────────

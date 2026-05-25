@@ -158,6 +158,38 @@ describe("Canary probe single deployment", () => {
     globalThis.fetch = originalFetch;
   });
 
+  it("returns empty_response for a 200 response with no assistant content", async () => {
+    const deploy = makeDeployment();
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: "" } }] }), { status: 200 }),
+    );
+
+    const result = await probeDeployment(deploy, "test-api-key");
+    expect(result.success).toBe(false);
+    expect(result.failureClass).toBe("empty_response");
+    expect(result.status).toBe(200);
+
+    globalThis.fetch = originalFetch;
+  });
+
+  it("returns success_shaped_failure for a 200 provider error envelope", async () => {
+    const deploy = makeDeployment();
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: "quota exceeded" } }), { status: 200 }),
+    );
+
+    const result = await probeDeployment(deploy, "test-api-key");
+    expect(result.success).toBe(false);
+    expect(result.failureClass).toBe("success_shaped_failure");
+    expect(result.status).toBe(200);
+
+    globalThis.fetch = originalFetch;
+  });
+
   it("uses Anthropic format for anthropic_subscription provider", async () => {
     const deploy = makeDeployment({
       provider: "anthropic_subscription",

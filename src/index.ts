@@ -39,8 +39,19 @@ if (manifestIssues.some((i) => i.kind === "error")) {
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type",
-  "Access-Control-Expose-Headers": "X-Request-Id, X-Nim-Signature",
+  "Access-Control-Allow-Headers": [
+    "Authorization",
+    "Content-Type",
+    "X-Switchboard-User-Hash",
+    "X-Switchboard-User-Signature",
+  ].join(", "),
+  "Access-Control-Expose-Headers": [
+    "X-Request-Id",
+    "X-Nim-Signature",
+    "X-Policy-Id",
+    "X-Policy-Version",
+    "X-Route-Version",
+  ].join(", "),
   "Access-Control-Max-Age": "86400",
 };
 
@@ -58,14 +69,13 @@ function withCors(response: Response): Response {
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+    const path = url.pathname;
+
     // CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: CORS_HEADERS });
     }
-
-    try {
-    const url = new URL(request.url);
-    const path = url.pathname;
 
     let response: Response;
 
@@ -143,13 +153,6 @@ export default {
     }
 
     return withCors(response);
-    } catch (err) {
-      console.error("fetch handler error", err);
-      return withCors(new Response(JSON.stringify({ error: "internal_error" }), {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      }));
-    }
   },
 
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
@@ -163,16 +166,8 @@ export default {
       );
       let canaryHealth: CanaryHealthSnapshot | null = null;
       let recentCanaryResults: CanaryHistoryRow[] = [];
-      try {
-        canaryHealth = await stateStub.getHealth() as CanaryHealthSnapshot;
-      } catch (e) {
-        console.warn("[canary] getHealth failed", String(e));
-      }
-      try {
-        recentCanaryResults = await stateStub.getCanaryResults(100) as CanaryHistoryRow[];
-      } catch (e) {
-        console.warn("[canary] getCanaryResults failed", String(e));
-      }
+      try { canaryHealth = await stateStub.getHealth() as CanaryHealthSnapshot; } catch {}
+      try { recentCanaryResults = await stateStub.getCanaryResults(100) as CanaryHistoryRow[]; } catch {}
       const canaryContext = { health: canaryHealth, recentResults: recentCanaryResults };
       const results = await runCanaryProbes(
         env as unknown as Record<string, unknown>, // dynamic key lookup in canary probes
@@ -203,20 +198,19 @@ export default {
 
       console.log(`[canary] ${results.length} probes: ${results.filter((r) => r.success).length} ok, ${results.filter((r) => !r.success).length} fail`);
 
-      // Persist canary results to DO (extend lifetime past scheduled return)
-      const storeCanaryResults = results.map((r) =>
-        stateStub.storeCanaryResult({
-          deploymentId: r.deploymentId,
-          group: r.group,
-          success: r.success,
-          failureClass: r.failureClass,
-          latencyMs: r.latencyMs,
-          statusCode: r.status,
-        }),
-      );
-      ctx.waitUntil(
-        Promise.all(storeCanaryResults).catch((e) => console.error("canary_result_store_failed", String(e))),
-      );
+      // Persist canary results to DO
+      for (const r of results) {
+        ctx.waitUntil(
+          stateStub.storeCanaryResult({
+            deploymentId: r.deploymentId,
+            group: r.group,
+            success: r.success,
+            failureClass: r.failureClass,
+            latencyMs: r.latencyMs,
+            statusCode: r.status,
+          }).catch((e) => console.error("canary_result_store_failed", String(e))),
+        );
+      }
     }
 
     if (cron === "*/5 * * * *") {

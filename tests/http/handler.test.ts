@@ -5,6 +5,7 @@ import {
   verifyAdminAuth,
   handleAdminUsage,
   handleAdminClientRequests,
+  handleAdminCanaryResults,
   handleChatCompletions,
   handleNimFailures,
   releaseClientOnStreamEnd,
@@ -485,7 +486,8 @@ describe("Auth middleware", () => {
   it("persists policy denial receipts before planning", async () => {
     const storeReceipt = vi.fn(async () => {});
     const storeClientRequest = vi.fn(async () => {});
-    const stateDo = { storeReceipt, storeClientRequest };
+    const storeFailedRequest = vi.fn(async () => {});
+    const stateDo = { storeReceipt, storeClientRequest, storeFailedRequest };
     const env = {
       CONTROL_PLANE_STATE: {
         idFromName: vi.fn(() => "control-plane"),
@@ -527,6 +529,13 @@ describe("Auth middleware", () => {
       clientId: "hermes-alice",
       denialReason: "model_not_allowed",
     }));
+    expect(storeFailedRequest).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: expect.any(String),
+      finalOutcome: "client_error",
+      failureClass: "model_not_allowed",
+      issueCode: "model_not_allowed",
+      attemptsCount: 0,
+    }));
   });
 
   it("rejects token-budgeted chat requests without an explicit output token cap", async () => {
@@ -538,7 +547,8 @@ describe("Auth middleware", () => {
     }));
     const storeReceipt = vi.fn(async () => {});
     const storeClientRequest = vi.fn(async () => {});
-    const stateDo = { admitClientRequest, storeReceipt, storeClientRequest };
+    const storeFailedRequest = vi.fn(async () => {});
+    const stateDo = { admitClientRequest, storeReceipt, storeClientRequest, storeFailedRequest };
     const env = {
       CONTROL_PLANE_STATE: {
         idFromName: vi.fn(() => "control-plane"),
@@ -576,6 +586,12 @@ describe("Auth middleware", () => {
     expect(storeReceipt).toHaveBeenCalledWith(expect.objectContaining({
       denialReason: "client_token_budget_exceeded",
       fallbackGroups: [],
+    }));
+    expect(storeFailedRequest).toHaveBeenCalledWith(expect.objectContaining({
+      finalOutcome: "client_error",
+      failureClass: "client_token_budget_exceeded",
+      issueCode: "client_token_budget_exceeded",
+      attemptsCount: 0,
     }));
   });
 
@@ -619,6 +635,74 @@ describe("Auth middleware", () => {
     expect(auth.ok).toBe(true);
     if (!auth.ok) return;
     expect(authorizeModelForClient("gpt-5.5(high)", auth.client).allowed).toBe(true);
+  });
+});
+
+describe("Worker HTTP surface", () => {
+  it("allows signed user-claim headers in CORS preflight", async () => {
+    const response = await worker.fetch(
+      new Request("https://example.com/v1/chat/completions", { method: "OPTIONS" }),
+      {} as Env,
+      routeContext(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Access-Control-Allow-Headers")).toContain("X-Switchboard-User-Hash");
+    expect(response.headers.get("Access-Control-Allow-Headers")).toContain("X-Switchboard-User-Signature");
+  });
+
+  it("exposes policy and route headers to browser clients", async () => {
+    const response = await worker.fetch(
+      new Request("https://example.com/v1/models", {
+        headers: { Authorization: "Bearer client-token" },
+      }),
+      {
+        CLIENT_KEYS_JSON: JSON.stringify({
+          clients: [{
+            id: "hermes-alice",
+            token_sha256: "acf6b6f1c492a018d86d7bdb01852131ea7533992c5a0246d24c4ec74b56aff0",
+            allowedModels: ["smart-route"],
+          }],
+        }),
+      } as Env,
+      routeContext(),
+    );
+
+    expect(response.status).toBe(200);
+    const exposed = response.headers.get("Access-Control-Expose-Headers");
+    expect(exposed).toContain("X-Policy-Id");
+    expect(exposed).toContain("X-Policy-Version");
+    expect(exposed).toContain("X-Route-Version");
+  });
+
+  it("keeps /admin/health authorized by the admin key when health token differs", async () => {
+    const stateDo = { getHealth: vi.fn(async () => ({})) };
+    const env = {
+      ADMIN_API_KEY: "admin-key",
+      NIM_HEALTH_TOKEN: "health-token",
+      CONTROL_PLANE_STATE: {
+        idFromName: vi.fn(() => "control-plane-id"),
+        get: vi.fn(() => stateDo),
+      },
+    } as unknown as Env;
+
+    const response = await worker.fetch(
+      new Request("https://example.com/admin/health", {
+        headers: { Authorization: "Bearer admin-key" },
+      }),
+      env,
+      routeContext(),
+    );
+    expect(response.status).toBe(200);
+
+    const rejected = await worker.fetch(
+      new Request("https://example.com/admin/health", {
+        headers: { Authorization: "Bearer health-token" },
+      }),
+      env,
+      routeContext(),
+    );
+    expect(rejected.status).toBe(401);
   });
 });
 
@@ -833,6 +917,7 @@ describe("ChatGPT Responses public surface", () => {
 
   it("keeps ordinary non-ChatGPT chat-completions planning and dispatch working", async () => {
     const { env, stateDo, storeReceipt } = createRouteTestEnv();
+    const waitUntil = vi.fn();
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       id: "chatcmpl_test",
       object: "chat.completion",
@@ -860,10 +945,13 @@ describe("ChatGPT Responses public surface", () => {
         }),
       }),
       env,
-      routeContext(),
+      { waitUntil, passThroughOnException: vi.fn() } as unknown as ExecutionContext,
     );
 
     expect(response.status).toBe(200);
+    expect(waitUntil).toHaveBeenCalled();
+    await Promise.all(waitUntil.mock.calls.map(([promise]) => promise as Promise<unknown>));
+    expect(stateDo.releaseClientRequest).toHaveBeenCalledWith("client-reservation-1");
     expect(stateDo.admit).toHaveBeenCalledWith(expect.objectContaining({
       candidates: expect.arrayContaining([
         expect.objectContaining({ deploymentId: "zai-glm-5.1-key-1", keyRef: "ZAI_KEY_1" }),
@@ -1022,7 +1110,7 @@ describe("Admin client requests", () => {
     });
   });
 
-  it("defaults omitted since, until, and limit query params", async () => {
+  it("uses default pagination and no time filters when query params are omitted", async () => {
     const queryClientRequests = vi.fn(async () => []);
     const stateDo = { queryClientRequests };
     const env = {
@@ -1033,18 +1121,43 @@ describe("Admin client requests", () => {
     } as unknown as Env;
 
     const response = await handleAdminClientRequests(
-      new Request("https://example.test/admin/client-requests?client_id=hermes-alice"),
+      new Request("https://example.test/admin/client-requests"),
       env,
     );
+    const body = await response.json() as { total: number };
 
     expect(response.status).toBe(200);
+    expect(body.total).toBe(0);
     expect(queryClientRequests).toHaveBeenCalledWith({
-      clientId: "hermes-alice",
+      clientId: undefined,
       appId: undefined,
       since: undefined,
       until: undefined,
       limit: 100,
     });
+  });
+});
+
+describe("Admin canary results", () => {
+  it("uses the documented default result limit when query params are omitted", async () => {
+    const getCanaryResults = vi.fn(async () => []);
+    const stateDo = { getCanaryResults };
+    const env = {
+      CONTROL_PLANE_STATE: {
+        idFromName: vi.fn(() => "control-plane-id"),
+        get: vi.fn(() => stateDo),
+      },
+    } as unknown as Env;
+
+    const response = await handleAdminCanaryResults(
+      new Request("https://example.test/admin/canary/results"),
+      env,
+    );
+    const body = await response.json() as { total: number };
+
+    expect(response.status).toBe(200);
+    expect(body.total).toBe(0);
+    expect(getCanaryResults).toHaveBeenCalledWith(50);
   });
 });
 
@@ -1205,6 +1318,22 @@ describe("NIM failed request observability", () => {
         headers: { Authorization: "Bearer health-token" },
       }),
       env,
+    );
+
+    expect(response.status).toBe(422);
+    expect(queryFailedRequests).not.toHaveBeenCalled();
+  });
+
+  it("returns 422 for malformed receipt path encoding before touching storage", async () => {
+    const queryFailedRequests = vi.fn(async () => [makeFailureRow()]);
+    const env = makeFailureEnv(queryFailedRequests);
+
+    const response = await worker.fetch(
+      new Request("https://example.test/nim/failures/%E0%A4%A", {
+        headers: { Authorization: "Bearer health-token" },
+      }),
+      env,
+      routeContext(),
     );
 
     expect(response.status).toBe(422);

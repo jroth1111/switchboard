@@ -3,15 +3,11 @@
 // via SqlStorageAdapter. Retains schema management and query/reporting methods.
 
 import { DurableObject } from "cloudflare:workers";
-import { MANIFEST } from "../config/manifest";
 import type { FailureClass } from "../config/schema";
 import type { AdmissionRequest, AdmissionResponse } from "./admission-engine";
 import * as engine from "./admission-engine";
 import { SqlStorageAdapter } from "./sql-adapter";
 import { safeJsonParse } from "../utils/result";
-
-// Confirmed reservations must outlive manifest stream timeouts (seconds) plus slack.
-const CONFIRMED_RESERVATION_TTL_MS = 600_000;
 
 // ─── Schema migrations ────────────────────────────────────────────
 
@@ -289,8 +285,8 @@ export type { AdmissionRequest, AdmissionResponse } from "./admission-engine";
 
 export class ControlPlaneStateDO extends DurableObject {
   private initialized = false;
-  private learnedConcurrencyEnabled = MANIFEST.defaultPolicy.budget.learnedConcurrencyEnabled;
-  private learnedConcurrencyTtlSeconds = MANIFEST.defaultPolicy.budget.learnedConcurrencyTtlSeconds;
+  private learnedConcurrencyEnabled = false;
+  private learnedConcurrencyTtlSeconds = 300;
   private store: SqlStorageAdapter | null = null;
 
   private ensureSchema() {
@@ -345,33 +341,30 @@ export class ControlPlaneStateDO extends DurableObject {
     this.ctx.storage.sql.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
   }
 
+  private markReservationConfirmed(reservationId: string): void {
+    const res = this.store!.confirmReservation(reservationId);
+    if (res) {
+      const current = this.store!.getInflight(res.deploymentId);
+      this.store!.setInflight(res.deploymentId, current, Date.now());
+    }
+  }
+
   // ─── Admission (delegated to engine) ────────────────────────────
 
   async admit(req: AdmissionRequest): Promise<AdmissionResponse> {
     this.ensureSchema();
     if ((req.learnedConcurrencyEnabled !== null && req.learnedConcurrencyEnabled !== undefined)) this.learnedConcurrencyEnabled = req.learnedConcurrencyEnabled;
     if ((req.learnedConcurrencyTtlSeconds !== null && req.learnedConcurrencyTtlSeconds !== undefined)) this.learnedConcurrencyTtlSeconds = req.learnedConcurrencyTtlSeconds;
-    return engine.admit(this.store!, req);
+    const admission = engine.admit(this.store!, req);
+    if (admission.admitted && admission.reservationId) {
+      this.store!.transaction(() => this.markReservationConfirmed(admission.reservationId!));
+    }
+    return admission;
   }
 
   async confirm(reservationId: string): Promise<void> {
     this.ensureSchema();
-    const now = Date.now();
-    this.store!.transaction(() => {
-      const res = this.store!.confirmReservation(reservationId);
-      if (res) {
-        // Extend lease past RESERVATION_TTL_MS so reapExpired does not release active streams.
-        this.ctx.storage.sql.exec(
-          "UPDATE reservations SET expires_at = ? WHERE reservation_id = ?",
-          now + CONFIRMED_RESERVATION_TTL_MS,
-          reservationId,
-        );
-        // Refresh the inflight row's updated_at so long-running streams (e.g. >120s)
-        // are not pruned by pruneStaleInflight before the request completes.
-        const current = this.store!.getInflight(res.deploymentId);
-        this.store!.setInflight(res.deploymentId, current, now);
-      }
-    });
+    this.store!.transaction(() => this.markReservationConfirmed(reservationId));
   }
 
   async release(reservationId: string): Promise<void> {
@@ -410,11 +403,41 @@ export class ControlPlaneStateDO extends DurableObject {
 
   async getHealth(): Promise<Record<string, unknown>> {
     this.ensureSchema();
+    const now = Date.now();
+    const windowCutoff = now - 60_000;
     const scoreRows = this.store!.listHealthScores();
     const circuits = this.ctx.storage.sql.exec("SELECT * FROM circuits").toArray();
     const cooldowns = this.ctx.storage.sql.exec("SELECT * FROM cooldowns").toArray();
     const inflight = this.ctx.storage.sql.exec("SELECT * FROM inflight").toArray();
     const learnedLimits = this.ctx.storage.sql.exec("SELECT * FROM learned_limits").toArray();
+    const keyWindows = this.ctx.storage.sql.exec(
+      "SELECT key_ref, MIN(window_start) AS window_start, SUM(count) AS count FROM key_windows WHERE window_start >= ? GROUP BY key_ref",
+      windowCutoff,
+    ).toArray();
+    const groupWindows = this.ctx.storage.sql.exec(
+      "SELECT group_name, MIN(window_start) AS window_start, SUM(count) AS count FROM group_windows WHERE window_start >= ? GROUP BY group_name",
+      windowCutoff,
+    ).toArray();
+    const tokenWindows = this.ctx.storage.sql.exec(
+      "SELECT key_ref, MIN(window_start) AS window_start, SUM(prompt_tokens) AS prompt_tokens, SUM(completion_tokens) AS completion_tokens FROM key_token_windows WHERE window_start >= ? GROUP BY key_ref",
+      windowCutoff,
+    ).toArray();
+    const routeDispatchMemoryRows = this.ctx.storage.sql.exec(
+      `SELECT canonical_target, request_class, group_name, dispatched_at
+       FROM route_dispatch_memory_by_class
+       WHERE dispatched_at >= ?`,
+      now - 86400000,
+    ).toArray();
+    const routeDispatchMemory: Record<string, Record<string, { group: string; dispatchedAt: number }>> = {};
+    for (const row of routeDispatchMemoryRows) {
+      const canonicalTarget = row.canonical_target as string;
+      const requestClass = row.request_class as string;
+      routeDispatchMemory[canonicalTarget] ??= {};
+      routeDispatchMemory[canonicalTarget][requestClass] = {
+        group: row.group_name as string,
+        dispatchedAt: row.dispatched_at as number,
+      };
+    }
     return {
       healthScores: Object.fromEntries(scoreRows.map(({ deploymentId, score }) => [deploymentId, mapHealthScoreRow(score)])),
       circuits: Object.fromEntries(circuits.map((row) => [row.deployment_id as string, mapCircuitRow(row)])),
@@ -432,8 +455,22 @@ export class ControlPlaneStateDO extends DurableObject {
         reason: row.reason,
         expiresAt: row.expires_at,
       }])),
+      keyWindows: Object.fromEntries(keyWindows.map((row) => [row.key_ref as string, {
+        windowStart: row.window_start,
+        count: row.count,
+      }])),
+      groupWindows: Object.fromEntries(groupWindows.map((row) => [row.group_name as string, {
+        windowStart: row.window_start,
+        count: row.count,
+      }])),
+      tokenWindows: Object.fromEntries(tokenWindows.map((row) => [row.key_ref as string, {
+        windowStart: row.window_start,
+        promptTokens: row.prompt_tokens,
+        completionTokens: row.completion_tokens,
+      }])),
+      routeDispatchMemory,
       scores: scoreRows.map(({ deploymentId, score }) => ({ deployment_id: deploymentId, ...mapHealthScoreRow(score) })),
-      timestamp: Date.now(),
+      timestamp: now,
     };
   }
 
@@ -486,7 +523,7 @@ export class ControlPlaneStateDO extends DurableObject {
     policyVersion?: string; routeVersion?: string; denialReason?: string;
     routeDecision?: unknown;
     canonicalTarget: string; selectedGroup: string; fallbackGroups: string[];
-    attempts: Array<Record<string, unknown>>; finalOutcome: string;
+    attempts: unknown[]; finalOutcome: string;
     stream: boolean; totalDurationMs?: number;
   }): Promise<void> {
     this.ensureSchema();
@@ -536,102 +573,104 @@ export class ControlPlaneStateDO extends DurableObject {
     const userHash = req.userHash ?? "";
     const windowStart = Math.floor(now / 60000) * 60000;
     const reservationId = `${req.clientId}:${req.requestId}`;
-    this.ctx.storage.sql.exec("DELETE FROM client_inflight WHERE expires_at < ?", now);
-    this.ctx.storage.sql.exec("DELETE FROM client_rate_windows WHERE window_start < ?", now - 10 * 60000);
+    return this.store!.transaction(() => {
+      this.ctx.storage.sql.exec("DELETE FROM client_inflight WHERE expires_at < ?", now);
+      this.ctx.storage.sql.exec("DELETE FROM client_rate_windows WHERE window_start < ?", now - 10 * 60000);
 
-    if (req.rpmLimit && req.rpmLimit > 0) {
-      const rows = this.ctx.storage.sql.exec(
-        "SELECT count FROM client_rate_windows WHERE client_id = ? AND user_hash = ? AND window_start = ?",
-        req.clientId, userHash, windowStart,
-      ).toArray();
-      const count = Number(rows[0]?.count ?? 0);
-      if (count >= req.rpmLimit) {
-        return {
-          admitted: false,
-          reservationId,
-          reason: "client_rpm_exceeded",
-          message: "client RPM limit exceeded",
-          resetAt: windowStart + 60000,
-        };
+      if (req.rpmLimit && req.rpmLimit > 0) {
+        const rows = this.ctx.storage.sql.exec(
+          "SELECT count FROM client_rate_windows WHERE client_id = ? AND user_hash = ? AND window_start = ?",
+          req.clientId, userHash, windowStart,
+        ).toArray();
+        const count = Number(rows[0]?.count ?? 0);
+        if (count >= req.rpmLimit) {
+          return {
+            admitted: false,
+            reservationId,
+            reason: "client_rpm_exceeded",
+            message: "client RPM limit exceeded",
+            resetAt: windowStart + 60000,
+          };
+        }
       }
-    }
 
-    if (req.maxConcurrency && req.maxConcurrency > 0) {
-      const rows = this.ctx.storage.sql.exec(
-        "SELECT COUNT(*) AS count FROM client_inflight WHERE client_id = ? AND user_hash = ?",
-        req.clientId, userHash,
-      ).toArray();
-      const count = Number(rows[0]?.count ?? 0);
-      if (count >= req.maxConcurrency) {
-        return {
-          admitted: false,
-          reservationId,
-          reason: "client_concurrency_exceeded",
-          message: "client concurrency limit exceeded",
-        };
+      if (req.maxConcurrency && req.maxConcurrency > 0) {
+        const rows = this.ctx.storage.sql.exec(
+          "SELECT COUNT(*) AS count FROM client_inflight WHERE client_id = ? AND user_hash = ?",
+          req.clientId, userHash,
+        ).toArray();
+        const count = Number(rows[0]?.count ?? 0);
+        if (count >= req.maxConcurrency) {
+          return {
+            admitted: false,
+            reservationId,
+            reason: "client_concurrency_exceeded",
+            message: "client concurrency limit exceeded",
+          };
+        }
       }
-    }
 
-    if (req.tokenBudgetPerMinute && req.tokenBudgetPerMinute > 0) {
-      const rows = this.ctx.storage.sql.exec(
-        `SELECT COALESCE(SUM(total_tokens), 0) AS total
-         FROM usage_events
-         WHERE client_id = ? AND COALESCE(user_hash, '') = ? AND timestamp >= ? AND timestamp < ?`,
-        req.clientId, userHash, windowStart, windowStart + 60000,
-      ).toArray();
-      const used = Number(rows[0]?.total ?? 0);
-      const inflightRows = this.ctx.storage.sql.exec(
-        "SELECT COALESCE(SUM(estimated_tokens), 0) AS total FROM client_inflight WHERE client_id = ? AND user_hash = ?",
-        req.clientId, userHash,
-      ).toArray();
-      const reserved = Number(inflightRows[0]?.total ?? 0);
-      const estimated = typeof req.estimatedTokens === "number" && Number.isFinite(req.estimatedTokens) && req.estimatedTokens > 0
-        ? Math.ceil(req.estimatedTokens)
-        : null;
-      if (used >= req.tokenBudgetPerMinute) {
-        return {
-          admitted: false,
-          reservationId,
-          reason: "client_token_budget_exceeded",
-          message: "client token budget exceeded",
-          resetAt: windowStart + 60000,
-        };
+      if (req.tokenBudgetPerMinute && req.tokenBudgetPerMinute > 0) {
+        const rows = this.ctx.storage.sql.exec(
+          `SELECT COALESCE(SUM(total_tokens), 0) AS total
+           FROM usage_events
+           WHERE client_id = ? AND COALESCE(user_hash, '') = ? AND timestamp >= ? AND timestamp < ?`,
+          req.clientId, userHash, windowStart, windowStart + 60000,
+        ).toArray();
+        const used = Number(rows[0]?.total ?? 0);
+        const inflightRows = this.ctx.storage.sql.exec(
+          "SELECT COALESCE(SUM(estimated_tokens), 0) AS total FROM client_inflight WHERE client_id = ? AND user_hash = ?",
+          req.clientId, userHash,
+        ).toArray();
+        const reserved = Number(inflightRows[0]?.total ?? 0);
+        const estimated = typeof req.estimatedTokens === "number" && Number.isFinite(req.estimatedTokens) && req.estimatedTokens >= 0
+          ? Math.ceil(req.estimatedTokens)
+          : null;
+        if (used >= req.tokenBudgetPerMinute) {
+          return {
+            admitted: false,
+            reservationId,
+            reason: "client_token_budget_exceeded",
+            message: "client token budget exceeded",
+            resetAt: windowStart + 60000,
+          };
+        }
+        if (estimated === null) {
+          return {
+            admitted: false,
+            reservationId,
+            reason: "client_token_estimate_required",
+            message: "client token estimate required",
+            resetAt: windowStart + 60000,
+          };
+        }
+        if (used + reserved + estimated > req.tokenBudgetPerMinute) {
+          return {
+            admitted: false,
+            reservationId,
+            reason: "client_token_budget_exceeded",
+            message: "client token budget exceeded",
+            resetAt: windowStart + 60000,
+          };
+        }
       }
-      if (estimated === null) {
-        return {
-          admitted: false,
-          reservationId,
-          reason: "client_token_estimate_required",
-          message: "client token estimate required",
-          resetAt: windowStart + 60000,
-        };
-      }
-      if (used + reserved + estimated > req.tokenBudgetPerMinute) {
-        return {
-          admitted: false,
-          reservationId,
-          reason: "client_token_budget_exceeded",
-          message: "client token budget exceeded",
-          resetAt: windowStart + 60000,
-        };
-      }
-    }
 
-    if (req.rpmLimit && req.rpmLimit > 0) {
+      if (req.rpmLimit && req.rpmLimit > 0) {
+        this.ctx.storage.sql.exec(
+          `INSERT INTO client_rate_windows (client_id, user_hash, window_start, count)
+           VALUES (?, ?, ?, 1)
+           ON CONFLICT(client_id, user_hash, window_start) DO UPDATE SET count = count + 1`,
+          req.clientId, userHash, windowStart,
+        );
+      }
       this.ctx.storage.sql.exec(
-        `INSERT INTO client_rate_windows (client_id, user_hash, window_start, count)
-         VALUES (?, ?, ?, 1)
-         ON CONFLICT(client_id, user_hash, window_start) DO UPDATE SET count = count + 1`,
-        req.clientId, userHash, windowStart,
+        `INSERT OR REPLACE INTO client_inflight
+           (reservation_id, request_id, client_id, user_hash, estimated_tokens, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        reservationId, req.requestId, req.clientId, userHash, Math.max(0, Math.ceil(req.estimatedTokens ?? 0)), now, now + 10 * 60000,
       );
-    }
-    this.ctx.storage.sql.exec(
-      `INSERT OR REPLACE INTO client_inflight
-         (reservation_id, request_id, client_id, user_hash, estimated_tokens, created_at, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      reservationId, req.requestId, req.clientId, userHash, Math.max(0, Math.ceil(req.estimatedTokens ?? 0)), now, now + 10 * 60000,
-    );
-    return { admitted: true, reservationId };
+      return { admitted: true, reservationId };
+    });
   }
 
   async releaseClientRequest(reservationId: string): Promise<void> {
@@ -643,7 +682,7 @@ export class ControlPlaneStateDO extends DurableObject {
     clientId?: string; appId?: string; since?: number; until?: number; limit?: number;
   }): Promise<Record<string, unknown>[]> {
     this.ensureSchema();
-    const limit = filters.limit ?? 1000;
+    const limit = clampLimit(filters.limit, 1000, 5000);
     const conditions: string[] = [];
     const params: unknown[] = [];
     if (filters.clientId) { conditions.push("client_id = ?"); params.push(filters.clientId); }
@@ -663,7 +702,7 @@ export class ControlPlaneStateDO extends DurableObject {
 
   async getRecentReceipts(limit = 200): Promise<Record<string, unknown>[]> {
     this.ensureSchema();
-    return this.ctx.storage.sql.exec("SELECT * FROM receipts ORDER BY timestamp DESC LIMIT ?", limit).toArray().map(mapReceiptRow);
+    return this.ctx.storage.sql.exec("SELECT * FROM receipts ORDER BY timestamp DESC LIMIT ?", clampLimit(limit, 200, 5000)).toArray().map(mapReceiptRow);
   }
 
   // ─── Canary results ────────────────────────────────────────────
@@ -688,7 +727,7 @@ export class ControlPlaneStateDO extends DurableObject {
 
   async getCanaryResults(limit = 50): Promise<Record<string, unknown>[]> {
     this.ensureSchema();
-    return this.ctx.storage.sql.exec("SELECT * FROM canary_results ORDER BY timestamp DESC LIMIT ?", limit).toArray().map(mapCanaryResultRow);
+    return this.ctx.storage.sql.exec("SELECT * FROM canary_results ORDER BY timestamp DESC LIMIT ?", clampLimit(limit, 50, 500)).toArray().map(mapCanaryResultRow);
   }
 
   // ─── Reap expired leases ──────────────────────────────────────
@@ -700,15 +739,12 @@ export class ControlPlaneStateDO extends DurableObject {
       "SELECT reservation_id FROM reservations WHERE expires_at < ? AND confirmed = 0", now,
     ).toArray();
     for (const row of expired) await this.release(row.reservation_id as string);
-    const confirmedExpired = this.ctx.storage.sql.exec(
-      "SELECT reservation_id FROM reservations WHERE expires_at < ? AND confirmed = 1", now,
-    ).toArray();
-    // Confirmed leases use CONFIRMED_RESERVATION_TTL_MS; expired rows are abandoned streams.
-    for (const row of confirmedExpired) await this.release(row.reservation_id as string);
+    // Confirmed reservations are released explicitly when streams/requests complete;
+    // do not reap them on admit TTL or long streams lose inflight and over-admit.
     this.ctx.storage.sql.exec("DELETE FROM learned_limits WHERE expires_at IS NOT NULL AND expires_at < ?", now);
     this.ctx.storage.sql.exec("DELETE FROM key_token_windows WHERE window_start < ?", now - 60_000);
     engine.decayIdleHealthScores(this.store!, now);
-    return expired.length + confirmedExpired.length;
+    return expired.length;
   }
 
   // ─── Failed request storage ────────────────────────────────────
@@ -808,7 +844,7 @@ export class ControlPlaneStateDO extends DurableObject {
     group?: string; deploymentId?: string; clientId?: string; appId?: string; since?: number; until?: number; limit?: number;
   }): Promise<Record<string, unknown>[]> {
     this.ensureSchema();
-    const limit = filters.limit ?? 1000;
+    const limit = clampLimit(filters.limit, 1000, 5000);
     const conditions: string[] = [];
     const params: unknown[] = [];
     if (filters.group) { conditions.push("selected_group = ?"); params.push(filters.group); }
@@ -882,6 +918,11 @@ export class ControlPlaneStateDO extends DurableObject {
 }
 
 // ─── Row mappers ──────────────────────────────────────────────────
+
+function clampLimit(value: number | undefined, defaultValue: number, maxValue: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return defaultValue;
+  return Math.min(Math.max(Math.trunc(value), 1), maxValue);
+}
 
 function mapHealthScoreRow(row: import("./storage-adapter").HealthScoreRow): Record<string, unknown> {
   return {

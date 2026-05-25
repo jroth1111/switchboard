@@ -49,6 +49,15 @@ describe("semantic classifier", () => {
     const result = classifySemanticIssue(withNull, defaultConfig);
     expect(result?.issue).toBe("garbled_response");
   });
+
+  it("handles C1 control characters in printable ratio", () => {
+    // 0x80 to 0x9F are C1 control characters (non-printable)
+    let c1Str = "";
+    for (let i = 0x80; i <= 0x9f; i++) c1Str += String.fromCharCode(i);
+    const result = classifySemanticIssue(c1Str, { ...defaultConfig, minChars: 1 });
+    // It should be entirely non-printable, printable ratio = 0
+    expect(result?.issue).toBe("garbled_response");
+  });
 });
 
 describe("success-shaped failure detection", () => {
@@ -56,6 +65,18 @@ describe("success-shaped failure detection", () => {
     const text = '{"error":{"message":"rate limit exceeded","detail":"provider returned a successful HTTP status but embedded an error","padding":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}}';
     const result = detectSuccessShapedFailure(text);
     expect(result?.issue).toBe("success_shaped_failure");
+  });
+
+  it("detects structured provider error envelopes that do not start with error", () => {
+    const text = '{"object":"error","message":"internal server error","type":"server_error"}';
+    const result = detectSuccessShapedFailure(text);
+    expect(result?.issue).toBe("success_shaped_failure");
+  });
+
+  it("does not flag ordinary explanatory JSON messages as provider failures", () => {
+    const text = '{"message":"Internal server error is an HTTP 500 status that applications should handle."}';
+    const result = detectSuccessShapedFailure(text);
+    expect(result).toBeNull();
   });
 
   it("ignores very long error-like text", () => {
@@ -123,6 +144,22 @@ describe("special token leak detection", () => {
 
   it("accepts normal text", () => {
     const result = detectSpecialTokenLeak("Normal text without any special tokens.");
+    expect(result).toBeNull();
+  });
+});
+
+describe("input echo detection", () => {
+  it("detects when response heavily echoes input", () => {
+    const input = "What is the capital of France?";
+    const response = "What is the capital of France? The capital is Paris.";
+    const result = classifySemanticIssue(response, { ...defaultConfig, echoThreshold: 0.7 }, undefined, input);
+    expect(result?.issue).toBe("input_echo");
+  });
+
+  it("does not flag normal responses", () => {
+    const input = "What is the capital of France?";
+    const response = "Paris is the capital of France, known for the Eiffel Tower.";
+    const result = classifySemanticIssue(response, { ...defaultConfig, echoThreshold: 0.7 }, undefined, input);
     expect(result).toBeNull();
   });
 });
@@ -203,6 +240,18 @@ describe("rate limit classifier", () => {
     expect(result?.details).toContain("provider_reset_header");
   });
 
+  it("does not treat generic reset text as a GLM quota reset timestamp", () => {
+    const result = classifyRateLimit(429, "connection reset by peer", {});
+    expect(result?.failureClass).toBe("rate_limit_concurrency_ambiguous");
+    expect(result?.cooldownSeconds).toBe(45);
+  });
+
+  it("uses quota cooldown when a quota reset lacks a parseable timestamp", () => {
+    const result = classifyRateLimit(429, "Your quota will reset later. Try again later.", {});
+    expect(result?.failureClass).toBe("rate_limit_quota_window");
+    expect(result?.cooldownSeconds).toBe(15 * 60);
+  });
+
   it("returns null for non-429", () => {
     const result = classifyRateLimit(500, "internal error", {});
     expect(result).toBeNull();
@@ -233,8 +282,32 @@ describe("provider failure classifier", () => {
     expect(result.failureClass).toBe("context_length_exceeded");
   });
 
-  it("does not classify invalid token 400 as context length", () => {
+  it("delegates generic 429 quota semantics to the rate-limit classifier", () => {
+    const result = classifyProviderFailure(429, "daily quota exceeded", "nvidia_nim");
+    expect(result.failureClass).toBe("rate_limit_quota_window");
+    expect(result.affectsHealth).toBe(false);
+    expect(result.affectsAccount).toBe(true);
+  });
+
+  it("delegates generic 429 concurrency semantics to the rate-limit classifier", () => {
+    const result = classifyProviderFailure(429, "too many concurrent connections", "nvidia_nim");
+    expect(result.failureClass).toBe("rate_limit_concurrency");
+    expect(result.affectsHealth).toBe(true);
+    expect(result.affectsAccount).toBe(false);
+  });
+
+  it("does not classify invalid token text as context length", () => {
+    const result = classifyProviderFailure(400, "invalid token in request body", "openai");
+    expect(result.failureClass).toBe("client_4xx_bad_request");
+  });
+
+  it("does not classify invalid token 400 JSON as context length", () => {
     const result = classifyProviderFailure(400, '{"error":"invalid token"}', "openai");
     expect(result.failureClass).toBe("client_4xx_bad_request");
+  });
+
+  it("detects invalid model messages with a model name between words", () => {
+    const result = classifyProviderFailure(400, "The model gpt-missing does not exist", "openai");
+    expect(result.failureClass).toBe("invalid_model");
   });
 });

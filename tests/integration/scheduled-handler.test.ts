@@ -53,22 +53,31 @@ describe("Scheduled handler integration", () => {
 
   it("canary results prune to last 100 entries", async () => {
     const stub = getDoStub();
+    const prefix = `prune-${Date.now()}-deploy`;
 
-    // Insert 5 results — should all be kept (well under 100)
-    for (let i = 0; i < 5; i++) {
+    // Insert 105 results — oldest 5 should be pruned, 100 kept
+    for (let i = 0; i < 105; i++) {
       await stub.storeCanaryResult({
-        deploymentId: `prune-deploy-${i}`,
+        deploymentId: `${prefix}-${i}`,
         group: "prune-group",
         success: i % 2 === 0,
         latencyMs: i * 10,
       });
+      await new Promise((resolve) => setTimeout(resolve, 1));
     }
 
-    const results = await stub.getCanaryResults(100);
+    const results = await stub.getCanaryResults(200);
     const pruneResults = results.filter(
-      (r) => ((r as Record<string, unknown>).deploymentId as string).startsWith("prune-deploy-"),
+      (r) => ((r as Record<string, unknown>).deploymentId as string).startsWith(prefix),
     );
-    expect(pruneResults.length).toBe(5);
+    expect(pruneResults.length).toBe(100);
+    const deploymentIds = new Set(pruneResults.map(
+      (r) => (r as Record<string, unknown>).deploymentId as string,
+    ));
+    expect(deploymentIds.has(`${prefix}-0`)).toBe(false);
+    expect(deploymentIds.has(`${prefix}-4`)).toBe(false);
+    expect(deploymentIds.has(`${prefix}-5`)).toBe(true);
+    expect(deploymentIds.has(`${prefix}-104`)).toBe(true);
   });
 
   it("hourly cron computes usage rollups", async () => {

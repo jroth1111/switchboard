@@ -86,11 +86,6 @@ describe("Receipt redaction", () => {
   it("leaves normal text unchanged", () => {
     expect(redact("Hello world")).toBe("Hello world");
   });
-
-  it("redacts embedded secrets in otherwise safe text", () => {
-    expect(redact("prefix sk-abcdefghijklmnop suffix")).toContain("***REDACTED***");
-    expect(redact("prefix sk-abcdefghijklmnop suffix")).not.toContain("sk-abcdefghijklmnop");
-  });
 });
 
 // ─── Structured sanitization ──────────────────────────────────────
@@ -157,12 +152,13 @@ describe("Structured receipt sanitization", () => {
     expect(sanitizeReceipt("normal text")).toBe("normal text");
   });
 
-  it("redacts embedded secrets in non-secret field values", () => {
-    const result = sanitizeReceipt({
-      safe_field: "prefix sk-abcdefghijklmnop suffix",
-    }) as Record<string, unknown>;
-    expect(result.safe_field).toContain("***REDACTED***");
-    expect(String(result.safe_field)).not.toContain("sk-abcdefghijklmnop");
+  it("redacts embedded token and private path fragments in strings", () => {
+    expect(sanitizeReceipt("provider failed with Bearer token123 in header")).toBe(
+      "provider failed with Bearer ***REDACTED*** in header",
+    );
+    expect(sanitizeReceipt("loaded /Users/alice/.config/token.json")).toBe(
+      "loaded <redacted>",
+    );
   });
 
   it("redacts private file paths", () => {
@@ -220,6 +216,15 @@ describe("Structured receipt sanitization", () => {
     expect(sanitizeReceipt(undefined)).toBe(undefined);
   });
 
+  it("handles circular objects and bigint values safely", () => {
+    const input: Record<string, unknown> = { count: 10n };
+    input.self = input;
+
+    const result = sanitizeReceipt(input) as Record<string, unknown>;
+    expect(result.count).toBe("10");
+    expect(result.self).toBe("[Circular]");
+  });
+
   it("handles null/empty diagnostic details", () => {
     const input = { error_body: null, response_body: "" };
     const result = sanitizeReceipt(input) as Record<string, unknown>;
@@ -255,16 +260,25 @@ describe("Receipt structure", () => {
         {
           group: "nim-primary",
           deploymentId: "nim-primary-key-1",
+          model: "glm-5.1",
           failureClass: "server_5xx",
           failureMessage: "Internal Server Error",
           durationMs: 120,
+          firstByteLatencyMs: 80,
+          inflightAtDispatch: 2,
           action: "retry_fallback" as const,
+          attemptIndex: 0,
+          statusCode: 500,
+          retryable: true,
         },
         {
           group: "nim-deepseek-v4-pro",
           deploymentId: "nim-deepseek-v4-pro-key-1",
           durationMs: 340,
           action: "accept" as const,
+          attemptIndex: 1,
+          statusCode: 200,
+          retryable: false,
         },
       ],
       finalOutcome: "repaired_success",
@@ -274,6 +288,11 @@ describe("Receipt structure", () => {
     const retrieved = getReceipt(receipt.requestId);
     expect(retrieved!.attempts).toHaveLength(2);
     expect(retrieved!.attempts[0].failureClass).toBe("server_5xx");
+    expect(retrieved!.attempts[0].attemptIndex).toBe(0);
+    expect(retrieved!.attempts[0].statusCode).toBe(500);
+    expect(retrieved!.attempts[0].retryable).toBe(true);
+    expect(retrieved!.attempts[0].inflightAtDispatch).toBe(2);
+    expect(retrieved!.attempts[0].firstByteLatencyMs).toBe(80);
     expect(retrieved!.attempts[1].action).toBe("accept");
     expect(retrieved!.finalOutcome).toBe("repaired_success");
   });

@@ -16,10 +16,11 @@ const defaultEvalConfig: ResponseEvaluationConfig = {
   stripReasoningFromSuccess: true,
   enableSchemaAwareRepair: false,
   repairPolicy: {
-    allowDestructive: true,
+    allowDestructive: false,
     enumAliases: {},
     toolNameAliases: {},
     relationalDefaults: {},
+    configuredPatterns: [],
   },
 };
 
@@ -148,41 +149,94 @@ describe("response evaluator", () => {
 
   it("rejects tool calls when the request did not define tools", () => {
     const result = evaluateResponse(
-      { messages: [{ role: "user", content: "hello" }] },
+      { messages: [{ role: "user", content: "weather?" }] },
       makeResponse("", "tool_calls", [
-        { function: { name: "get_weather", arguments: "{}" } },
+        { function: { name: "get_weather", arguments: "{\"city\":\"SF\"}" } },
       ]),
       defaultEvalConfig,
     );
+
     expect(result.action).toBe("retry_fallback");
     expect(result.failureClass).toBe("tool_contract_failure");
-    expect(result.failureMessage).toContain("without requested tools");
+    expect(result.failureMessage).toBe("tool_calls_without_requested_tools");
   });
 
-  it("rejects schema-invalid tool arguments when contract validation passes", () => {
+  it("rejects malformed non-array tool_calls payloads", () => {
+    const response = makeResponse("");
+    (response.choices[0].message as Record<string, unknown>).tool_calls = { function: { name: "get_weather" } };
+
+    const result = evaluateResponse(
+      { messages: [{ role: "user", content: "weather?" }], tools: [{ type: "function", function: { name: "get_weather" } }] },
+      response,
+      defaultEvalConfig,
+    );
+
+    expect(result.action).toBe("retry_fallback");
+    expect(result.failureClass).toBe("tool_contract_failure");
+    expect(result.failureMessage).toBe("tool_calls_not_array");
+  });
+
+  it("applies schema-aware name and argument repair before accepting tool calls", () => {
     const result = evaluateResponse(
       {
-        messages: [{ role: "user", content: "weather?" }],
+        messages: [{ role: "user", content: "read file" }],
         tools: [{
           type: "function",
           function: {
-            name: "get_weather",
+            name: "readFile",
             parameters: {
               type: "object",
-              properties: { city: { type: "string" } },
-              required: ["city"],
+              required: ["path"],
+              additionalProperties: false,
+              properties: {
+                path: { type: "string", format: "path" },
+                limit: { type: "integer" },
+                encoding: { type: "string" },
+              },
             },
           },
         }],
       },
-      makeResponse("", "tool_calls", [
-        { function: { name: "get_weather", arguments: '{"city": 123}' } },
-      ]),
-      defaultEvalConfig,
+      makeResponse("", "tool_calls", [{
+        id: "call_1",
+        type: "function",
+        function: {
+          name: "read_file",
+          arguments: JSON.stringify({
+            path: "/proj/[notes.md](http://notes.md)",
+            limit: "7",
+            encoding: null,
+          }),
+        },
+      }]),
+      {
+        ...defaultEvalConfig,
+        enableSchemaAwareRepair: true,
+        repairPolicy: {
+          ...defaultEvalConfig.repairPolicy,
+          allowDestructive: true,
+          toolNameAliases: { read_file: "readFile" },
+        },
+      },
     );
-    expect(result.action).toBe("retry_fallback");
-    expect(result.failureClass).toBe("tool_contract_failure");
-    expect(result.failureMessage).toContain("schema_invalid");
+
+    expect(result.action).toBe("repair_accept");
+    const repairedMessage = (result.repairedResponse!.choices as Array<Record<string, unknown>>)[0].message as Record<string, unknown>;
+    const repairedCall = (repairedMessage.tool_calls as Array<Record<string, unknown>>)[0];
+    const repairedFunction = repairedCall.function as Record<string, unknown>;
+    expect(repairedFunction.name).toBe("readFile");
+    expect(JSON.parse(repairedFunction.arguments as string)).toEqual({
+      path: "/proj/notes.md",
+      limit: 7,
+    });
+    const repairKinds = result.repairRecords?.map((record) => record.repairKind) ?? [];
+    expect(repairKinds).toHaveLength(4);
+    expect(repairKinds).toEqual(expect.arrayContaining([
+      "tool_name_alias",
+      "omit_optional_null",
+      "coerce_numeric_string",
+      "unwrap_markdown_autolink",
+    ]));
   });
 });
 
@@ -196,14 +250,14 @@ describe("thinking leak stripping", () => {
   });
 
   it("strips properly formed thinking tags", () => {
-    const input = "<think\nSome reasoning here\n</think\nThe actual answer.";
-    const result = stripThinkingLeaks("<think Some reasoning </think The answer.");
+    const input = "<think Some reasoning </think The answer.";
+    const result = stripThinkingLeaks(input);
     expect(result).toContain("The answer");
   });
 
   it("strips unclosed thinking tags", () => {
     const input = "<think\nSome reasoning that was never closed...";
-    const result = stripThinkingLeaks("<think Some reasoning that was never closed...");
+    const result = stripThinkingLeaks(input);
     expect(result).not.toContain("<think");
   });
 });

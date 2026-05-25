@@ -15,6 +15,7 @@ function makeEnvelope(overrides: Record<string, unknown> = {}) {
     hasTypedContent: false,
     requiresJsonMode: false,
     requiresReasoning: false,
+    isMultiTool: false,
     ...overrides,
   };
 }

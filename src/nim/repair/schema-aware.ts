@@ -56,6 +56,7 @@ export interface RepairPolicyConfig {
   enumAliases: Record<string, Record<string, string>>;
   toolNameAliases: Record<string, string>;
   relationalDefaults: Record<string, RelationalDefaultRule[]>;
+  configuredPatterns?: RegExp[];
 }
 
 export interface SchemaRepairResult {
@@ -202,7 +203,7 @@ export interface SchemaIssue {
 const MAX_VALIDATE_DEPTH = 16; // see src/config/constants.ts
 
 export function validateAgainstSchema(
-  value: Record<string, unknown>,
+  value: unknown,
   schema: ToolParameterSchema,
   policy: RepairPolicyConfig,
 ): SchemaIssue[] {
@@ -242,7 +243,7 @@ function validateNode(
     for (const [key, childValue] of Object.entries(obj)) {
       const childSchema = props[key];
       if (!childSchema) {
-        if (effectiveSchema.additionalProperties === false && policy.allowDestructive) {
+        if (effectiveSchema.additionalProperties === false) {
           issues.push({ path: `${path}.${key}`, code: "unknown_key", expected: "known property", actual: childValue });
         }
         continue;
@@ -304,30 +305,25 @@ function validateNode(
 }
 
 function resolveSchemaForValue(value: unknown, schema: ToolParameterSchema): ToolParameterSchema {
-  if (Array.isArray(schema.type)) {
-    for (const t of schema.type) {
-      if (typeMatches(value, t)) return { ...schema, type: t };
-    }
-    const fallback = schema.type.find((t) => t !== "null") ?? schema.type[0];
-    return { ...schema, type: fallback };
+  const types = schemaTypes(schema);
+  if (types.length > 0) {
+    const matched = types.find((type) => typeMatches(value, type));
+    const fallback = types.find((type) => type !== "null") ?? types[0];
+    return { ...schema, type: matched ?? fallback };
   }
-  if (schema.type) return schema;
 
   const alternatives = schema.anyOf ?? schema.oneOf;
   if (!alternatives || alternatives.length === 0) return schema;
 
   for (const alt of alternatives) {
-    if (!alt.type) continue;
-    if (typeMatches(value, alt.type)) return alt;
+    const altTypes = schemaTypes(alt);
+    if (altTypes.some((type) => typeMatches(value, type))) return alt;
   }
 
   return alternatives[0] ?? schema;
 }
 
-function typeMatches(value: unknown, type: string | string[]): boolean {
-  if (Array.isArray(type)) {
-    return type.some((t) => typeMatches(value, t));
-  }
+function typeMatches(value: unknown, type: string): boolean {
   switch (type) {
     case "object": return isPlainObject(value);
     case "array": return Array.isArray(value);
@@ -361,6 +357,18 @@ function applyFirstSchemaRepair(
   return null;
 }
 
+function applySetAtPath(root: Record<string, unknown>, path: string, value: unknown): Record<string, unknown> {
+  if (path === "") return value as Record<string, unknown>;
+  setAtPath(root, path, value);
+  return root;
+}
+
+function applyDeleteAtPath(root: Record<string, unknown>, path: string): Record<string, unknown> {
+  if (path === "") return {};
+  deleteAtPath(root, path);
+  return root;
+}
+
 function tryRepairIssue(
   root: Record<string, unknown>,
   issue: SchemaIssue,
@@ -374,9 +382,8 @@ function tryRepairIssue(
   // 1. Omit optional null
   if (issue.code === "type" && current === null && fieldSchema) {
     if (isOptionalField(rootSchema, issue.path)) {
-      deleteAtPath(root, issue.path);
       return {
-        value: root,
+        value: applyDeleteAtPath(root, issue.path),
         repair: { toolName, fieldPath: issue.path, repairKind: "omit_optional_null", before: "null", after: "(omitted)" },
       };
     }
@@ -385,9 +392,8 @@ function tryRepairIssue(
   // 2. Prune unknown keys
   if (issue.code === "unknown_key" && policy.allowDestructive) {
     const before = JSON.stringify(getAtPath(root, issue.path));
-    deleteAtPath(root, issue.path);
     return {
-      value: root,
+      value: applyDeleteAtPath(root, issue.path),
       repair: { toolName, fieldPath: issue.path, repairKind: "prune_extra_keys", before, after: "(omitted)" },
     };
   }
@@ -406,16 +412,14 @@ function tryRepairIssue(
     try {
       const parsed = JSON.parse(trimmed);
       if (effectiveSchema.type === "array" && Array.isArray(parsed)) {
-        setAtPath(root, issue.path, parsed);
         return {
-          value: root,
+          value: applySetAtPath(root, issue.path, parsed),
           repair: { toolName, fieldPath: issue.path, repairKind: "parse_stringified_array", before: current, after: JSON.stringify(parsed) },
         };
       }
       if (effectiveSchema.type === "object" && isPlainObject(parsed)) {
-        setAtPath(root, issue.path, parsed);
         return {
-          value: root,
+          value: applySetAtPath(root, issue.path, parsed),
           repair: { toolName, fieldPath: issue.path, repairKind: "parse_stringified_object", before: current, after: JSON.stringify(parsed) },
         };
       }
@@ -428,9 +432,8 @@ function tryRepairIssue(
   if ((issue.code === "path_markdown_autolink" || issue.code === "type") && typeof current === "string" && (effectiveSchema.format === "path" || looksLikePathField(issue.path))) {
     const unwrapped = unwrapDegenerateMarkdownAutolink(current);
     if (unwrapped !== current) {
-      setAtPath(root, issue.path, unwrapped);
       return {
-        value: root,
+        value: applySetAtPath(root, issue.path, unwrapped),
         repair: { toolName, fieldPath: issue.path, repairKind: "unwrap_markdown_autolink", before: current, after: unwrapped },
       };
     }
@@ -440,9 +443,8 @@ function tryRepairIssue(
   if (issue.code === "type" && effectiveSchema.type === "boolean" && typeof current === "string") {
     const bool = parseBooleanString(current);
     if (bool !== null) {
-      setAtPath(root, issue.path, bool);
       return {
-        value: root,
+        value: applySetAtPath(root, issue.path, bool),
         repair: { toolName, fieldPath: issue.path, repairKind: "coerce_string_boolean", before: current, after: String(bool) },
       };
     }
@@ -452,9 +454,8 @@ function tryRepairIssue(
   if (issue.code === "type" && (effectiveSchema.type === "number" || effectiveSchema.type === "integer") && typeof current === "string") {
     const num = parseNumericString(current);
     if (num !== null && (effectiveSchema.type === "number" || Number.isInteger(num))) {
-      setAtPath(root, issue.path, num);
       return {
-        value: root,
+        value: applySetAtPath(root, issue.path, num),
         repair: { toolName, fieldPath: issue.path, repairKind: "coerce_numeric_string", before: current, after: String(num) },
       };
     }
@@ -465,9 +466,8 @@ function tryRepairIssue(
     const trimmed = current.trim();
     if (trimmed.length > 0) {
       const arr = [trimmed];
-      setAtPath(root, issue.path, arr);
       return {
-        value: root,
+        value: applySetAtPath(root, issue.path, arr),
         repair: { toolName, fieldPath: issue.path, repairKind: "wrap_bare_string_to_array", before: current, after: JSON.stringify(arr) },
       };
     }
@@ -478,12 +478,11 @@ function tryRepairIssue(
     const obj = current as Record<string, unknown>;
     const after = Object.keys(obj).length === 0
       ? []
-      : effectiveSchema.items?.type === "object" ? [obj] : null;
+      : effectiveSchema.items && schemaHasType(effectiveSchema.items, "object") ? [obj] : null;
 
     if (after !== null) {
-      setAtPath(root, issue.path, after);
       return {
-        value: root,
+        value: applySetAtPath(root, issue.path, after),
         repair: { toolName, fieldPath: issue.path, repairKind: "wrap_object_to_array", before: JSON.stringify(current), after: JSON.stringify(after) },
       };
     }
@@ -499,9 +498,8 @@ function tryRepairIssue(
 
     const target = aliasTarget ?? caseTarget;
     if (target && effectiveSchema.enum.includes(target)) {
-      setAtPath(root, issue.path, target);
       return {
-        value: root,
+        value: applySetAtPath(root, issue.path, target),
         repair: { toolName, fieldPath: issue.path, repairKind: "enum_near_miss", before: current, after: target },
       };
     }
@@ -608,13 +606,18 @@ export function repairToolCallsSchemaAware(
     const rawArgs = fn.arguments;
     if (typeof rawArgs === "string") {
       try {
-        args = JSON.parse(rawArgs) as Record<string, unknown>;
+        const parsed = JSON.parse(rawArgs) as unknown;
+        if (!isPlainObject(parsed)) {
+          repairedCalls.push({ ...tc, function: { ...fn, name: resolvedName } });
+          continue;
+        }
+        args = parsed;
       } catch {
         repairedCalls.push({ ...tc, function: { ...fn, name: resolvedName } });
         continue;
       }
     } else if (isPlainObject(rawArgs)) {
-      args = structuredClone(rawArgs) as Record<string, unknown>;
+      args = { ...(rawArgs as Record<string, unknown>) };
     } else {
       repairedCalls.push({ ...tc, function: { ...fn, name: resolvedName } });
       continue;
@@ -629,7 +632,7 @@ export function repairToolCallsSchemaAware(
 
     const toolPolicy: RepairPolicyConfig = {
       ...policy,
-      allowDestructive: policy.allowDestructive && !isDestructiveToolName(resolvedName),
+      allowDestructive: policy.allowDestructive && !isDestructiveToolName(resolvedName, policy.configuredPatterns),
     };
 
     const result = repairToolArguments(resolvedName, args, schema, toolPolicy);
@@ -760,7 +763,7 @@ function schemaAtPath(schema: ToolParameterSchema, path: string): ToolParameterS
     const resolved = resolveSchemaForTraversal(current);
     if (resolved.type === "object") {
       current = resolved.properties?.[part.key] ?? null;
-      if (part.index !== undefined && current?.type === "array") {
+      if (part.index !== undefined && current && schemaHasType(current, "array")) {
         current = current.items ?? null;
       }
       continue;
@@ -775,16 +778,18 @@ function schemaAtPath(schema: ToolParameterSchema, path: string): ToolParameterS
 }
 
 function resolveSchemaForTraversal(schema: ToolParameterSchema): ToolParameterSchema {
-  if (Array.isArray(schema.type)) {
-    const fallback = schema.type.find((t) => t !== "null") ?? schema.type[0];
-    return { ...schema, type: fallback };
+  const types = schemaTypes(schema);
+  if (types.length > 0) {
+    const preferred = types.find((type) => type === "object" || type === "array")
+      ?? types.find((type) => type !== "null")
+      ?? types[0];
+    return { ...schema, type: preferred };
   }
-  if (schema.type) return schema;
   const alternatives = schema.anyOf ?? schema.oneOf;
   if (!alternatives || alternatives.length === 0) return schema;
   // Prefer the first branch with a type (usually the primary variant)
   for (const alt of alternatives) {
-    if (alt.type === "object" || alt.type === "array") return alt;
+    if (schemaHasType(alt, "object") || schemaHasType(alt, "array")) return alt;
   }
   return alternatives[0] ?? schema;
 }
@@ -792,7 +797,6 @@ function resolveSchemaForTraversal(schema: ToolParameterSchema): ToolParameterSc
 function isOptionalField(schema: ToolParameterSchema, path: string): boolean {
   const parts = parsePath(path);
   if (parts.length === 0) return false;
-
   const lastPart = parts[parts.length - 1];
   if (lastPart.index !== undefined) {
     const itemsSchema = schemaAtPath(schema, path.replace(/\[\d+\]$/, ""));
@@ -831,12 +835,10 @@ function isOptionalField(schema: ToolParameterSchema, path: string): boolean {
 }
 
 function schemaAllowsNull(schema: ToolParameterSchema): boolean {
-  if (schema.type === "null") return true;
-  // Array of types like ["string", "null"]
-  if (Array.isArray(schema.type) && schema.type.includes("null")) return true;
+  if (schemaTypes(schema).includes("null")) return true;
   // anyOf/oneOf containing null
   const alternatives = schema.anyOf ?? schema.oneOf;
-  if (alternatives?.some((a) => a.type === "null")) return true;
+  if (alternatives?.some((a) => schemaHasType(a, "null"))) return true;
   return false;
 }
 
@@ -889,4 +891,14 @@ const PATH_FIELD_RE = /(?:path|filepath|absolutepath|relativepath|uri|filename|f
 function looksLikePathField(path: string): boolean {
   const fieldName = path.split(".").pop()?.split("[").shift() ?? "";
   return PATH_FIELD_RE.test(fieldName);
+}
+
+function schemaTypes(schema: ToolParameterSchema): string[] {
+  const type = schema.type;
+  if (Array.isArray(type)) return type.filter((item): item is string => typeof item === "string" && item.length > 0);
+  return typeof type === "string" && type.length > 0 ? [type] : [];
+}
+
+function schemaHasType(schema: ToolParameterSchema, type: string): boolean {
+  return schemaTypes(schema).includes(type);
 }

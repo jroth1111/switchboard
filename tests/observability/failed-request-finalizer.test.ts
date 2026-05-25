@@ -98,6 +98,40 @@ describe("failedRequestSummaryFromReceipt", () => {
     expect(summary!.issueCode).toBeUndefined();
   });
 
+  it("extracts summary from zero-attempt denial receipts", () => {
+    const receipt = makeReceipt({
+      finalOutcome: "client_error",
+      canonicalTarget: "denied",
+      selectedGroup: "denied",
+      fallbackGroups: [],
+      denialReason: "model_not_allowed",
+      attempts: [],
+    });
+    const summary = failedRequestSummaryFromReceipt(receipt);
+
+    expect(summary).not.toBeNull();
+    expect(summary!.canonicalTarget).toBe("denied");
+    expect(summary!.selectedModel).toBe("denied");
+    expect(summary!.selectedDeploymentId).toBeUndefined();
+    expect(summary!.failureClass).toBe("model_not_allowed");
+    expect(summary!.issueCode).toBe("model_not_allowed");
+    expect(summary!.attemptsCount).toBe(0);
+    expect(summary!.attempts).toEqual([]);
+  });
+
+  it("extracts summary from zero-attempt exhausted receipts", () => {
+    const receipt = makeReceipt({
+      finalOutcome: "exhausted",
+      attempts: [],
+    });
+    const summary = failedRequestSummaryFromReceipt(receipt);
+
+    expect(summary).not.toBeNull();
+    expect(summary!.failureClass).toBe("exhausted");
+    expect(summary!.issueCode).toBe("all_groups_exhausted");
+    expect(summary!.attemptsCount).toBe(0);
+  });
+
   it("uses first failure class when last attempt has none", () => {
     const receipt = makeReceipt({
       finalOutcome: "exhausted",

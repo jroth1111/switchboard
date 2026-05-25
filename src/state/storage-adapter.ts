@@ -16,6 +16,7 @@ export interface StorageAdapter {
   }): void;
   confirmReservation(reservationId: string): { deploymentId: string } | null;
   deleteReservation(reservationId: string): { deploymentId: string } | null;
+  countReservations(deploymentId: string): number;
 
   // Inflight
   pruneStaleInflight(olderThan: number): void;
@@ -108,6 +109,12 @@ export class InMemoryStorageAdapter implements StorageAdapter {
     for (const [k, v] of this.keyWindows) {
       if (v.windowStart < olderThan) this.keyWindows.delete(k);
     }
+    for (const [k, v] of this.groupWindows) {
+      if (v.windowStart < olderThan) this.groupWindows.delete(k);
+    }
+    for (const [k, v] of this.tokenWindows) {
+      if (v.windowStart < olderThan) this.tokenWindows.delete(k);
+    }
   }
 
   getKeyRpm(keyRef: string, since: number): number {
@@ -154,6 +161,14 @@ export class InMemoryStorageAdapter implements StorageAdapter {
     if (!r) return null;
     this.reservations.delete(reservationId);
     return { deploymentId: r.deploymentId };
+  }
+
+  countReservations(deploymentId: string): number {
+    let count = 0;
+    for (const reservation of this.reservations.values()) {
+      if (reservation.deploymentId === deploymentId) count++;
+    }
+    return count;
   }
 
   pruneStaleInflight(olderThan: number): void {

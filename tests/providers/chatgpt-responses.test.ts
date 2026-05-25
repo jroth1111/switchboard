@@ -159,6 +159,20 @@ describe("ChatGPT Responses provider contract", () => {
       structuredAuth({ access_token: "oauth-token" }),
     )).toThrow(/must not configure provider body params/);
   });
+
+  it("rejects ChatGPT Responses deployments without a supported reasoning effort", () => {
+    expect(() => buildChatGPTResponsesRequest(
+      deployment({ reasoningEffort: undefined }),
+      { model: "gpt-5.5", input: "OK" },
+      structuredAuth({ access_token: "oauth-token" }),
+    )).toThrow(/require reasoningEffort/);
+
+    expect(() => buildChatGPTResponsesRequest(
+      deployment({ reasoningEffort: "ultra" }),
+      { model: "gpt-5.5", input: "OK" },
+      structuredAuth({ access_token: "oauth-token" }),
+    )).toThrow(/Unsupported ChatGPT Responses reasoningEffort/);
+  });
 });
 
 // ─── validateResponsesContract ───────────────────────────────────────

@@ -1,7 +1,6 @@
 // Anthropic subscription-specific failure classification.
 // Claude Code OAuth failures are health-neutral and account-scoped.
 
-import type { FailureClass } from "../config/schema";
 import type { ProviderFailureClassification } from "../nim/classify/provider-failure";
 
 export function classifyAnthropicFailure(
@@ -32,6 +31,15 @@ export function classifyAnthropicFailure(
 
   // Permission / subscription issue
   if (status === 403) {
+    if (isSubscriptionLimit(bodyLower)) {
+      return {
+        failureClass: "subscription_limit",
+        cooldownSeconds: 300,
+        affectsHealth: false,
+        affectsAccount: true,
+        details: "anthropic_subscription_limit",
+      };
+    }
     return {
       failureClass: "oauth_session_failure",
       cooldownSeconds: 60,
@@ -43,8 +51,9 @@ export function classifyAnthropicFailure(
 
   // Rate limit
   if (status === 429) {
-    // Anthropic rate limits can indicate usage tier limits
-    if (bodyLower.includes("usage") || bodyLower.includes("tier") || bodyLower.includes("limit")) {
+    // Subscription/usage exhaustion is account-scoped; ordinary rate limiting
+    // remains provider-health-affecting and retryable.
+    if (isSubscriptionLimit(bodyLower)) {
       return {
         failureClass: "subscription_limit",
         cooldownSeconds: 120,
@@ -96,4 +105,16 @@ export function classifyAnthropicFailure(
     affectsAccount: false,
     details: `anthropic_unclassified_${status}`,
   };
+}
+
+function isSubscriptionLimit(bodyLower: string): boolean {
+  return bodyLower.includes("usage")
+    || bodyLower.includes("quota")
+    || bodyLower.includes("tier")
+    || bodyLower.includes("subscription")
+    || bodyLower.includes("billing")
+    || bodyLower.includes("credit")
+    || bodyLower.includes("balance")
+    || bodyLower.includes("monthly limit")
+    || bodyLower.includes("account limit");
 }

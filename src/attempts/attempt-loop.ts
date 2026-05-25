@@ -18,6 +18,7 @@ import { evaluateResponse, type ResponseEvaluationConfig } from "../nim/evaluate
 import { classifyRateLimit } from "../nim/classify/rate-limit";
 import { wrapSubscriptionStream, type SubscriptionStreamFormat } from "../streaming/format-converter";
 import { classifyProviderFailure, classifyThrownError, SubscriptionTokenError, type ProviderFailureClassification } from "../nim/classify/provider-failure";
+import { openAIErrorJson } from "../providers/openai-error-shape";
 import { buildConfiguredPatterns } from "../nim/repair/aliases";
 import { executeStreamWithPreBuffer, type PreBufferConfig, type StreamDone } from "../streaming/pre-buffer";
 import { logInfo, logWarn } from "../observability/logging";
@@ -728,9 +729,10 @@ async function handleNonStreamingAttempt(
       model: deployment.providerModel, stream: false, finalOutcome: "fail_client",
       ...usageEventFromTokenUsage(clientUsage),
     });
-    const errResp = new Response(JSON.stringify({
-      error: { message: evaluation.failureMessage, type: evaluation.failureClass },
-    }), { status: 400, headers: { "Content-Type": "application/json" } });
+    const errResp = new Response(
+      openAIErrorJson(evaluation.failureClass, evaluation.failureMessage ?? "request failed", envelope.requestId),
+      { status: 400, headers: { "Content-Type": "application/json" } },
+    );
     return { success: false, response: errResp, failureClass: evaluation.failureClass, attempts };
   }
 

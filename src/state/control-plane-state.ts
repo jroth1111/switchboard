@@ -315,6 +315,7 @@ export class ControlPlaneStateDO extends DurableObject {
     this.ensureColumn("usage_events", "policy_id", "TEXT");
     this.ensureColumn("usage_events", "policy_version", "TEXT");
     this.ensureColumn("usage_events", "route_version", "TEXT");
+    this.ensureColumn("usage_events", "estimated_cost_usd", "REAL");
     this.ensureColumn("client_request_events", "route_decision_json", "TEXT");
     this.ensureColumn("client_request_events", "policy_version", "TEXT");
     this.ensureColumn("client_request_events", "route_version", "TEXT");
@@ -819,7 +820,7 @@ export class ControlPlaneStateDO extends DurableObject {
     canonicalTarget: string; selectedGroup: string; deploymentId: string;
     provider: string; model: string; stream: boolean; finalOutcome: string;
     usageKind: string; promptTokens: number | null; completionTokens: number | null;
-    totalTokens: number | null; usageSource: string;
+    totalTokens: number | null; usageSource: string; estimatedCostUsd?: number | null;
   }): Promise<void> {
     this.ensureSchema();
     this.ctx.storage.sql.exec(
@@ -827,15 +828,15 @@ export class ControlPlaneStateDO extends DurableObject {
          (request_id, attempt_index, timestamp, client_id, app_id, user_hash, policy_id, policy_version, route_version,
           canonical_target, selected_group,
           deployment_id, provider, model, stream, final_outcome,
-          usage_kind, prompt_tokens, completion_tokens, total_tokens, usage_source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          usage_kind, prompt_tokens, completion_tokens, total_tokens, usage_source, estimated_cost_usd)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       event.requestId, event.attemptIndex, event.timestamp,
       event.clientId ?? null, event.appId ?? null, event.userHash ?? null, event.policyId ?? null,
       event.policyVersion ?? null, event.routeVersion ?? null,
       event.canonicalTarget, event.selectedGroup, event.deploymentId,
       event.provider, event.model, event.stream ? 1 : 0, event.finalOutcome,
       event.usageKind, event.promptTokens, event.completionTokens,
-      event.totalTokens, event.usageSource,
+      event.totalTokens, event.usageSource, event.estimatedCostUsd ?? null,
     );
     this.ctx.storage.sql.exec("DELETE FROM usage_events WHERE timestamp < ?", Date.now() - 30 * 86400000);
   }
@@ -997,6 +998,7 @@ function mapUsageEventRow(row: Record<string, unknown>): Record<string, unknown>
     stream: row.stream === 1, finalOutcome: row.final_outcome, usageKind: row.usage_kind,
     promptTokens: row.prompt_tokens, completionTokens: row.completion_tokens,
     totalTokens: row.total_tokens, usageSource: row.usage_source,
+    estimatedCostUsd: row.estimated_cost_usd ?? null,
   };
 }
 

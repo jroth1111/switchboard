@@ -23,6 +23,7 @@ import { executeStreamWithPreBuffer, type PreBufferConfig, type StreamDone } fro
 import { logInfo, logWarn } from "../observability/logging";
 import { applyDeploymentRuntimeOverrides } from "../config/runtime-overrides";
 import { applyPolicyCooldown } from "../config/policy-cooldown";
+import { promoteProfileFallbacks } from "./fallback-sequence";
 import {
   buildFilterStateFromHealth,
   filterCandidates,
@@ -121,7 +122,7 @@ export async function executeAttemptLoop(
   const startTime = Date.now();
   let attemptIndex = 0;
 
-  const { sequence: attemptSequence, health: durableHealth } = await orderAttemptSequenceWithHealth([
+  let { sequence: attemptSequence, health: durableHealth } = await orderAttemptSequenceWithHealth([
     { group: plan.selectedGroup, policy: plan.selectedPolicy, deployments: plan.selectedDeployments },
     ...plan.fallbackSequence,
   ], plan, envelope, stateDo);
@@ -251,6 +252,11 @@ export async function executeAttemptLoop(
           if (lastAttempt.action === "retry_same" && semanticRetriesLeft > 0) { semanticRetriesLeft--; continue; }
           if (transportRetriesLeft > 0) { transportRetriesLeft--; continue; }
         }
+        if (lastAttempt?.failureClass) {
+          attemptSequence = promoteProfileFallbacks(
+            attemptSequence, modelIndex + 1, lastAttempt.failureClass, plan.selectedGroup,
+          );
+        }
         break;
       } catch (err) {
         const failure = classifyThrownError(err);
@@ -276,6 +282,9 @@ export async function executeAttemptLoop(
           model: deployment.providerModel, stream: false, finalOutcome: "retry_fallback", usageSource: deployment.provider,
         });
         if (isRetryable && transportRetriesLeft > 0) { transportRetriesLeft--; continue; }
+        attemptSequence = promoteProfileFallbacks(
+          attemptSequence, modelIndex + 1, failure.failureClass, plan.selectedGroup,
+        );
         break;
       } finally {
         if (releaseInFinally) await stateDo.release(admission.reservationId!);

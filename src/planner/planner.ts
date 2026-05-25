@@ -7,6 +7,7 @@ import type {
   Deployment, RouteGroup, Policy, Surface, Operation, FailureClass, ContentClass,
 } from "../config/schema";
 import { hasTypedContentNormalization, normalizeTypedContentParts } from "../nim/repair/content-parts";
+import { classifyPromptComplexity, smartRouteModelForTier } from "./complexity-router";
 
 const MULTIMODAL_PART_TYPES = new Set(["image_url", "input_image", "image", "audio", "input_audio"]);
 const VISIBLE_TEXT_PART_TYPES = new Set(["text", "input_text", "output_text", "summary_text"]);
@@ -387,11 +388,19 @@ export interface PlanReceiptDraft {
   }>;
 }
 
+export function resolveSmartRouteModel(envelope: RequestEnvelope): string {
+  const initial = canonicalize(envelope.originalModel);
+  if (initial.canonicalTarget !== "smart-route-worker") return envelope.originalModel;
+  const tier = classifyPromptComplexity(envelope.body.messages ?? envelope.body.input);
+  return smartRouteModelForTier(tier);
+}
+
 export function planRequest(
   envelope: RequestEnvelope,
   now = Date.now(),
 ): ExecutionPlan | null {
-  const canon = canonicalize(envelope.originalModel);
+  const planningModel = resolveSmartRouteModel(envelope);
+  const canon = canonicalize(planningModel);
   if (!canon.isManaged) return null;
 
   const candidates = selectCandidateGroups(canon.canonicalTarget, envelope);

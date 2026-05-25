@@ -388,6 +388,10 @@ export const MANIFEST: RouteManifest = {
     "smart-route-worker": {
       target: "zai-glm-5.1", hidden: false,
       fallbacks: ["nim-primary", "nim-deepseek-v4-pro", "nim-kimi-k2.5", "nim-minimax-m2.7"],
+      fallbackByProfile: {
+        context_window: ["nim-primary"],
+        general: ["nim-primary", "nim-deepseek-v4-pro", "nim-kimi-k2.5", "nim-minimax-m2.7"],
+      },
       planner: { toolGroup: "nim-tool-primary", strictToolGroup: "nim-tool-primary" },
     },
     "zai-glm-5.1-terminal-fallback": {

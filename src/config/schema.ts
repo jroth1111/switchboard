@@ -1,3 +1,5 @@
+import type { FallbackProfile } from "./fallback-profile";
+
 // ─── Provider types ───────────────────────────────────────────────
 
 export type ProviderType =
@@ -90,6 +92,7 @@ export interface RouteGroup {
   target: string;
   hidden: boolean;
   fallbacks: string[];
+  fallbackByProfile?: Partial<Record<FallbackProfile, string[]>>;
   dedicatedToolLane?: boolean;
   planner?: {
     toolGroup?: string;

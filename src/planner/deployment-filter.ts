@@ -36,6 +36,9 @@ export interface DurableHealthForFilter {
   circuits?: Record<string, { state?: string; halfOpenAfter?: number | null; failureCount?: number }>;
   inflight?: Record<string, { count?: number }>;
   learnedLimits?: Record<string, { maxParallel?: number; expiresAt?: number }>;
+  keyWindows?: Record<string, { windowStart?: number; count?: number }>;
+  groupWindows?: Record<string, { windowStart?: number; count?: number }>;
+  tokenWindows?: Record<string, { windowStart?: number; promptTokens?: number; completionTokens?: number }>;
   healthScores?: Record<string, { consecutiveFailureCount?: number }>;
 }
 
@@ -80,6 +83,31 @@ export function buildFilterStateFromHealth(
     state.healthScores.set(id, {
       consecutiveFailureCount: score.consecutiveFailureCount,
     });
+  }
+
+  for (const [scope, window] of Object.entries(health.keyWindows ?? {})) {
+    if (typeof window.windowStart === "number" && typeof window.count === "number") {
+      state.keyWindows.set(scope, { windowStart: window.windowStart, count: window.count });
+    }
+  }
+
+  for (const [group, window] of Object.entries(health.groupWindows ?? {})) {
+    if (typeof window.windowStart === "number" && typeof window.count === "number") {
+      state.groupWindows.set(group, { windowStart: window.windowStart, count: window.count });
+    }
+  }
+
+  for (const [keyRef, window] of Object.entries(health.tokenWindows ?? {})) {
+    if (
+      typeof window.windowStart === "number"
+      && (typeof window.promptTokens === "number" || typeof window.completionTokens === "number")
+    ) {
+      state.tokenWindows.set(keyRef, {
+        windowStart: window.windowStart,
+        promptTokens: window.promptTokens ?? 0,
+        completionTokens: window.completionTokens ?? 0,
+      });
+    }
   }
 
   return state;

@@ -3,7 +3,7 @@ import type { TokenUsage } from "./token-usage";
 
 export function estimateUsageCostUsd(
   provider: string,
-  usage: Pick<TokenUsage, "kind"> & Partial<Pick<TokenUsage, "promptTokens" | "completionTokens">>,
+  usage: TokenUsage,
   model?: string,
 ): number | null {
   if (usage.kind === "unknown") return null;

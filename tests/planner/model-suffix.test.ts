@@ -23,6 +23,22 @@ describe("applyModelSuffixToBody", () => {
     expect(r.requiresReasoning).toBe(false);
   });
 
+  it("rejects partially numeric thinking suffixes", () => {
+    const body = { model: "claude-sonnet-4-6-thinking-8000abc", messages: [] };
+    const r = applyModelSuffixToBody(body);
+    expect(r.model).toBe("claude-sonnet-4-6-thinking-8000abc");
+    expect(body.model).toBe("claude-sonnet-4-6-thinking-8000abc");
+    expect(body).not.toHaveProperty("thinking");
+    expect(r.requiresReasoning).toBe(false);
+  });
+
+  it("rejects suffixes without a base model", () => {
+    const body = { model: "-thinking-8000", messages: [] };
+    const r = applyModelSuffixToBody(body);
+    expect(r.model).toBe("-thinking-8000");
+    expect(r.requiresReasoning).toBe(false);
+  });
+
   it("canonicalize works on stripped model after suffix rewrite", () => {
     const body = { model: "claude-opus-4-7-thinking-5000", messages: [] };
     applyModelSuffixToBody(body);

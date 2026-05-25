@@ -22,12 +22,15 @@ export function applyModelSuffixToBody(body: Record<string, unknown>): ModelSuff
   }
 
   const budgetStr = raw.slice(idx + THINKING_SUFFIX.length);
+  if (!/^\d+$/.test(budgetStr)) {
+    return { model: raw, originalModel: raw, requiresReasoning: false };
+  }
   const budget = Number.parseInt(budgetStr, 10);
-  if (!Number.isFinite(budget) || budget <= 0) {
+  const stripped = raw.slice(0, idx);
+  if (!Number.isFinite(budget) || budget <= 0 || !stripped) {
     return { model: raw, originalModel: raw, requiresReasoning: false };
   }
 
-  const stripped = raw.slice(0, idx);
   body.model = stripped; // intentional mutation: envelope reads the same object downstream
   if (body.thinking === undefined) {
     body.thinking = { type: "enabled", budget_tokens: budget };

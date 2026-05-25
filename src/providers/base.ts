@@ -114,7 +114,11 @@ export async function executeProviderRequest(
   ctx: ProviderExecutionContext,
 ): Promise<ProviderResponse> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), ctx.timeoutMs);
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, ctx.timeoutMs);
 
   // Link external signal — attach listener first to avoid race
   const onExternalAbort = () => controller.abort();
@@ -149,6 +153,11 @@ export async function executeProviderRequest(
       body: bodyText,
       json,
     };
+  } catch (err) {
+    if (timedOut && isAbortError(err)) {
+      throw new DOMException(`Provider request timed out after ${ctx.timeoutMs}ms`, "TimeoutError");
+    }
+    throw err;
   } finally {
     clearTimeout(timeoutId);
     ctx.signal.removeEventListener("abort", onExternalAbort);
@@ -168,7 +177,11 @@ export async function executeStreamingProviderRequest(
   ctx: ProviderExecutionContext,
 ): Promise<StreamingProviderResult> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), ctx.timeoutMs);
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, ctx.timeoutMs);
 
   const onExternalAbort = () => controller.abort();
   ctx.signal.addEventListener("abort", onExternalAbort, { once: true });
@@ -191,6 +204,11 @@ export async function executeStreamingProviderRequest(
       status: response.status,
       headers: response.headers,
     };
+  } catch (err) {
+    if (timedOut && isAbortError(err)) {
+      throw new DOMException(`Provider stream timed out after ${ctx.timeoutMs}ms`, "TimeoutError");
+    }
+    throw err;
   } finally {
     clearTimeout(timeoutId);
     // Keep the external abort listener attached so the consumer of the
@@ -199,4 +217,8 @@ export async function executeStreamingProviderRequest(
     // consumer reading the body. The listener is cheap and will be GC'd
     // with the signal/response.
   }
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === "AbortError";
 }

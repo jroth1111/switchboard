@@ -8,9 +8,9 @@ import {
 } from "./operational-env.ts";
 
 const USAGE = `Usage:
-  CONTROL_PLANE_URL=http://127.0.0.1:8787 NIM_HEALTH_TOKEN=... npm run failures -- recent [filters]
-  CONTROL_PLANE_URL=http://127.0.0.1:8787 NIM_HEALTH_TOKEN=... npm run failures -- search [filters]
-  CONTROL_PLANE_URL=http://127.0.0.1:8787 NIM_HEALTH_TOKEN=... npm run failures -- show <receipt_id> [--include-receipt]
+  CONTROL_PLANE_URL=http://127.0.0.1:8787 NIM_HEALTH_TOKEN=... pnpm failures -- recent [filters]
+  CONTROL_PLANE_URL=http://127.0.0.1:8787 NIM_HEALTH_TOKEN=... pnpm failures -- search [filters]
+  CONTROL_PLANE_URL=http://127.0.0.1:8787 NIM_HEALTH_TOKEN=... pnpm failures -- show <receipt_id> [--include-receipt]
 
 Filters:
   --route <name>

@@ -36,7 +36,7 @@ const after = normalize(readFileSync(WORKER_TYPES_PATH, "utf8"));
 writeFileSync(WORKER_TYPES_PATH, after);
 
 if (mode === "check" && before !== after) {
-  console.error("worker-configuration.d.ts is out of date; run `npm run types:worker`.");
+  console.error("worker-configuration.d.ts is out of date; run `pnpm types:worker`.");
   process.exit(1);
 }
 

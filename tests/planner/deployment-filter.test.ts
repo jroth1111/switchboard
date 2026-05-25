@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  buildFilterStateFromHealth,
   filterCandidates,
   createEmptyFilterState,
   type FilterState,
@@ -166,6 +167,34 @@ describe("Deployment pre-routing filter", () => {
 
     expect(result.passed).toHaveLength(0);
     expect(result.rejected[0].reason).toBe("token_budget_exhausted");
+  });
+
+  it("builds runtime filter state from durable health windows", () => {
+    const now = Date.now();
+    const windowStart = Math.floor(now / 1000) * 1000;
+    const keyState = buildFilterStateFromHealth({
+      keyWindows: {
+        "test-group:TEST_KEY": { windowStart, count: 35 },
+      },
+    });
+    const groupState = buildFilterStateFromHealth({
+      groupWindows: {
+        "test-group": { windowStart, count: 2 },
+      },
+    });
+    const tokenState = buildFilterStateFromHealth({
+      tokenWindows: {
+        TEST_KEY: { windowStart, promptTokens: 50, completionTokens: 50 },
+      },
+    });
+
+    const keyResult = filterCandidates([makeDeployment({ rpm: 35 })], keyState, now);
+    const groupResult = filterCandidates([makeDeployment()], groupState, now, "per_key", { rpmLimit: 2 });
+    const tokenResult = filterCandidates([makeDeployment()], tokenState, now, "per_key", { tokenBudgetPerMinute: 100 });
+
+    expect(keyResult.rejected[0].reason).toBe("key_rpm_exhausted");
+    expect(groupResult.rejected[0].reason).toBe("group_rpm_exhausted");
+    expect(tokenResult.rejected[0].reason).toBe("token_budget_exhausted");
   });
 
   it("passes deployments in different RPM window", () => {

@@ -8,7 +8,7 @@ import {
   type SemanticValidationConfig,
 } from "../../src/nim/classify/semantic";
 import { classifyRateLimit } from "../../src/nim/classify/rate-limit";
-import { classifyProviderFailure } from "../../src/nim/classify/provider-failure";
+import { classifyProviderFailure, classifyThrownError } from "../../src/nim/classify/provider-failure";
 
 const defaultConfig: SemanticValidationConfig = {
   minChars: 1,
@@ -309,5 +309,17 @@ describe("provider failure classifier", () => {
   it("detects invalid model messages with a model name between words", () => {
     const result = classifyProviderFailure(400, "The model gpt-missing does not exist", "openai");
     expect(result.failureClass).toBe("invalid_model");
+  });
+
+  it("counts provider-owned timeouts against provider health", () => {
+    const result = classifyThrownError(new DOMException("Provider request timed out after 1ms", "TimeoutError"));
+    expect(result.failureClass).toBe("transport_timeout");
+    expect(result.affectsHealth).toBe(true);
+  });
+
+  it("does not count caller aborts against provider health", () => {
+    const result = classifyThrownError(new DOMException("Aborted", "AbortError"));
+    expect(result.failureClass).toBe("transport_timeout");
+    expect(result.affectsHealth).toBe(false);
   });
 });

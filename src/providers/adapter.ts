@@ -21,6 +21,7 @@ export interface ProviderBuildContext {
       clientId: string;
       clientSecret?: string;
       tokenUrl?: string;
+      accountIds?: string[];
     };
   };
 }

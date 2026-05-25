@@ -595,6 +595,68 @@ describe("Auth middleware", () => {
     }));
   });
 
+  it("rejects team-token-budgeted chat requests without an explicit output token cap", async () => {
+    const admitClientRequest = vi.fn(async (admissionRequest: { estimatedTokens?: number }) => ({
+      admitted: false,
+      reservationId: "client-reservation-1",
+      reason: "team_token_budget_exceeded",
+      message: `estimated ${admissionRequest.estimatedTokens} over team budget`,
+    }));
+    const storeReceipt = vi.fn(async () => {});
+    const storeClientRequest = vi.fn(async () => {});
+    const storeFailedRequest = vi.fn(async () => {});
+    const stateDo = { admitClientRequest, storeReceipt, storeClientRequest, storeFailedRequest };
+    const env = {
+      CLIENT_KEYS_JSON: JSON.stringify({
+        teams: { eng: { tokenBudgetPerMinute: 1200 } },
+        clients: [],
+      }),
+      CONTROL_PLANE_STATE: {
+        idFromName: vi.fn(() => "control-plane"),
+        get: vi.fn(() => stateDo),
+      },
+    } as unknown as Env;
+    const response = await handleChatCompletions(
+      new Request("https://example.com/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "smart-route",
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      env,
+      { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as unknown as ExecutionContext,
+      {
+        clientId: "hermes-alice",
+        appId: "hermes",
+        userHash: "user-hash",
+        policyId: "hermes-basic",
+        policyVersion: "hermes-basic:v1",
+        policy: { allowedModels: ["smart-route"], teamId: "eng" },
+        authSource: "client_keys_json",
+      },
+    );
+
+    expect(response.status).toBe(429);
+    expect(admitClientRequest).toHaveBeenCalledWith(expect.objectContaining({
+      clientId: "hermes-alice",
+      teamId: "eng",
+      teamTokenBudgetPerMinute: 1200,
+      estimatedTokens: 1201,
+    }));
+    expect(storeReceipt).toHaveBeenCalledWith(expect.objectContaining({
+      denialReason: "team_token_budget_exceeded",
+      fallbackGroups: [],
+    }));
+    expect(storeFailedRequest).toHaveBeenCalledWith(expect.objectContaining({
+      finalOutcome: "client_error",
+      failureClass: "team_token_budget_exceeded",
+      issueCode: "team_token_budget_exceeded",
+      attemptsCount: 0,
+    }));
+  });
+
   it("keeps hidden routes unavailable unless policy explicitly allows them", async () => {
     const req = new Request("https://example.com", {
       headers: { Authorization: "Bearer client-token" },

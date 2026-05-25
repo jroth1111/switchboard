@@ -45,7 +45,7 @@ interface SmokeReport {
 
 const args = new Set(process.argv.slice(2));
 if (args.has("--help") || args.has("-h")) {
-  console.log(`Usage: CONTROL_PLANE_URL=https://... [SWITCHBOARD_API_KEY=...] [ADMIN_API_KEY=...] npm run live:smoke
+  console.log(`Usage: CONTROL_PLANE_URL=https://... [SWITCHBOARD_API_KEY=...] [ADMIN_API_KEY=...] pnpm live:smoke
 
 Environment:
   CONTROL_PLANE_URL or LIVE_BASE_URL   Deployed control-plane Worker URL.

@@ -10,6 +10,11 @@ describe("chatgpt auth pool", () => {
     expect(list[0]).toContain("access_token");
   });
 
+  it("parses JSON array of env key names", () => {
+    const list = parseChatGPTAuthAccountsList(JSON.stringify(["CHATGPT_AUTH_ACCOUNT_1"]));
+    expect(list).toEqual(["CHATGPT_AUTH_ACCOUNT_1"]);
+  });
+
   it("rotates candidates by request id", () => {
     const env = {
       CHATGPT_AUTH_JSON: JSON.stringify({

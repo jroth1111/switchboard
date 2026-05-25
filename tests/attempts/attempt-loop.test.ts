@@ -71,9 +71,9 @@ function makeDeployment(overrides: Partial<Deployment> = {}): Deployment {
   };
 }
 
-function structuredChatGPTAuth(): string {
+function structuredChatGPTAuth(accessToken = "access-secret"): string {
   return JSON.stringify({
-    access_token: "access-secret",
+    access_token: accessToken,
     refresh_token: "refresh-secret",
     id_token: "id-secret",
   });
@@ -551,6 +551,42 @@ describe("ChatGPT Responses auth resolution in the attempt loop", () => {
       expect(result.success).toBe(true);
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(state.admit.mock.calls[0][0].candidates[0].keyRef).toBe("CHATGPT_AUTH_JSON");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("honors rotated ChatGPT auth accounts ahead of the primary account", async () => {
+    const envelope = { ...makeResponsesEnvelope(), requestId: "req-1" };
+    const plan = planRequest(envelope)!;
+    const state = makeAttemptState();
+    const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string>;
+      expect(headers.Authorization).toBe("Bearer secondary-secret");
+      return new Response(JSON.stringify({
+        id: "resp_rotated_auth",
+        model: "gpt-5.5",
+        output: [{ type: "message", content: [{ type: "output_text", text: "Rotated auth produced a complete successful response." }] }],
+        usage: { input_tokens: 2, output_tokens: 8 },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const result = await executeAttemptLoop(
+        envelope,
+        plan,
+        state as unknown as Parameters<typeof executeAttemptLoop>[2],
+        {
+          CHATGPT_AUTH_JSON: structuredChatGPTAuth("primary-secret"),
+          CHATGPT_AUTH_ACCOUNTS: JSON.stringify(["CHATGPT_AUTH_ACCOUNT_1"]),
+          CHATGPT_AUTH_ACCOUNT_1: structuredChatGPTAuth("secondary-secret"),
+        },
+        AbortSignal.timeout(5_000),
+      );
+
+      expect(result.success).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     } finally {
       vi.unstubAllGlobals();
     }

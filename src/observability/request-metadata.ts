@@ -13,10 +13,10 @@ export function extractRequestMetadata(request: Request): RequestMetadata {
   const traceId = sanitizeMetaValue(request.headers.get("X-Switchboard-Trace-Id")
     ?? request.headers.get("Helicone-Request-Id"));
   const properties: Record<string, string> = {};
-  for (const [key, value] of request.headers.entries()) {
+  request.headers.forEach((value, key) => {
     const lower = key.toLowerCase();
     if (!lower.startsWith("helicone-property-") && !lower.startsWith("x-switchboard-property-")) {
-      continue;
+      return;
     }
     const prefix = lower.startsWith("x-switchboard-property-")
       ? "x-switchboard-property-"
@@ -26,7 +26,7 @@ export function extractRequestMetadata(request: Request): RequestMetadata {
     if (v && Object.keys(properties).length < MAX_PROPERTIES) {
       properties[name] = v;
     }
-  }
+  });
   return {
     ...(sessionId ? { sessionId } : {}),
     ...(traceId ? { traceId } : {}),

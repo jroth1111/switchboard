@@ -963,4 +963,21 @@ describe("Base provider response execution", () => {
     expect(result.body).toBe("[1,2,3]");
     expect(result.json).toBeNull();
   });
+
+  it("surfaces provider-owned request timeouts as TimeoutError", async () => {
+    vi.stubGlobal("fetch", vi.fn((_url: RequestInfo | URL, init?: RequestInit) => new Promise((_resolve, reject) => {
+      const signal = init?.signal as AbortSignal;
+      signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+    })));
+
+    await expect(executeProviderRequest({
+      url: "https://provider.example/v1/chat/completions",
+      method: "POST",
+      headers: {},
+      body: "{}",
+    }, {
+      signal: new AbortController().signal,
+      timeoutMs: 1,
+    })).rejects.toMatchObject({ name: "TimeoutError" });
+  });
 });

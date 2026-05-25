@@ -8,6 +8,7 @@ import type { AdmissionRequest, AdmissionResponse } from "./admission-engine";
 import * as engine from "./admission-engine";
 import { SqlStorageAdapter } from "./sql-adapter";
 import { safeJsonParse } from "../utils/result";
+import { clientRateLimitBucket as clientRateBucket } from "../security/rate-limit";
 
 // ─── Schema migrations ────────────────────────────────────────────
 
@@ -566,11 +567,12 @@ export class ControlPlaneStateDO extends DurableObject {
 
   async admitClientRequest(req: {
     requestId: string; clientId: string; appId?: string; userHash?: string;
+    rateLimitSegment?: string;
     rpmLimit?: number | null; maxConcurrency?: number | null; tokenBudgetPerMinute?: number | null; estimatedTokens?: number | null;
   }): Promise<{ admitted: boolean; reservationId: string; reason?: string; message?: string; resetAt?: number }> {
     this.ensureSchema();
     const now = Date.now();
-    const userHash = req.userHash ?? "";
+    const userHash = clientRateBucket(req.userHash, req.rateLimitSegment);
     const windowStart = Math.floor(now / 60000) * 60000;
     const reservationId = `${req.clientId}:${req.requestId}`;
     return this.store!.transaction(() => {

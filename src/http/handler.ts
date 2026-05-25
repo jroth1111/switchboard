@@ -21,6 +21,7 @@ import type { OAuthAccountAccessor } from "../providers/anthropic-subscription";
 import type { ControlPlaneStateDO } from "../state/control-plane-state";
 import { applyClientPolicyToPlan, authorizeModelForClient, type ClientIdentity } from "./client-policy";
 import { parseOAuthAccountList } from "../providers/oauth-account-pool";
+import { extractRateLimitSegment } from "../security/rate-limit";
 
 const CONTROL_PLANE_STATE_NAME = "control-plane";
 const HOUR_MS = 3600000;
@@ -100,7 +101,7 @@ export async function handleChatCompletions(
     }, 400, requestId, client);
   }
 
-  return handlePreparedModelRequest({ body, env, ctx, client, requestId, surface: "chat_completions" });
+  return handlePreparedModelRequest({ request, body, env, ctx, client, requestId, surface: "chat_completions" });
 }
 
 export async function handleResponses(
@@ -156,10 +157,11 @@ export async function handleResponses(
     }, 400, requestId, client);
   }
 
-  return handlePreparedModelRequest({ body, env, ctx, client, requestId, surface: "responses" });
+  return handlePreparedModelRequest({ request, body, env, ctx, client, requestId, surface: "responses" });
 }
 
 async function handlePreparedModelRequest(params: {
+  request: Request;
   body: Record<string, unknown>;
   env: Env;
   ctx: ExecutionContext;
@@ -167,9 +169,14 @@ async function handlePreparedModelRequest(params: {
   requestId: string;
   surface: Surface;
 }): Promise<Response> {
+<<<<<<< HEAD
   const { body, env, ctx, client, requestId, surface } = params;
   const suffixRewrite = applyModelSuffixToBody(body);
   const model = suffixRewrite.model;
+=======
+  const { request, body, env, ctx, client, requestId, surface } = params;
+  const model = body.model as string;
+>>>>>>> origin/cursor/p1-5-segment-rate-limits-cb1e
   const modelAuth = authorizeModelForClient(model, client);
   if (!modelAuth.allowed) {
     const denialReceipt: RouteReceipt = {
@@ -281,11 +288,13 @@ async function handlePreparedModelRequest(params: {
   const stateId = env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME);
   const stateDo = env.CONTROL_PLANE_STATE.get(stateId);
   const subscriptionCtx = buildSubscriptionContext(env);
+  const rateLimitSegment = extractRateLimitSegment(request);
   const clientAdmission = await (stateDo as unknown as ControlPlaneStateDO).admitClientRequest({
     requestId,
     clientId: client.clientId,
     appId: client.appId,
     userHash: client.userHash,
+    rateLimitSegment,
     rpmLimit: client.policy.rpmLimit ?? null,
     maxConcurrency: client.policy.maxConcurrency ?? null,
     tokenBudgetPerMinute: client.policy.tokenBudgetPerMinute ?? null,

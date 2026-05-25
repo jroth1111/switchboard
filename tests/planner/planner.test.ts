@@ -28,6 +28,12 @@ describe("canonicalize", () => {
     expect(canonicalize("sonnet-4-6").canonicalTarget).toBe("anthropic-subscription-sonnet-4-6-high");
   });
 
+  it("resolves VibeProxy GHCP editor aliases", () => {
+    expect(canonicalize("ghcp-op-46").canonicalTarget).toBe("anthropic-subscription-opus-4-7-high");
+    expect(canonicalize("ghcp-son-46").canonicalTarget).toBe("anthropic-subscription-sonnet-4-6-high");
+    expect(canonicalize("ghcp-haik-45").canonicalTarget).toBe("anthropic-subscription-sonnet-4-6-low");
+  });
+
   it("returns unmanaged for unknown models", () => {
     const result = canonicalize("totally-unknown-model");
     expect(result.isManaged).toBe(false);

@@ -64,6 +64,8 @@ export interface SubscriptionContext {
     clientId: string;
     clientSecret?: string;
     tokenUrl?: string;
+    /** Extra OAuth account ids (env ANTHROPIC_OAUTH_ACCOUNTS), round-robin per request. */
+    accountIds?: string[];
   };
 }
 

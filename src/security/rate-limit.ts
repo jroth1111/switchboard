@@ -89,6 +89,21 @@ export function checkRateLimit(
   };
 }
 
+/** Optional tenant/segment for per-client sub-buckets (Helicone-style property headers). */
+export function extractRateLimitSegment(request: Request): string | undefined {
+  const direct = request.headers.get("X-Switchboard-RateLimit-Segment")?.trim();
+  if (direct) return direct.slice(0, 128);
+  const helicone = request.headers.get("Helicone-Property-Tenant")?.trim()
+    ?? request.headers.get("Helicone-User-Id")?.trim();
+  if (helicone) return helicone.slice(0, 128);
+  return undefined;
+}
+
+export function clientRateLimitBucket(userHash: string | undefined, segment: string | undefined): string {
+  const parts = [userHash?.trim(), segment?.trim()].filter((p) => p && p.length > 0);
+  return parts.length > 0 ? parts.join("|") : "";
+}
+
 export function extractClientIp(request: Request): string {
   // Trust only CF-Connecting-IP (set by Cloudflare edge). Do not fall back to
   // client-controlled headers (X-Real-IP, X-Forwarded-For) which allow rate-limit bypass.

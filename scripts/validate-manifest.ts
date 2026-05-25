@@ -122,7 +122,7 @@ function validateManifestSnapshot(snapshotPath: string): void {
   }
   const expected = buildManifestSnapshot();
   if (canonicalJson(snapshot) !== canonicalJson(expected)) {
-    error(`${snapshotPath} content does not match compiled manifest; run npm run snapshot`);
+    error(`${snapshotPath} content does not match compiled manifest; run pnpm snapshot`);
   }
 }
 

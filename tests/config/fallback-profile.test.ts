@@ -13,4 +13,8 @@ describe("failureClassToFallbackProfile", () => {
   it("maps transport to general", () => {
     expect(failureClassToFallbackProfile("transport_error")).toBe("general");
   });
+
+  it("maps invalid_model to general (not content_policy)", () => {
+    expect(failureClassToFallbackProfile("invalid_model")).toBe("general");
+  });
 });

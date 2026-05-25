@@ -1,4 +1,7 @@
 .dev.vars
+.env
+.env.local
+.secrets/
 .live-smoke-report.json
 .wrangler/
 

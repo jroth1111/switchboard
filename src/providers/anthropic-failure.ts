@@ -110,13 +110,11 @@ export function classifyAnthropicFailure(
 }
 
 function isSubscriptionLimit(bodyLower: string): boolean {
-  return bodyLower.includes("usage")
+  return bodyLower.includes("usage limit")
     || bodyLower.includes("quota")
-    || bodyLower.includes("tier")
     || bodyLower.includes("subscription")
     || bodyLower.includes("billing")
-    || bodyLower.includes("credit")
-    || bodyLower.includes("balance")
+    || bodyLower.includes("credit balance")
     || bodyLower.includes("monthly limit")
     || bodyLower.includes("account limit");
 }

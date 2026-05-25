@@ -7,10 +7,6 @@ settings:
 importers:
 
   .:
-    dependencies:
-      jsonrepair:
-        specifier: ^3.14.0
-        version: 3.14.0
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: ^0.12.20
@@ -1077,10 +1073,6 @@ packages:
   js-tokens@9.0.1:
     resolution: {integrity: sha512-mxa9E9ITFOt0ban3j6L5MpjwegGz6lBQmM1IJkWeBZGcMxto50+eWdjC/52xDbS2vy0k7vIMK0Fe2wfL9OQSpQ==}
 
-  jsonrepair@3.14.0:
-    resolution: {integrity: sha512-tWPGKMZf/8UPim+fcW2EfcQ/d/7aKUrP6IECz9G3Tu6Q5dX0orSleqJ9z6sSw7qrQkjF8/Edo4DvsWBZ8H+HNg==}
-    hasBin: true
-
   kleur@4.1.5:
     resolution: {integrity: sha512-o+NO+8WrRiQEE4/7nwRJhN1HWpVmJm511pBHUxPLtp0BUISzlBplORYSmTclCnJvQq2tKu/sgl3xVpkc7ZWuQQ==}
     engines: {node: '>=6'}
@@ -2037,8 +2029,6 @@ snapshots:
       resolve-pkg-maps: 1.0.0
 
   js-tokens@9.0.1: {}
-
-  jsonrepair@3.14.0: {}
 
   kleur@4.1.5: {}
 

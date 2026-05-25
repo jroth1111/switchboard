@@ -20,5 +20,8 @@ ANTHROPIC_CLIENT_SECRET=
 CHATGPT_AUTH_ACCOUNTS=
 ANTHROPIC_OAUTH_ACCOUNTS=
 
+# OAuth encryption key for account DO storage (min 32 characters).
+ENCRYPTION_KEY=
+
 # Per-client policy + team limits (see config/client-keys.example.json).
 CLIENT_KEYS_JSON=

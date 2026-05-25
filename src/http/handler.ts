@@ -247,7 +247,7 @@ async function handlePreparedModelRequest(params: {
     body,
     stream: body.stream === true,
     hasTools: !!(body.tools && (body.tools as unknown[]).length > 0),
-    hasStrictTools: body.tool_choice === "required" || body.tool_choice === "any",
+    hasStrictTools: body.tool_choice === "required",
     isMultiTool: Array.isArray(body.tools) && (body.tools as unknown[]).length >= 2,
     hasTypedContent: surface === "responses" ? detectResponsesTypedContent(body) : detectTypedContent(body),
     requiresJsonMode: surface === "chat_completions" ? body.response_format !== undefined : body.text !== undefined,
@@ -1032,10 +1032,10 @@ function firstUnknownParam(params: URLSearchParams, allowed: Set<string>): strin
   return unknown;
 }
 
-function normalizeOptionalText(value: string | null | undefined, name: string): { value?: string; error?: string } {
+function normalizeOptionalText(value: string | null | undefined, _name: string): { value?: string; error?: string } {
   if (value === null || value === undefined) return {};
   const normalized = value.trim();
-  if (!normalized) return { error: `${name} cannot be blank` };
+  if (!normalized) return {};
   return { value: normalized };
 }
 

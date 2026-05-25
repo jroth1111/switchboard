@@ -1370,7 +1370,7 @@ function computeBackoff(attemptIndex: number, baseMs: number, maxMs: number): nu
   const rawBackoff = baseMs * Math.pow(2, exp);
   const capped = Math.min(rawBackoff, maxMs);
   const jitter = capped * 0.25 * (Math.random() * 2 - 1);
-  return Math.max(baseMs, Math.round(capped + jitter));
+  return Math.max(baseMs, Math.min(maxMs, Math.round(capped + jitter)));
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {

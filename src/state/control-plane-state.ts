@@ -1100,6 +1100,8 @@ function mapReceiptRow(row: Record<string, unknown>): Record<string, unknown> {
     userHash: row.user_hash ?? undefined, policyId: row.policy_id ?? undefined,
     policyVersion: row.policy_version ?? undefined, routeVersion: row.route_version ?? undefined,
     denialReason: row.denial_reason ?? undefined,
+    sessionId: row.session_id ?? undefined, traceId: row.trace_id ?? undefined,
+    properties: row.properties_json ? safeJsonParse(row.properties_json as string) : undefined,
     routeDecision: row.route_decision_json ? safeJsonParse(row.route_decision_json as string) : undefined,
     canonicalTarget: row.canonical_target, selectedGroup: row.selected_group,
     fallbackGroups: safeJsonParse(row.fallback_groups as string),

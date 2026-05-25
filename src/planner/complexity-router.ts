@@ -5,7 +5,7 @@ export type ComplexityTier = "low" | "medium" | "high";
 const SIMPLE_PATTERNS = [
   /\b(what is|define|explain briefly|how do i|syntax for)\b/i,
   /\b(hello|hi|thanks|thank you)\b/i,
-  /^\s*.{0,120}\s*$/s,
+  /^\s*(what|who|when|where|how|is|are|can|do|does|will|show|list|tell)\b.*/is,
 ];
 
 const COMPLEX_PATTERNS = [

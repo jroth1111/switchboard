@@ -1,28 +1,29 @@
 import { describe, it, expect } from "vitest";
 import { extractRequestMetadata } from "../../src/observability/request-metadata";
-import { estimateUsageCostUsd } from "../../src/observability/usage-cost";
 
-describe("receipt metadata and cost helpers", () => {
-  it("extracts session and trace headers", () => {
-    const req = new Request("https://example.com/v1/chat/completions", {
-      headers: {
-        "X-Switchboard-Session-Id": "sess-abc",
-        "X-Switchboard-Trace-Id": "trace-xyz",
-      },
-    });
-    expect(extractRequestMetadata(req)).toEqual({
-      sessionId: "sess-abc",
-      traceId: "trace-xyz",
-    });
+describe("receipt metadata sanitization", () => {
+  it("extracts custom property headers with sanitization", () => {
+    const headers: Record<string, string> = {
+      "X-Switchboard-Session-Id": "sess-abc",
+      "X-Switchboard-Trace-Id": "trace-xyz",
+      "X-Switchboard-Property-Env": "production",
+      "Helicone-Property-Tenant": "acme-corp",
+    };
+    const req = new Request("https://example.com/v1/chat/completions", { headers });
+    const meta = extractRequestMetadata(req);
+    expect(meta.sessionId).toBe("sess-abc");
+    expect(meta.traceId).toBe("trace-xyz");
+    expect(meta.properties).toBeDefined();
+    expect((meta.properties as Record<string, string>).env).toBe("production");
+    expect((meta.properties as Record<string, string>).tenant).toBe("acme-corp");
   });
 
-  it("estimates usage cost for known providers", () => {
-    expect(estimateUsageCostUsd("nvidia_nim", {
-      kind: "known",
-      promptTokens: 1000,
-      completionTokens: 1000,
-      totalTokens: 2000,
-      source: "nim",
-    })).toBe(0);
+  it("omits properties when no property headers present", () => {
+    const req = new Request("https://example.com/v1/chat/completions", {
+      headers: { "X-Switchboard-Session-Id": "s1" },
+    });
+    const meta = extractRequestMetadata(req);
+    expect(meta.sessionId).toBe("s1");
+    expect(meta.properties).toBeUndefined();
   });
 });

@@ -1599,32 +1599,8 @@ describe("Manifest integrity", () => {
 
 // ─── Request envelope construction ────────────────────────────────
 
-describe("Request envelope construction", () => {
-  it("detects tools in request", () => {
-    const body = {
-      model: "glm-5.1",
-      messages: [{ role: "user", content: "use tool" }],
-      tools: [{ type: "function", function: { name: "test" } }],
-    };
-    const hasTools = !!(body.tools && (body.tools as unknown[]).length > 0);
-    expect(hasTools).toBe(true);
-  });
-
-  it("detects streaming request", () => {
-    const body = { model: "glm-5.1", messages: [], stream: true };
-    expect(body.stream === true).toBe(true);
-  });
-
-  it("detects strict tools", () => {
-    const body = { model: "glm-5.1", messages: [], tool_choice: "required" };
-    expect(body.tool_choice === "required" || body.tool_choice === "any").toBe(true);
-  });
-
-  it("detects json mode", () => {
-    const body = { model: "glm-5.1", messages: [], response_format: { type: "json_object" } };
-    expect(body.response_format !== undefined).toBe(true);
-  });
-});
+// Removed: tautological tests that asserted on inline JS expressions rather than
+// source code. Real envelope construction is covered by the integration tests above.
 
 // ─── Validation edge cases ────────────────────────────────────────
 

@@ -7,9 +7,10 @@ export function failureClassToFallbackProfile(failureClass: FailureClass | strin
   switch (failureClass) {
     case "context_length_exceeded":
       return "context_window";
+    case "invalid_model":
+      return "general";
     case "client_4xx":
     case "client_4xx_bad_request":
-    case "invalid_model":
     case "tool_contract_failure":
       return "content_policy";
     default:

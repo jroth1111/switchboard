@@ -1,3 +1,5 @@
+import type { FallbackProfile } from "./fallback-profile";
+
 // ─── Provider types ───────────────────────────────────────────────
 
 export type ProviderType =

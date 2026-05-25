@@ -3,6 +3,7 @@ import { canonicalize, type ExecutionPlan } from "../planner/planner";
 import { getBearerToken, timingSafeEqual } from "./auth";
 
 export interface ClientPolicy {
+  teamId?: string;
   allowedModels?: string[];
   deniedModels?: string[];
   deniedRouteGroups?: string[];

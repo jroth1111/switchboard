@@ -1090,6 +1090,49 @@ describe("Admin usage", () => {
     });
     expect(order.at(-1)).toBe("query");
   });
+
+  it("returns CSV usage export with estimated cost column", async () => {
+    const hourStart = Date.UTC(2026, 4, 24, 5, 0, 0);
+    const queryRollups = vi.fn(async () => [{
+      hourStart,
+      selectedGroup: "nim-primary",
+      deploymentId: "nim-deploy-1",
+      provider: "nvidia_nim",
+      model: "nim-model",
+      requests: 3,
+      knownRequests: 3,
+      unknownRequests: 0,
+      promptTokens: 100,
+      completionTokens: 50,
+      totalTokens: 150,
+      estimatedCostUsd: 0.0125,
+    }]);
+    const stateDo = {
+      computeHourlyRollups: vi.fn(async () => undefined),
+      queryRollups,
+    };
+    const env = {
+      CONTROL_PLANE_STATE: {
+        idFromName: vi.fn(() => "control-plane-id"),
+        get: vi.fn(() => stateDo),
+      },
+    } as unknown as Env;
+
+    const response = await handleAdminUsage(
+      new Request("https://example.test/admin/usage?window=1h&format=csv"),
+      env,
+    );
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("text/csv");
+    const lines = body.trim().split("\n");
+    expect(lines[0]).toBe(
+      "hour_start,selected_group,deployment_id,provider,model,requests,prompt_tokens,completion_tokens,total_tokens,estimated_cost_usd",
+    );
+    expect(lines[1]).toContain("nim-primary");
+    expect(lines[1]).toContain("0.0125");
+  });
 });
 
 describe("Admin client requests", () => {

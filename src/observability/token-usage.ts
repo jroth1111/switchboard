@@ -17,6 +17,7 @@ export interface UsageEventPayload {
   policyId?: string;
   policyVersion?: string;
   routeVersion?: string;
+  teamId?: string;
   canonicalTarget: string;
   selectedGroup: string;
   deploymentId: string;

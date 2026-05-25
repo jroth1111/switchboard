@@ -7,6 +7,7 @@ import { MANIFEST, ROUTE_MANIFEST_VERSION } from "../src/config/manifest.ts";
 import { ROUTING_ONLY_ROUTE_GROUPS, validateManifest } from "../src/config/validate-manifest.ts";
 import { buildManifestSnapshot, canonicalJson } from "./manifest-snapshot.ts";
 import { loadLocalSecretEnv, validateChatGPTStructuredAuthSurface } from "./chatgpt-auth-secrets.ts";
+import { FREE_MODEL_ENDPOINTS } from "../src/ops/sync-free-models.ts";
 
 interface ValidationError {
   severity: "error" | "warning";
@@ -22,6 +23,10 @@ function error(msg: string) {
 
 function warn(msg: string) {
   errors.push({ severity: "warning", message: msg });
+}
+
+if (FREE_MODEL_ENDPOINTS.length === 0) {
+  error("[sync_free_models] FREE_MODEL_ENDPOINTS must define at least one provider probe");
 }
 
 // Core manifest checks (aliases, fallbacks, cycles, deployments, policies, planner refs).

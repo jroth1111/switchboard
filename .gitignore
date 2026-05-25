@@ -5,6 +5,7 @@
 # BEGIN local agent runtime artifact ignores
 # Local Beads state
 .beads/
+.claude/
 
 # Dependency installs and package-manager state
 node_modules/

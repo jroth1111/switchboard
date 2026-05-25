@@ -201,7 +201,7 @@ async function handlePreparedModelRequest(params: {
       totalDurationMs: 0,
     };
     recordReceipt(denialReceipt);
-    persistDenialReceipt(env, denialReceipt, ctx);
+    persistReceiptAsync(env, ctx, denialReceipt);
     return errorResponse({
       message: `Model is not allowed for client: ${model}`,
       type: "invalid_request",
@@ -310,7 +310,7 @@ async function handlePreparedModelRequest(params: {
       totalDurationMs: 0,
     };
     recordReceipt(denialReceipt);
-    persistDenialReceipt(env, denialReceipt, ctx);
+    persistReceiptAsync(env, ctx, denialReceipt);
     return errorResponse({
       message: clientAdmission.message ?? "client limit exceeded",
       type: "rate_limit",
@@ -429,10 +429,6 @@ async function handlePreparedModelRequest(params: {
 
 function waitUntilLogged(ctx: ExecutionContext, promise: Promise<unknown>, event: string): void {
   ctx.waitUntil(promise.catch((e) => logWarn(event, { error: String(e) })));
-}
-
-function persistDenialReceipt(env: Env, receipt: RouteReceipt, ctx: ExecutionContext): void {
-  persistReceiptAsync(env, ctx, receipt);
 }
 
 type ClientRequestPersistFields = {

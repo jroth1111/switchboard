@@ -103,12 +103,11 @@ function hiddenOnlyInContentParts(parts: unknown[]): boolean {
   return sawHidden;
 }
 
-export function hasHiddenOnlyResponsesInput(data: Record<string, unknown>): boolean {
-  const input = data.input;
-  if (!Array.isArray(input) || input.length === 0) return false;
+function hiddenOnlyInContainers(items: unknown): boolean {
+  if (!Array.isArray(items) || items.length === 0) return false;
 
   let sawHidden = false;
-  for (const item of input) {
+  for (const item of items) {
     if (!isPlainObject(item)) return false;
     const content = item.content;
     if ((content === null || content === undefined) || content === "") continue;
@@ -123,24 +122,12 @@ export function hasHiddenOnlyResponsesInput(data: Record<string, unknown>): bool
   return sawHidden;
 }
 
-export function hasHiddenOnlyTypedContent(data: Record<string, unknown>): boolean {
-  const messages = data.messages;
-  if (!Array.isArray(messages) || messages.length === 0) return false;
+export function hasHiddenOnlyResponsesInput(data: Record<string, unknown>): boolean {
+  return hiddenOnlyInContainers(data.input);
+}
 
-  let sawHidden = false;
-  for (const message of messages) {
-    if (!isPlainObject(message)) return false;
-    const content = message.content;
-    if ((content === null || content === undefined) || content === "") continue;
-    if (typeof content === "string") {
-      if (content.trim()) return false;
-      continue;
-    }
-    if (!Array.isArray(content)) return false;
-    if (!hiddenOnlyInContentParts(content)) return false;
-    sawHidden = true;
-  }
-  return sawHidden;
+export function hasHiddenOnlyTypedContent(data: Record<string, unknown>): boolean {
+  return hiddenOnlyInContainers(data.messages);
 }
 
 function partType(part: Record<string, unknown>): string {

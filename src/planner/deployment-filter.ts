@@ -2,7 +2,8 @@
 // runtime state (cooldowns, circuits, inflight, learned limits, key RPM)
 // to produce a partition of passed vs rejected candidates.
 
-import type { Deployment } from "../config/schema";
+import { MANIFEST } from "../config/manifest";
+import type { Deployment, Policy } from "../config/schema";
 
 // ─── State ────────────────────────────────────────────────────────
 
@@ -209,4 +210,18 @@ export function filterCandidates(
 
 function keyWindowScope(keyRef: string, group: string, scopeMode: "global" | "per_key"): string {
   return scopeMode === "global" ? `${group}:global` : `${group}:${keyRef}`;
+}
+
+export function policyForDeploymentGroup(group: string): Policy {
+  return MANIFEST.policies[group] ?? MANIFEST.defaultPolicy;
+}
+
+export function filterOptionsForPolicy(policy: Policy) {
+  return {
+    maxParallelOverride: policy.budget.maxParallelRequests,
+    quarantineFailureThreshold: policy.health.circuitFailureThreshold,
+    suspectMaxParallelDivisor: policy.health.suspectMaxParallelDivisor,
+    rpmLimit: policy.budget.rpmLimit,
+    tokenBudgetPerMinute: policy.budget.tokenBudgetPerMinute,
+  };
 }

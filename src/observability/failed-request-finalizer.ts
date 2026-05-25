@@ -29,62 +29,22 @@ export interface FailedRequestSummary {
 }
 
 export function failedRequestSummaryFromReceipt(receipt: RouteReceipt): FailedRequestSummary | null {
-  // Only finalize terminal failure outcomes
   if (receipt.finalOutcome !== "exhausted" && receipt.finalOutcome !== "client_error") {
     return null;
+  }
+
+  if (receipt.attempts.length === 0) {
+    return summarizeZeroAttemptReceipt(receipt);
   }
 
   const lastAttempt = receipt.attempts[receipt.attempts.length - 1];
   const firstFailure = receipt.attempts.find((a) => a.failureClass);
   const selectedDeploymentId = [...receipt.attempts].reverse().find((a) => a.deploymentId)?.deploymentId;
-  const noAttemptIssueCode = receipt.attempts.length === 0 ? receipt.denialReason : undefined;
   const failureClass =
     lastAttempt?.failureClass
     ?? firstFailure?.failureClass
     ?? receipt.denialReason
     ?? (receipt.finalOutcome === "exhausted" ? "exhausted" : undefined);
-
-  if (receipt.attempts.length === 0) {
-    if (receipt.finalOutcome === "client_error") {
-      return {
-        requestId: receipt.requestId,
-        timestamp: receipt.timestamp,
-        originalModel: receipt.originalModel,
-        route: receipt.canonicalTarget,
-        canonicalTarget: receipt.canonicalTarget,
-        selectedGroup: receipt.selectedGroup,
-        selectedModel: receipt.selectedGroup,
-        selectedDeploymentId: undefined,
-        requestSource: receipt.appId ?? receipt.clientId ?? "unknown",
-        finalOutcome: receipt.finalOutcome,
-        failureClass: receipt.denialReason,
-        issueCode: receipt.denialReason ?? "client_denied",
-        attemptsCount: 0,
-        stream: receipt.stream,
-        attempts: [],
-      };
-    }
-    if (receipt.finalOutcome === "exhausted") {
-      return {
-        requestId: receipt.requestId,
-        timestamp: receipt.timestamp,
-        originalModel: receipt.originalModel,
-        route: receipt.canonicalTarget,
-        canonicalTarget: receipt.canonicalTarget,
-        selectedGroup: receipt.selectedGroup,
-        selectedModel: receipt.selectedGroup,
-        selectedDeploymentId: undefined,
-        requestSource: receipt.appId ?? receipt.clientId ?? "unknown",
-        finalOutcome: receipt.finalOutcome,
-        failureClass: "exhausted",
-        issueCode: "all_groups_exhausted",
-        attemptsCount: 0,
-        stream: receipt.stream,
-        attempts: [],
-      };
-    }
-    return null;
-  }
 
   return {
     requestId: receipt.requestId,
@@ -98,7 +58,7 @@ export function failedRequestSummaryFromReceipt(receipt: RouteReceipt): FailedRe
     requestSource: receipt.appId ?? receipt.clientId ?? "unknown",
     finalOutcome: receipt.finalOutcome,
     failureClass,
-    issueCode: receipt.finalOutcome === "exhausted" ? "all_groups_exhausted" : noAttemptIssueCode,
+    issueCode: receipt.finalOutcome === "exhausted" ? "all_groups_exhausted" : receipt.denialReason,
     attemptsCount: receipt.attempts.length,
     stream: receipt.stream,
     attempts: receipt.attempts.map((a) => ({
@@ -108,6 +68,45 @@ export function failedRequestSummaryFromReceipt(receipt: RouteReceipt): FailedRe
       action: a.action,
       durationMs: a.durationMs,
     })),
+  };
+}
+
+function summarizeZeroAttemptReceipt(receipt: RouteReceipt): FailedRequestSummary | null {
+  if (receipt.finalOutcome === "client_error") {
+    return buildZeroAttemptSummary(receipt, {
+      failureClass: receipt.denialReason,
+      issueCode: receipt.denialReason ?? "client_denied",
+    });
+  }
+  if (receipt.finalOutcome === "exhausted") {
+    return buildZeroAttemptSummary(receipt, {
+      failureClass: "exhausted",
+      issueCode: "all_groups_exhausted",
+    });
+  }
+  return null;
+}
+
+function buildZeroAttemptSummary(
+  receipt: RouteReceipt,
+  outcome: { failureClass: string | undefined; issueCode: string | undefined },
+): FailedRequestSummary {
+  return {
+    requestId: receipt.requestId,
+    timestamp: receipt.timestamp,
+    originalModel: receipt.originalModel,
+    route: receipt.canonicalTarget,
+    canonicalTarget: receipt.canonicalTarget,
+    selectedGroup: receipt.selectedGroup,
+    selectedModel: receipt.selectedGroup,
+    selectedDeploymentId: undefined,
+    requestSource: receipt.appId ?? receipt.clientId ?? "unknown",
+    finalOutcome: receipt.finalOutcome,
+    failureClass: outcome.failureClass,
+    issueCode: outcome.issueCode,
+    attemptsCount: 0,
+    stream: receipt.stream,
+    attempts: [],
   };
 }
 

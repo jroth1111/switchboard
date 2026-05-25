@@ -17,12 +17,16 @@ export function parseChatGPTAuthAccountsList(raw: string | undefined): string[] 
     const out: string[] = [];
     for (const item of parsed) {
       if (typeof item === "string" && item.trim()) {
-        out.push(item.trim());
+        const entry = item.trim();
+        if (!entry.startsWith("{") || isChatGPTSubscriptionAuthJsonText(entry)) {
+          out.push(entry);
+        }
       } else if (item && typeof item === "object") {
-        out.push(JSON.stringify(item));
+        const serialized = JSON.stringify(item);
+        if (isChatGPTSubscriptionAuthJsonText(serialized)) out.push(serialized);
       }
     }
-    return out.filter((s) => isChatGPTSubscriptionAuthJsonText(s));
+    return out;
   } catch {
     return [];
   }
@@ -46,7 +50,7 @@ export function chatgptAuthMaterialCandidates(
   if (file && isChatGPTSubscriptionAuthJsonText(file)) materials.push(file);
   for (const key of deployment?.accountIds ?? []) {
     const fromEnv = envString(env, key);
-    if (fromEnv) materials.push(fromEnv);
+    if (fromEnv && isChatGPTSubscriptionAuthJsonText(fromEnv)) materials.push(fromEnv);
   }
   const fromList = parseChatGPTAuthAccountsList(
     (env as { CHATGPT_AUTH_ACCOUNTS?: string }).CHATGPT_AUTH_ACCOUNTS,
@@ -56,7 +60,7 @@ export function chatgptAuthMaterialCandidates(
       materials.push(entry);
     } else {
       const resolved = envString(env, entry);
-      if (resolved) materials.push(resolved);
+      if (resolved && isChatGPTSubscriptionAuthJsonText(resolved)) materials.push(resolved);
     }
   }
   const unique = Array.from(new Set(materials.filter(Boolean)));

@@ -242,6 +242,12 @@ export async function executeAttemptLoop(
             attemptTimeoutMs, deploymentHealth,
           );
           if (result !== null) { releaseInFinally = false; return result; }
+          const lastStreamAttempt = attempts[attempts.length - 1];
+          if (lastStreamAttempt?.failureClass) {
+            attemptSequence = promoteProfileFallbacks(
+              attemptSequence, modelIndex + 1, lastStreamAttempt.failureClass, plan.selectedGroup,
+            );
+          }
           break;
         }
 
@@ -1283,19 +1289,30 @@ function resolveChatGPTSubscriptionAuthMaterial(
   const fileContent = envString(env, "CHATGPT_AUTH_FILE");
   const sources: Array<{ material: string; credentialName: string; nonJsonMessage?: string }> = [];
   const primary = envString(env, "CHATGPT_AUTH_JSON");
-  if (primary) sources.push({ material: primary, credentialName: "CHATGPT_AUTH_JSON" });
-  if (fileContent) {
+  for (const material of chatgptAuthMaterialCandidates(env, deployment, requestId)) {
+    if (material === primary) {
+      sources.push({ material, credentialName: "CHATGPT_AUTH_JSON" });
+    } else if (material === fileContent) {
+      sources.push({
+        material,
+        credentialName: "CHATGPT_AUTH_FILE",
+        nonJsonMessage: "CHATGPT_AUTH_FILE must contain structured ChatGPT subscription auth JSON in the Worker runtime; "
+          + "filesystem paths must be resolved before deployment",
+      });
+    } else {
+      sources.push({ material, credentialName: "CHATGPT_AUTH_ACCOUNTS" });
+    }
+  }
+  if (primary && !sources.some((s) => s.material === primary)) {
+    sources.push({ material: primary, credentialName: "CHATGPT_AUTH_JSON" });
+  }
+  if (fileContent && !sources.some((s) => s.material === fileContent)) {
     sources.push({
       material: fileContent,
       credentialName: "CHATGPT_AUTH_FILE",
       nonJsonMessage: "CHATGPT_AUTH_FILE must contain structured ChatGPT subscription auth JSON in the Worker runtime; "
         + "filesystem paths must be resolved before deployment",
     });
-  }
-  for (const material of chatgptAuthMaterialCandidates(env, deployment, requestId)) {
-    if (!sources.some((s) => s.material === material)) {
-      sources.push({ material, credentialName: "CHATGPT_AUTH_JSON" });
-    }
   }
 
   let lastError: SubscriptionTokenError | null = null;

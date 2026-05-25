@@ -36,7 +36,7 @@ export function validateManifest(m: RouteManifest): ValidationIssue[] {
   return issues;
 }
 
-const OAUTH_EXCLUSION_PROVIDER_KEYS = new Set(["anthropic", "chatgpt", "nim", "openai"]);
+const OAUTH_EXCLUSION_PROVIDER_KEYS = new Set(["anthropic", "chatgpt", "nim", "openai"]); // must match src/http/oauth-exclusions.ts
 
 function validateOAuthExcludedModels(m: RouteManifest, issues: ValidationIssue[]): void {
   const exclusions = m.oauthExcludedModels;

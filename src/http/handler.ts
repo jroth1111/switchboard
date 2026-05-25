@@ -293,8 +293,9 @@ async function handlePreparedModelRequest(params: {
   const stateId = env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME);
   const stateDo = env.CONTROL_PLANE_STATE.get(stateId);
   const subscriptionCtx = buildSubscriptionContext(env);
-  const rateLimitSegment = extractRateLimitSegment(request);
   const teams = parseTeamLimits(env.CLIENT_KEYS_JSON);
+  const rawSegment = extractRateLimitSegment(request);
+  const rateLimitSegment = (rawSegment && teams.has(rawSegment)) ? rawSegment : undefined;
   const admissionLimits = resolveClientAdmissionLimits(client.policy, teams);
   const clientAdmission = await (stateDo as unknown as ControlPlaneStateDO).admitClientRequest({
     requestId,
@@ -309,7 +310,7 @@ async function handlePreparedModelRequest(params: {
     rpmLimit: admissionLimits.rpmLimit,
     maxConcurrency: admissionLimits.maxConcurrency,
     tokenBudgetPerMinute: admissionLimits.tokenBudgetPerMinute,
-    estimatedTokens: estimateClientTokenCost(envelope.body, client.policy.tokenBudgetPerMinute),
+    estimatedTokens: estimateClientTokenCost(envelope.body, activeTokenBudget(admissionLimits)),
   });
   if (!clientAdmission.admitted) {
     const reason = clientAdmission.reason ?? "client_limit_exceeded";
@@ -794,7 +795,7 @@ export async function handleAdminUsage(
     const lines = rollups.map((r) => [
       r.hourStart, r.selectedGroup, r.deploymentId, r.provider, r.model,
       r.requests, r.promptTokens, r.completionTokens, r.totalTokens, r.estimatedCostUsd,
-    ].map((v) => String(v ?? "")).join(","));
+    ].map((v) => csvEscape(v)).join(","));
     return new Response([header, ...lines].join("\n"), {
       headers: { "Content-Type": "text/csv; charset=utf-8" },
     });
@@ -1039,6 +1040,14 @@ function normalizeOptionalText(value: string | null | undefined, _name: string):
   return { value: normalized };
 }
 
+function csvEscape(value: unknown): string {
+  const s = String(value ?? "");
+  if (s.includes(",") || s.includes('"') || s.includes("\n") || s.includes("\r")) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
 function parseBooleanParam(value: string | null, name: string): { ok: true; value: boolean } | { ok: false; error: string } {
   if (value === null) return { ok: true, value: false };
   const normalized = value.trim().toLowerCase();
@@ -1217,6 +1226,17 @@ function estimateClientTokenCost(body: Record<string, unknown>, tokenBudgetPerMi
   const promptEstimate = estimatePromptTokens(body.messages ?? body.input);
   if (!explicit && tokenBudgetPerMinute) return tokenBudgetPerMinute + 1;
   return Math.max(0, promptEstimate + (explicit ?? 0));
+}
+
+function activeTokenBudget(admissionLimits: {
+  tokenBudgetPerMinute: number | null;
+  teamTokenBudgetPerMinute: number | null;
+}): number | undefined {
+  const budgets = [
+    admissionLimits.tokenBudgetPerMinute,
+    admissionLimits.teamTokenBudgetPerMinute,
+  ].filter((budget): budget is number => typeof budget === "number" && budget > 0);
+  return budgets.length > 0 ? Math.min(...budgets) : undefined;
 }
 
 function positiveNumber(value: unknown): number | undefined {

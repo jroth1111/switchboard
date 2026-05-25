@@ -17,4 +17,4 @@
 | P2-2 | `cursor/p2-2-usage-export-cb1e` | #17 | open |
 | P2-4 | `cursor/p2-4-sync-free-models-cb1e` | #15 | open |
 | P3-2 | `cursor/p3-2-team-client-keys-cb1e` | #16 | open |
-| gaps | `cursor/close-audit-gaps-cb1e` | TBD | closes audit gaps |
+| gaps | `cursor/close-audit-gaps-cb1e` | TBD | merged — closes audit gaps |

@@ -41,10 +41,14 @@ export function anthropicOAuthAccountCandidates(
   extraAccounts: string[] | undefined,
   requestId: string | undefined,
 ): string[] {
-  const candidates: string[] = [];
+  const head: string[] = [];
   const configured = configuredAccountId.trim();
-  if (configured) candidates.push(configured);
-  candidates.push(`anthropic:${deploymentId}`);
-  if (extraAccounts?.length) candidates.push(...extraAccounts);
-  return rotateOAuthAccountCandidates(Array.from(new Set(candidates)), requestId);
+  if (configured) head.push(configured);
+  head.push(`anthropic:${deploymentId}`);
+  const headSet = new Set(head);
+  const rotatedExtras = rotateOAuthAccountCandidates(
+    Array.from(new Set((extraAccounts ?? []).filter((id) => id && !headSet.has(id)))),
+    requestId,
+  );
+  return [...head, ...rotatedExtras];
 }

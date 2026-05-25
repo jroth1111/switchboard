@@ -391,6 +391,9 @@ export interface PlanReceiptDraft {
 export function resolveSmartRouteModel(envelope: RequestEnvelope): string {
   const initial = canonicalize(envelope.originalModel);
   if (initial.canonicalTarget !== "smart-route-worker") return envelope.originalModel;
+  if (envelope.hasTools || envelope.hasStrictTools || envelope.requiresJsonMode || envelope.hasTypedContent) {
+    return envelope.originalModel;
+  }
   const tier = classifyPromptComplexity(envelope.body.messages ?? envelope.body.input);
   return smartRouteModelForTier(tier);
 }

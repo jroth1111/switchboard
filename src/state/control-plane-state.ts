@@ -317,6 +317,11 @@ export class ControlPlaneStateDO extends DurableObject {
     this.ensureColumn("usage_events", "policy_version", "TEXT");
     this.ensureColumn("usage_events", "route_version", "TEXT");
     this.ensureColumn("usage_events", "estimated_cost_usd", "REAL");
+    this.ensureColumn("receipts", "session_id", "TEXT");
+    this.ensureColumn("receipts", "trace_id", "TEXT");
+    this.ensureColumn("receipts", "properties_json", "TEXT");
+    this.ensureColumn("usage_rollups_hourly", "estimated_cost_usd", "REAL");
+    this.ensureColumn("client_usage_rollups_hourly", "estimated_cost_usd", "REAL");
     this.ensureColumn("client_request_events", "route_decision_json", "TEXT");
     this.ensureColumn("client_request_events", "policy_version", "TEXT");
     this.ensureColumn("client_request_events", "route_version", "TEXT");
@@ -527,10 +532,15 @@ export class ControlPlaneStateDO extends DurableObject {
     canonicalTarget: string; selectedGroup: string; fallbackGroups: string[];
     attempts: unknown[]; finalOutcome: string;
     stream: boolean; totalDurationMs?: number;
+    sessionId?: string; traceId?: string; properties?: Record<string, string>;
   }): Promise<void> {
     this.ensureSchema();
     this.ctx.storage.sql.exec(
-      "INSERT OR REPLACE INTO receipts (request_id, timestamp, original_model, client_id, app_id, user_hash, policy_id, policy_version, route_version, denial_reason, route_decision_json, canonical_target, selected_group, fallback_groups, attempts_json, final_outcome, stream, total_duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      `INSERT OR REPLACE INTO receipts
+         (request_id, timestamp, original_model, client_id, app_id, user_hash, policy_id, policy_version,
+          route_version, denial_reason, route_decision_json, canonical_target, selected_group, fallback_groups,
+          attempts_json, final_outcome, stream, total_duration_ms, session_id, trace_id, properties_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       receipt.requestId, receipt.timestamp, receipt.originalModel,
       receipt.clientId ?? null, receipt.appId ?? null, receipt.userHash ?? null, receipt.policyId ?? null,
       receipt.policyVersion ?? null, receipt.routeVersion ?? null, receipt.denialReason ?? null,
@@ -538,6 +548,8 @@ export class ControlPlaneStateDO extends DurableObject {
       receipt.canonicalTarget,
       receipt.selectedGroup, JSON.stringify(receipt.fallbackGroups), JSON.stringify(receipt.attempts),
       receipt.finalOutcome, receipt.stream ? 1 : 0, receipt.totalDurationMs ?? null,
+      receipt.sessionId ?? null, receipt.traceId ?? null,
+      receipt.properties ? JSON.stringify(receipt.properties) : null,
     );
     this.ctx.storage.sql.exec("DELETE FROM receipts WHERE timestamp < ?", Date.now() - 86400000);
   }
@@ -569,16 +581,53 @@ export class ControlPlaneStateDO extends DurableObject {
   async admitClientRequest(req: {
     requestId: string; clientId: string; appId?: string; userHash?: string;
     rateLimitSegment?: string;
+    teamId?: string;
+    teamRpmLimit?: number | null;
+    teamMaxConcurrency?: number | null;
     rpmLimit?: number | null; maxConcurrency?: number | null; tokenBudgetPerMinute?: number | null; estimatedTokens?: number | null;
-  }): Promise<{ admitted: boolean; reservationId: string; reason?: string; message?: string; resetAt?: number }> {
+  }): Promise<{ admitted: boolean; reservationId: string; teamReservationId?: string; reason?: string; message?: string; resetAt?: number }> {
     this.ensureSchema();
     const now = Date.now();
     const userHash = clientRateBucket(req.userHash, req.rateLimitSegment);
     const windowStart = Math.floor(now / 60000) * 60000;
     const reservationId = `${req.clientId}:${req.requestId}`;
+    const teamClientId = req.teamId ? `team:${req.teamId}` : null;
     return this.store!.transaction(() => {
       this.ctx.storage.sql.exec("DELETE FROM client_inflight WHERE expires_at < ?", now);
       this.ctx.storage.sql.exec("DELETE FROM client_rate_windows WHERE window_start < ?", now - 10 * 60000);
+
+      if (teamClientId && req.teamRpmLimit && req.teamRpmLimit > 0) {
+        const rows = this.ctx.storage.sql.exec(
+          "SELECT count FROM client_rate_windows WHERE client_id = ? AND user_hash = ? AND window_start = ?",
+          teamClientId, "", windowStart,
+        ).toArray();
+        const count = Number(rows[0]?.count ?? 0);
+        if (count >= req.teamRpmLimit) {
+          return {
+            admitted: false,
+            reservationId,
+            reason: "team_rpm_exceeded",
+            message: "team RPM limit exceeded",
+            resetAt: windowStart + 60000,
+          };
+        }
+      }
+
+      if (teamClientId && req.teamMaxConcurrency && req.teamMaxConcurrency > 0) {
+        const rows = this.ctx.storage.sql.exec(
+          "SELECT COUNT(*) AS count FROM client_inflight WHERE client_id = ? AND user_hash = ?",
+          teamClientId, "",
+        ).toArray();
+        const count = Number(rows[0]?.count ?? 0);
+        if (count >= req.teamMaxConcurrency) {
+          return {
+            admitted: false,
+            reservationId,
+            reason: "team_concurrency_exceeded",
+            message: "team concurrency limit exceeded",
+          };
+        }
+      }
 
       if (req.rpmLimit && req.rpmLimit > 0) {
         const rows = this.ctx.storage.sql.exec(
@@ -658,6 +707,14 @@ export class ControlPlaneStateDO extends DurableObject {
         }
       }
 
+      if (teamClientId && req.teamRpmLimit && req.teamRpmLimit > 0) {
+        this.ctx.storage.sql.exec(
+          `INSERT INTO client_rate_windows (client_id, user_hash, window_start, count)
+           VALUES (?, ?, ?, 1)
+           ON CONFLICT(client_id, user_hash, window_start) DO UPDATE SET count = count + 1`,
+          teamClientId, "", windowStart,
+        );
+      }
       if (req.rpmLimit && req.rpmLimit > 0) {
         this.ctx.storage.sql.exec(
           `INSERT INTO client_rate_windows (client_id, user_hash, window_start, count)
@@ -666,13 +723,25 @@ export class ControlPlaneStateDO extends DurableObject {
           req.clientId, userHash, windowStart,
         );
       }
+      if (teamClientId && req.teamMaxConcurrency && req.teamMaxConcurrency > 0) {
+        this.ctx.storage.sql.exec(
+          `INSERT OR REPLACE INTO client_inflight
+             (reservation_id, request_id, client_id, user_hash, estimated_tokens, created_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `${teamClientId}:${req.requestId}`, req.requestId, teamClientId, "",
+          Math.max(0, Math.ceil(req.estimatedTokens ?? 0)), now, now + 10 * 60000,
+        );
+      }
       this.ctx.storage.sql.exec(
         `INSERT OR REPLACE INTO client_inflight
            (reservation_id, request_id, client_id, user_hash, estimated_tokens, created_at, expires_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         reservationId, req.requestId, req.clientId, userHash, Math.max(0, Math.ceil(req.estimatedTokens ?? 0)), now, now + 10 * 60000,
       );
-      return { admitted: true, reservationId };
+      const teamReservationId = teamClientId && req.teamMaxConcurrency && req.teamMaxConcurrency > 0
+        ? `${teamClientId}:${req.requestId}`
+        : undefined;
+      return { admitted: true, reservationId, teamReservationId };
     });
   }
 
@@ -866,11 +935,12 @@ export class ControlPlaneStateDO extends DurableObject {
     this.ctx.storage.sql.exec(
       `INSERT OR REPLACE INTO usage_rollups_hourly
          (hour_start, selected_group, deployment_id, provider, model,
-          requests, known_requests, unknown_requests, prompt_tokens, completion_tokens, total_tokens)
+          requests, known_requests, unknown_requests, prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd)
        SELECT ?, selected_group, deployment_id, provider, model,
          COUNT(*), SUM(CASE WHEN usage_kind = 'known' THEN 1 ELSE 0 END),
          SUM(CASE WHEN usage_kind = 'unknown' THEN 1 ELSE 0 END),
-         COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
+         COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0),
+         COALESCE(SUM(estimated_cost_usd), 0)
        FROM usage_events WHERE timestamp >= ? AND timestamp < ?
        GROUP BY selected_group, deployment_id, provider, model`,
       hour, hour, hour + 3600000,
@@ -878,11 +948,12 @@ export class ControlPlaneStateDO extends DurableObject {
     this.ctx.storage.sql.exec(
       `INSERT OR REPLACE INTO client_usage_rollups_hourly
          (hour_start, client_id, app_id, selected_group, deployment_id, provider, model,
-          requests, known_requests, unknown_requests, prompt_tokens, completion_tokens, total_tokens)
+          requests, known_requests, unknown_requests, prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd)
        SELECT ?, COALESCE(client_id, ''), COALESCE(app_id, ''), selected_group, deployment_id, provider, model,
          COUNT(*), SUM(CASE WHEN usage_kind = 'known' THEN 1 ELSE 0 END),
          SUM(CASE WHEN usage_kind = 'unknown' THEN 1 ELSE 0 END),
-         COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
+         COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0),
+         COALESCE(SUM(estimated_cost_usd), 0)
        FROM usage_events WHERE timestamp >= ? AND timestamp < ? AND client_id IS NOT NULL
        GROUP BY COALESCE(client_id, ''), COALESCE(app_id, ''), selected_group, deployment_id, provider, model`,
       hour, hour, hour + 3600000,
@@ -1010,6 +1081,7 @@ function mapRollupRow(row: Record<string, unknown>): Record<string, unknown> {
     deploymentId: row.deployment_id, provider: row.provider, model: row.model,
     requests: row.requests, knownRequests: row.known_requests, unknownRequests: row.unknown_requests,
     promptTokens: row.prompt_tokens, completionTokens: row.completion_tokens, totalTokens: row.total_tokens,
+    estimatedCostUsd: row.estimated_cost_usd ?? null,
   };
 }
 
@@ -1021,6 +1093,7 @@ function mapClientRollupRow(row: Record<string, unknown>): Record<string, unknow
     knownRequests: row.known_requests, unknownRequests: row.unknown_requests,
     promptTokens: row.prompt_tokens, completionTokens: row.completion_tokens,
     totalTokens: row.total_tokens,
+    estimatedCostUsd: row.estimated_cost_usd ?? null,
   };
 }
 

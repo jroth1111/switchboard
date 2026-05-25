@@ -1,5 +1,7 @@
 // Token usage observability: tri-state usage tracking.
 
+import { estimateUsageCostUsd } from "./usage-cost";
+
 export type TokenUsage =
   | { kind: "known"; promptTokens: number; completionTokens: number; totalTokens: number; source: string }
   | { kind: "estimated"; promptTokens: number; completionTokens: number; totalTokens: number; source: string }
@@ -88,7 +90,8 @@ function parseTokenCount(value: unknown): number | undefined {
 
 export function usageEventFromTokenUsage(
   usage: TokenUsage,
-): Pick<UsageEventPayload, "usageKind" | "promptTokens" | "completionTokens" | "totalTokens" | "usageSource"> {
+  provider?: string,
+): Pick<UsageEventPayload, "usageKind" | "promptTokens" | "completionTokens" | "totalTokens" | "usageSource" | "estimatedCostUsd"> {
   if (usage.kind === "unknown") {
     return {
       usageKind: "unknown",
@@ -96,13 +99,16 @@ export function usageEventFromTokenUsage(
       completionTokens: null,
       totalTokens: null,
       usageSource: usage.source,
+      estimatedCostUsd: null,
     };
   }
+  const estimatedCostUsd = provider ? estimateUsageCostUsd(provider, usage) : null;
   return {
     usageKind: usage.kind,
     promptTokens: usage.promptTokens,
     completionTokens: usage.completionTokens,
     totalTokens: usage.totalTokens,
     usageSource: usage.source,
+    estimatedCostUsd,
   };
 }

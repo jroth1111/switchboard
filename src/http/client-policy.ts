@@ -1,6 +1,14 @@
 import { MANIFEST } from "../config/manifest";
 import { canonicalize, type ExecutionPlan } from "../planner/planner";
 import { getBearerToken, timingSafeEqual } from "./auth";
+import {
+  isOAuthExcluded,
+  mergeOAuthExcludedModels,
+  modelIdentitySet,
+} from "./oauth-exclusions";
+import { parseTeamLimits, resolveClientAdmissionLimits, type ClientAdmissionLimits } from "./team-limits";
+
+export { parseTeamLimits, resolveClientAdmissionLimits, type ClientAdmissionLimits };
 
 export interface ClientPolicy {
   teamId?: string;
@@ -90,7 +98,8 @@ export function authorizeModelForClient(model: string, client: ClientIdentity): 
   if (group.hidden && !client.policy.allowHiddenRoutes) return { allowed: false, reason: "hidden_route" };
 
   const modelKeys = modelIdentitySet(model, canonical.canonicalTarget);
-  if (isOAuthExcluded(canonical.canonicalTarget, modelKeys, client.policy.oauthExcludedModels)) {
+  const oauthExclusions = mergedOAuthExclusionsForClient(client);
+  if (isOAuthExcluded(canonical.canonicalTarget, modelKeys, oauthExclusions)) {
     return { allowed: false, reason: "oauth_provider_excluded" };
   }
   if (client.policy.deniedModels?.some((entry) => modelKeys.has(entry))) {
@@ -175,6 +184,7 @@ function parseClientKeys(raw: string | undefined): ParsedClientConfig[] {
         policyId: stringValue(cfg.policyId) ?? DEFAULT_POLICY_ID,
         policyVersion: stringValue(cfg.policyVersion) ?? `${stringValue(cfg.policyId) ?? DEFAULT_POLICY_ID}:unversioned`,
         policy: {
+          teamId: stringValue(cfg.teamId),
           allowedModels: stringList(cfg.allowedModels),
           deniedModels: stringList(cfg.deniedModels),
           deniedRouteGroups: stringList(cfg.deniedRouteGroups),
@@ -202,38 +212,8 @@ function parseOAuthExcludedModels(value: unknown): Record<string, string[]> | un
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-function oauthProviderKeyForGroup(groupName: string): string | undefined {
-  const dep = MANIFEST.deploymentsByGroup[groupName]?.[0];
-  if (!dep) return undefined;
-  switch (dep.provider) {
-    case "anthropic_subscription": return "anthropic";
-    case "chatgpt": return "chatgpt";
-    case "nvidia_nim": return "nim";
-    case "openai": return "openai";
-    default: return dep.provider;
-  }
-}
-
-function isOAuthExcluded(
-  groupName: string,
-  modelKeys: Set<string>,
-  exclusions?: Record<string, string[]>,
-): boolean {
-  if (!exclusions) return false;
-  const providerKey = oauthProviderKeyForGroup(groupName);
-  if (!providerKey) return false;
-  const list = exclusions[providerKey];
-  if (!list?.length) return false;
-  if (list.includes("*")) return true;
-  return list.some((entry) => modelKeys.has(entry));
-}
-
-function modelIdentitySet(requestedModel: string, canonicalTarget: string): Set<string> {
-  const values = new Set([requestedModel, canonicalTarget]);
-  for (const [alias, target] of Object.entries(MANIFEST.aliases)) {
-    if (target === canonicalTarget) values.add(alias);
-  }
-  return values;
+export function mergedOAuthExclusionsForClient(client: ClientIdentity): Record<string, string[]> | undefined {
+  return mergeOAuthExcludedModels(MANIFEST.oauthExcludedModels, client.policy.oauthExcludedModels);
 }
 
 function routeGroupAllowedForFallback(groupName: string, client: ClientIdentity): { allowed: true } | { allowed: false; reason: string } {
@@ -242,7 +222,7 @@ function routeGroupAllowedForFallback(groupName: string, client: ClientIdentity)
   if (client.policy.deniedRouteGroups?.includes(groupName)) return { allowed: false, reason: "route_group_denied" };
   if (group.hidden && !client.policy.allowHiddenRoutes) return { allowed: false, reason: "hidden_route" };
   const modelKeys = modelIdentitySet(groupName, groupName);
-  if (isOAuthExcluded(groupName, modelKeys, client.policy.oauthExcludedModels)) {
+  if (isOAuthExcluded(groupName, modelKeys, mergedOAuthExclusionsForClient(client))) {
     return { allowed: false, reason: "oauth_provider_excluded" };
   }
   if (client.policy.deniedModels?.some((entry) => modelKeys.has(entry))) {

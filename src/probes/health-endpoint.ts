@@ -12,6 +12,7 @@ import {
   type RequestClass,
   type RequestEnvelope,
 } from "../planner/planner";
+import { isOAuthExcluded, modelIdentitySet } from "../http/oauth-exclusions";
 import {
   createEmptyFilterState,
   filterCandidates,
@@ -125,6 +126,7 @@ export interface AliasVisibility {
   canonicalTarget: string;
   resolutionReason: string;
   targetHidden?: boolean;
+  oauthExcluded?: boolean;
   aliasesForTarget: string[];
   requestShapes: Record<RequestShapeId, AliasRequestShapeStatus>;
 }
@@ -432,6 +434,7 @@ export async function buildHealthReport(stateDo: HealthProvider): Promise<Comple
   const requestShapes = buildRequestShapeDefinitions();
   const aliasVisibility = await buildAliasVisibility(
     stateDo, filterState, deploymentDiagnostics, now, health.routeDispatchMemory,
+    MANIFEST.oauthExcludedModels,
   );
   const workerPressure = buildWorkerPressureSummary(deploymentDiagnostics);
 
@@ -586,6 +589,7 @@ async function buildAliasVisibility(
   deploymentDiagnostics: Record<string, DeploymentDiagnostics>,
   now: number,
   routeDispatchMemory: RouteDispatchMemorySnapshot | undefined,
+  oauthExclusions?: Record<string, string[]>,
 ): Promise<Record<string, AliasVisibility>> {
   const aliases = Array.from(new Set([...Object.keys(MANIFEST.aliases), ...Object.keys(MANIFEST.routeGroups)])).sort();
   const aliasesByTarget = buildAliasesByTarget(aliases);
@@ -594,11 +598,15 @@ async function buildAliasVisibility(
   for (const alias of aliases) {
     const canonical = canonicalize(alias);
     const routeGroup = MANIFEST.routeGroups[canonical.canonicalTarget];
+    const modelKeys = modelIdentitySet(alias, canonical.canonicalTarget);
+    const oauthExcluded = canonical.isManaged
+      && isOAuthExcluded(canonical.canonicalTarget, modelKeys, oauthExclusions);
     const requestShapeStatuses = await Promise.all(REQUEST_SHAPES.map(async (shape) => [
       shape.id,
       await evaluateAliasShape(
         alias, canonical.canonicalTarget, canonical.isManaged, shape,
         filterState, deploymentDiagnostics, now, stateDo, routeDispatchMemory,
+        oauthExcluded,
       ),
     ] as const));
     result[alias] = {
@@ -607,6 +615,7 @@ async function buildAliasVisibility(
       canonicalTarget: canonical.canonicalTarget,
       resolutionReason: canonical.reason,
       targetHidden: routeGroup?.hidden,
+      ...(oauthExcluded ? { oauthExcluded: true } : {}),
       aliasesForTarget: aliasesByTarget[canonical.canonicalTarget] ?? [],
       requestShapes: Object.fromEntries(requestShapeStatuses) as Record<RequestShapeId, AliasRequestShapeStatus>,
     };
@@ -625,9 +634,20 @@ async function evaluateAliasShape(
   now: number,
   stateDo: HealthProvider,
   routeDispatchMemory: RouteDispatchMemorySnapshot | undefined,
+  oauthExcluded?: boolean,
 ): Promise<AliasRequestShapeStatus> {
   const envelope = representativeEnvelope(alias, shape);
   const requestClass = computeRequestClass(envelope);
+  if (oauthExcluded) {
+    return {
+      shape: shape.id,
+      requestClass,
+      dispatchable: false,
+      dispatchableCandidates: [],
+      rejectedCandidates: [{ group: canonicalTarget, reason: "oauth_provider_excluded", scope: "group" }],
+      candidateGroups: [],
+    };
+  }
   const dispatchableCandidates: DispatchableCandidate[] = [];
   const rejectedCandidates: RejectedCandidate[] = [];
   const candidateGroups: CandidateGroupStatus[] = [];

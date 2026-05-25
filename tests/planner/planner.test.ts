@@ -76,12 +76,21 @@ describe("planRequest", () => {
     };
   }
 
-  it("plans smart-route-worker chat to Z.AI with NIM fallbacks", () => {
+  it("routes simple smart-route prompts to low-tier subscription", () => {
     const plan = planRequest(makeEnvelope("smart-route"));
     expect(plan).not.toBeNull();
-    expect(plan!.selectedGroup).toBe("smart-route-worker");
-    expect(plan!.fallbackSequence.length).toBeGreaterThan(0);
-    expect(plan!.fallbackSequence.map((f) => f.group)).toContain("nim-primary");
+    expect(plan!.selectedGroup).toBe("anthropic-subscription-sonnet-4-6-low");
+  });
+
+  it("routes complex smart-route prompts to high-tier subscription", () => {
+    const plan = planRequest(makeEnvelope("smart-route", {
+      body: {
+        model: "smart-route",
+        messages: [{ role: "user", content: "Architect and refactor a comprehensive multi-file microservice migration." }],
+      },
+    }));
+    expect(plan).not.toBeNull();
+    expect(plan!.selectedGroup).toBe("anthropic-subscription-opus-4-7-high");
   });
 
   it("routes tool requests to nim-tool-primary", () => {

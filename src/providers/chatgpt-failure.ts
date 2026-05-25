@@ -4,6 +4,8 @@
 
 import type { ProviderFailureClassification } from "../nim/classify/provider-failure";
 
+export { failureClassToOpenAIError, openAIErrorJson } from "./openai-error-shape";
+
 export function classifyChatGPTFailure(
   status: number,
   body: string,

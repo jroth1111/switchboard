@@ -1,3 +1,5 @@
+import type { FallbackProfile } from "./fallback-profile";
+
 // ─── Provider types ───────────────────────────────────────────────
 
 export type ProviderType =
@@ -62,6 +64,8 @@ export interface Deployment {
   model: string;
   providerModel: string;
   keyRef: string;
+  /** Optional extra OAuth account ids for round-robin (merged with env ANTHROPIC_OAUTH_ACCOUNTS). */
+  accountIds?: string[];
   apiBase?: string;
   rpm: number;
   maxParallelRequests: number;
@@ -90,6 +94,7 @@ export interface RouteGroup {
   target: string;
   hidden: boolean;
   fallbacks: string[];
+  fallbackByProfile?: Partial<Record<FallbackProfile, string[]>>;
   dedicatedToolLane?: boolean;
   planner?: {
     toolGroup?: string;
@@ -204,6 +209,8 @@ export interface PlannerSettings {
 export interface RouteManifest {
   plannerSettings: PlannerSettings;
   aliases: Record<string, string>;
+  /** Operator default OAuth model visibility (merged with per-client oauthExcludedModels). */
+  oauthExcludedModels?: Record<string, string[]>;
   allowedAmbiguousAliases: string[][];
   managedModelPrefixes: string[];
   routeGroups: Record<string, RouteGroup>;

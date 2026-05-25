@@ -73,6 +73,7 @@ describe("token usage normalization", () => {
       completionTokens: null,
       totalTokens: null,
       usageSource: "provider",
+      estimatedCostUsd: null,
     });
   });
 

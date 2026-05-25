@@ -475,4 +475,11 @@ describe("policy profile composition", () => {
       expect(policy.response.repairPolicy.allowDestructiveByDefault, `policy ${name}`).toBe(false);
     }
   });
+
+  it("rejects unknown oauthExcludedModels provider keys", () => {
+    const manifest = structuredClone(MANIFEST) as RouteManifest;
+    manifest.oauthExcludedModels = { unknown_provider: ["model-a"] };
+    const issues = validateManifest(manifest);
+    expect(issues.some((i) => i.code === "oauth_excluded_provider_unknown")).toBe(true);
+  });
 });

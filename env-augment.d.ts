@@ -9,7 +9,6 @@ interface Env {
   PROXY_API_KEY?: string;
   ADMIN_API_KEY: string;
   NIM_HEALTH_TOKEN?: string;
-  LITELLM_MASTER_KEY?: string;
   METADATA_SIGNING_KEY?: string;
   ENCRYPTION_KEY: string;
   NIM_KEY_1: string;

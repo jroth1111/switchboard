@@ -128,9 +128,8 @@ async function fetchFailures(args: ParsedArgs): Promise<unknown> {
     operationalEnv,
     "NIM_HEALTH_TOKEN",
     "ADMIN_API_KEY",
-    "LITELLM_MASTER_KEY",
   ) ?? "";
-  if (!token) throw new Error("NIM_HEALTH_TOKEN, ADMIN_API_KEY, or LITELLM_MASTER_KEY is required");
+  if (!token) throw new Error("NIM_HEALTH_TOKEN or ADMIN_API_KEY is required");
 
   const url = new URL(args.command === "show"
     ? `${baseUrl}/nim/failures/${encodeURIComponent(args.receiptId!)}`

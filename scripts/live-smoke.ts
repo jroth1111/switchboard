@@ -53,7 +53,7 @@ Environment:
   LIVE_SMOKE_MODEL                     Model alias to exercise. Default: nim-primary.
   SWITCHBOARD_API_KEY or PROXY_API_KEY  Enables authenticated model catalog; required for provider/fixture chat probes.
   ADMIN_API_KEY                         Enables /admin health, receipts, and cooldown cleanup.
-  NIM_HEALTH_TOKEN or LITELLM_MASTER_KEY Enables authorized /nim/health when ADMIN_API_KEY is absent.
+  NIM_HEALTH_TOKEN                     Enables authorized /nim/health when ADMIN_API_KEY is absent.
   LIVE_SMOKE_REPORT                    Optional JSON report path.
   FIXTURE_WORKER_URL                   Optional fixture worker URL for subscription format probes.
   LIVE_SMOKE_FIXTURE_ACK               Required for LIVE_SMOKE_MODE=fixture; set to
@@ -89,7 +89,7 @@ const baseUrl = trimTrailingSlash(requiredEnv("CONTROL_PLANE_URL", "LIVE_BASE_UR
 const model = optionalEnv("LIVE_SMOKE_MODEL") ?? "nim-primary";
 const switchboardApiKey = optionalEnv("SWITCHBOARD_API_KEY", "PROXY_API_KEY");
 const adminApiKey = optionalEnv("ADMIN_API_KEY");
-const healthApiKey = optionalEnv("NIM_HEALTH_TOKEN", "ADMIN_API_KEY", "LITELLM_MASTER_KEY");
+const healthApiKey = optionalEnv("NIM_HEALTH_TOKEN", "ADMIN_API_KEY");
 const reportPath = optionalEnv("LIVE_SMOKE_REPORT");
 const fixtureWorkerUrlValue = optionalEnv("FIXTURE_WORKER_URL");
 const fixtureWorkerUrl = fixtureWorkerUrlValue ? trimTrailingSlash(fixtureWorkerUrlValue) : undefined;
@@ -135,7 +135,7 @@ if (healthProbeAuth) {
     if (!data.status) throw new Error("health response missing status");
   });
 } else {
-  skip("authorized health", "GET", "/nim/health", "ADMIN_API_KEY, NIM_HEALTH_TOKEN, or LITELLM_MASTER_KEY not set");
+  skip("authorized health", "GET", "/nim/health", "ADMIN_API_KEY or NIM_HEALTH_TOKEN not set");
 }
 
 if (mode !== "surface") {

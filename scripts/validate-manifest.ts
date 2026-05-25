@@ -2,10 +2,7 @@
 // Runs as part of the build pipeline to catch config errors early.
 // Usage: node scripts/validate-manifest.ts
 
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import YAML from "yaml";
+import { readFileSync } from "node:fs";
 import { MANIFEST, ROUTE_MANIFEST_VERSION } from "../src/config/manifest.ts";
 import { ROUTING_ONLY_ROUTE_GROUPS, validateManifest } from "../src/config/validate-manifest.ts";
 import { buildManifestSnapshot, canonicalJson } from "./manifest-snapshot.ts";
@@ -18,9 +15,6 @@ interface ValidationError {
 
 const errors: ValidationError[] = [];
 const requiredScheduledCrons = ["*/2 * * * *", "*/5 * * * *", "0 * * * *"];
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const litellmConfigPath = join(repoRoot, ".litellm", "config.yaml");
-const approvedMissingLiteLLMAliases: Record<string, string> = {};
 
 function error(msg: string) {
   errors.push({ severity: "error", message: msg });
@@ -74,9 +68,6 @@ for (const configPath of ["wrangler.jsonc", "wrangler.dev.jsonc"]) {
 // Versioned manifest snapshot exists and matches the compiled manifest shape
 validateManifestSnapshot("config/route-manifest.snapshot.json");
 
-// LiteLLM alias parity: Switchboard must meet or supersede the local LiteLLM catalog.
-validateLiteLLMAliasParity(litellmConfigPath);
-
 // ChatGPT subscription lanes must prefer structured auth material.
 validateChatGPTSubscriptionAuthRefs();
 validateChatGPTSubscriptionRuntimeAuth();
@@ -127,48 +118,6 @@ function validateManifestSnapshot(snapshotPath: string): void {
   const expected = buildManifestSnapshot();
   if (canonicalJson(snapshot) !== canonicalJson(expected)) {
     error(`${snapshotPath} content does not match compiled manifest; run npm run snapshot`);
-  }
-}
-
-function validateLiteLLMAliasParity(configPath: string): void {
-  if (!existsSync(configPath)) {
-    warn(`LiteLLM alias parity skipped; config not found at ${configPath}`);
-    return;
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = YAML.parse(readFileSync(configPath, "utf8"));
-  } catch (err) {
-    error(`Unable to parse LiteLLM config ${configPath}: ${(err as Error).message}`);
-    return;
-  }
-
-  const aliases = ((parsed as { nim_policy_plane?: { aliases?: unknown } })?.nim_policy_plane?.aliases);
-  if (!aliases || typeof aliases !== "object" || Array.isArray(aliases)) {
-    error(`${configPath} missing nim_policy_plane.aliases`);
-    return;
-  }
-
-  const litellmAliases = aliases as Record<string, unknown>;
-  const missing = Object.entries(litellmAliases)
-    .filter(([alias]) => !(alias in MANIFEST.aliases) && !(alias in approvedMissingLiteLLMAliases))
-    .map(([alias, target]) => `${alias} -> ${String(target)}`);
-  if (missing.length > 0) {
-    error(`LiteLLM alias parity missing ${missing.length} unapproved aliases: ${missing.join(", ")}`);
-  }
-
-  const staleApprovals = Object.keys(approvedMissingLiteLLMAliases)
-    .filter((alias) => alias in MANIFEST.aliases);
-  if (staleApprovals.length > 0) {
-    error(`LiteLLM alias parity approval is stale for aliases now present in Switchboard: ${staleApprovals.join(", ")}`);
-  }
-
-  const mismatched = Object.entries(litellmAliases)
-    .filter(([alias, target]) => alias in MANIFEST.aliases && MANIFEST.aliases[alias] !== target)
-    .map(([alias, target]) => `${alias}: switchboard=${MANIFEST.aliases[alias]} litellm=${String(target)}`);
-  if (mismatched.length > 0) {
-    error(`LiteLLM alias parity has ${mismatched.length} mismatched targets: ${mismatched.join(", ")}`);
   }
 }
 

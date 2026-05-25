@@ -71,16 +71,16 @@ Full CSV: `/tmp/switchboard-peer-audit/matrix/feature-matrix.csv`
 | Chat + stream | yes | litellm, portkey, helicone | Leading |
 | `/v1/responses` | yes | litellm, portkey | Leading for ChatGPT subscription |
 | Anthropic + OAuth | yes | vibeproxy, CCR, litellm | Leading (OAuth DO) |
-| Smart / alias routing | yes | CCR, claude-router | **Gap:** complexity tier rules (claude-router) |
-| Fallback chains | yes | portkey, litellm | Parity; add typed fallbacks (litellm) |
-| Hedging | partial | litellm, helicone | **Gap:** enable by policy profile defaults |
+| Smart / alias routing | yes | CCR, claude-router | **Closed (#18):** complexity tier rules for `smart-route-worker` |
+| Fallback chains | yes | portkey, litellm | **Closed (#18):** typed + profile-aware fallbacks |
+| Hedging | yes | litellm, helicone | **Closed:** enabled on `nim-openai-chat` profile |
 | Rate limits + admission | yes | portkey, helicone | Leading (DO) |
 | Circuit + cooldown | yes | litellm | Leading |
 | NIM repair | yes | litellm (logic external) | **Win** |
 | Canary / admin | yes | litellm, helicone | Leading |
 | Guardrails | no | portkey, helicone | **Gap** (adapt external) |
 | MCP | no | CCR, lazymac2x | Out of hosted scope unless requested |
-| Multi-tenant teams | no | litellm, portkey, helicone | **Gap** (P3) |
+| Multi-tenant teams | yes | litellm, portkey, helicone | **Closed (#18):** `CLIENT_KEYS_JSON` teams (RPM, concurrency, token budget) |
 | Local-only | n/a | vibeproxy, vibeconduit | Correctly excluded |
 
 ---

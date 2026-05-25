@@ -380,54 +380,14 @@ async function handlePreparedModelRequest(params: {
   };
 
   recordReceipt(receipt);
-
-  // Persist to DO (fire-and-forget for latency)
-  const receiptDo = env.CONTROL_PLANE_STATE.get(
-    env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME),
-  ) as unknown as ControlPlaneStateDO;
-  waitUntilLogged(ctx, receiptDo.storeReceipt(receipt), "receipt_store_failed");
-  const storeClientRequest = receiptDo.storeClientRequest?.({
-    requestId: receipt.requestId,
-    timestamp: receipt.timestamp,
+  persistReceiptAsync(env, ctx, receipt, {
     clientId: client.clientId,
     appId: client.appId,
     userHash: client.userHash,
     policyId: client.policyId,
     policyVersion: client.policyVersion,
     routeVersion: ROUTE_MANIFEST_VERSION,
-    routeDecision: receipt.routeDecision,
-    originalModel: receipt.originalModel,
-    canonicalTarget: receipt.canonicalTarget,
-    selectedGroup: receipt.selectedGroup,
-    finalOutcome: receipt.finalOutcome,
-    stream: receipt.stream,
-    totalDurationMs: receipt.totalDurationMs,
   });
-  if (storeClientRequest) waitUntilLogged(ctx, storeClientRequest, "client_request_store_failed");
-
-  // Finalize failed requests (exhausted / client_error)
-  const finalized = finalizeFailedRequest(receipt);
-  if (finalized) {
-    const stateDo = env.CONTROL_PLANE_STATE.get(
-      env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME),
-    );
-    waitUntilLogged(ctx, stateDo.storeFailedRequest({
-      requestId: finalized.summary.requestId,
-      timestamp: finalized.summary.timestamp,
-      originalModel: finalized.summary.originalModel,
-      route: finalized.summary.route,
-      canonicalTarget: finalized.summary.canonicalTarget,
-      selectedGroup: finalized.summary.selectedGroup,
-      selectedModel: finalized.summary.selectedModel,
-      finalOutcome: finalized.summary.finalOutcome,
-      failureClass: finalized.summary.failureClass,
-      issueCode: finalized.summary.issueCode,
-      requestSource: finalized.summary.requestSource,
-      attemptsCount: finalized.summary.attemptsCount,
-      summaryJson: JSON.stringify(finalized.summary),
-      receiptJson: JSON.stringify(finalized.sanitizedReceipt),
-    }), "failed_request_store_failed");
-  }
 
   logInfo("request_end", {
     requestId,
@@ -472,20 +432,41 @@ function waitUntilLogged(ctx: ExecutionContext, promise: Promise<unknown>, event
 }
 
 function persistDenialReceipt(env: Env, receipt: RouteReceipt, ctx: ExecutionContext): void {
+  persistReceiptAsync(env, ctx, receipt);
+}
+
+type ClientRequestPersistFields = {
+  clientId: string;
+  appId?: string;
+  userHash?: string;
+  policyId: string;
+  policyVersion: string;
+  routeVersion: string;
+  denialReason?: string;
+};
+
+function persistReceiptAsync(
+  env: Env,
+  ctx: ExecutionContext,
+  receipt: RouteReceipt,
+  clientFields?: ClientRequestPersistFields,
+): void {
   const receiptDo = env.CONTROL_PLANE_STATE.get(
     env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME),
   ) as unknown as ControlPlaneStateDO;
+
   waitUntilLogged(ctx, receiptDo.storeReceipt(receipt), "receipt_store_failed");
+
   const storeClientRequest = receiptDo.storeClientRequest?.({
     requestId: receipt.requestId,
     timestamp: receipt.timestamp,
-    clientId: receipt.clientId ?? "unknown",
-    appId: receipt.appId,
-    userHash: receipt.userHash,
-    policyId: receipt.policyId,
-    policyVersion: receipt.policyVersion,
-    routeVersion: receipt.routeVersion,
-    denialReason: receipt.denialReason,
+    clientId: clientFields?.clientId ?? receipt.clientId ?? "unknown",
+    appId: clientFields?.appId ?? receipt.appId,
+    userHash: clientFields?.userHash ?? receipt.userHash,
+    policyId: clientFields?.policyId ?? receipt.policyId ?? "unknown",
+    policyVersion: clientFields?.policyVersion ?? receipt.policyVersion ?? "unknown",
+    routeVersion: clientFields?.routeVersion ?? receipt.routeVersion,
+    denialReason: clientFields?.denialReason ?? receipt.denialReason,
     routeDecision: receipt.routeDecision,
     originalModel: receipt.originalModel,
     canonicalTarget: receipt.canonicalTarget,
@@ -497,24 +478,24 @@ function persistDenialReceipt(env: Env, receipt: RouteReceipt, ctx: ExecutionCon
   if (storeClientRequest) waitUntilLogged(ctx, storeClientRequest, "client_request_store_failed");
 
   const finalized = finalizeFailedRequest(receipt);
-  if (finalized) {
-    waitUntilLogged(ctx, receiptDo.storeFailedRequest({
-      requestId: finalized.summary.requestId,
-      timestamp: finalized.summary.timestamp,
-      originalModel: finalized.summary.originalModel,
-      route: finalized.summary.route,
-      canonicalTarget: finalized.summary.canonicalTarget,
-      selectedGroup: finalized.summary.selectedGroup,
-      selectedModel: finalized.summary.selectedModel,
-      finalOutcome: finalized.summary.finalOutcome,
-      failureClass: finalized.summary.failureClass,
-      issueCode: finalized.summary.issueCode,
-      requestSource: finalized.summary.requestSource,
-      attemptsCount: finalized.summary.attemptsCount,
-      summaryJson: JSON.stringify(finalized.summary),
-      receiptJson: JSON.stringify(finalized.sanitizedReceipt),
-    }), "failed_request_store_failed");
-  }
+  if (!finalized) return;
+
+  waitUntilLogged(ctx, receiptDo.storeFailedRequest({
+    requestId: finalized.summary.requestId,
+    timestamp: finalized.summary.timestamp,
+    originalModel: finalized.summary.originalModel,
+    route: finalized.summary.route,
+    canonicalTarget: finalized.summary.canonicalTarget,
+    selectedGroup: finalized.summary.selectedGroup,
+    selectedModel: finalized.summary.selectedModel,
+    finalOutcome: finalized.summary.finalOutcome,
+    failureClass: finalized.summary.failureClass,
+    issueCode: finalized.summary.issueCode,
+    requestSource: finalized.summary.requestSource,
+    attemptsCount: finalized.summary.attemptsCount,
+    summaryJson: JSON.stringify(finalized.summary),
+    receiptJson: JSON.stringify(finalized.sanitizedReceipt),
+  }), "failed_request_store_failed");
 }
 
 export function releaseClientOnStreamEnd(

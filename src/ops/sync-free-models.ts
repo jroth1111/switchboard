@@ -30,9 +30,12 @@ export async function probeFreeModelEndpoint(
 export async function collectFreeModelSuggestions(
   fetchImpl: typeof fetch = fetch,
 ): Promise<ModelHit[]> {
+  const results = await Promise.allSettled(
+    FREE_MODEL_ENDPOINTS.map((ep) => probeFreeModelEndpoint(ep, fetchImpl)),
+  );
   const all: ModelHit[] = [];
-  for (const ep of FREE_MODEL_ENDPOINTS) {
-    all.push(...await probeFreeModelEndpoint(ep, fetchImpl));
+  for (const r of results) {
+    if (r.status === "fulfilled") all.push(...r.value);
   }
   return all;
 }

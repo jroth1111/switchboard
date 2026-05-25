@@ -218,7 +218,7 @@ async function handlePreparedModelRequest(params: {
     recordReceipt(denialReceipt);
     persistReceiptAsync(env, ctx, denialReceipt);
     return errorResponse({
-      message: `Model is not allowed for client: ${model}`,
+      message: `Model is not allowed for this client`,
       type: "invalid_request",
       code: modelAuth.reason,
     }, 403, requestId, client);

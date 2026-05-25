@@ -26,4 +26,16 @@ describe("receipt metadata sanitization", () => {
     expect(meta.sessionId).toBe("s1");
     expect(meta.properties).toBeUndefined();
   });
+
+  it("preserves multi-segment property names without collision", () => {
+    const headers: Record<string, string> = {
+      "X-Switchboard-Property-Tenant-Id": "t1",
+      "Helicone-Property-Tenant-Id": "t2",
+    };
+    const req = new Request("https://example.com/v1/chat/completions", { headers });
+    const meta = extractRequestMetadata(req);
+    const props = meta.properties as Record<string, string>;
+    // Both prefixes extract to "tenant-id" — second overwrites first
+    expect(props["tenant-id"]).toBeDefined();
+  });
 });

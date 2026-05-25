@@ -18,7 +18,10 @@ export function extractRequestMetadata(request: Request): RequestMetadata {
     if (!lower.startsWith("helicone-property-") && !lower.startsWith("x-switchboard-property-")) {
       continue;
     }
-    const name = key.split("-").slice(-1)[0]?.toLowerCase() ?? "prop";
+    const prefix = lower.startsWith("x-switchboard-property-")
+      ? "x-switchboard-property-"
+      : "helicone-property-";
+    const name = lower.slice(prefix.length) || "prop";
     const v = sanitizeMetaValue(value);
     if (v && Object.keys(properties).length < MAX_PROPERTIES) {
       properties[name] = v;

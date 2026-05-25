@@ -41,9 +41,9 @@ export function chatgptAuthMaterialCandidates(
 ): string[] {
   const materials: string[] = [];
   const primary = envString(env, "CHATGPT_AUTH_JSON");
-  if (primary) materials.push(primary);
+  if (primary && isChatGPTSubscriptionAuthJsonText(primary)) materials.push(primary);
   const file = envString(env, "CHATGPT_AUTH_FILE");
-  if (file) materials.push(file);
+  if (file && isChatGPTSubscriptionAuthJsonText(file)) materials.push(file);
   for (const key of deployment?.accountIds ?? []) {
     const fromEnv = envString(env, key);
     if (fromEnv) materials.push(fromEnv);

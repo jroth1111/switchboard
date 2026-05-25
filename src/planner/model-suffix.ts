@@ -28,7 +28,7 @@ export function applyModelSuffixToBody(body: Record<string, unknown>): ModelSuff
   }
 
   const stripped = raw.slice(0, idx);
-  body.model = stripped;
+  body.model = stripped; // intentional mutation: envelope reads the same object downstream
   if (body.thinking === undefined) {
     body.thinking = { type: "enabled", budget_tokens: budget };
   }

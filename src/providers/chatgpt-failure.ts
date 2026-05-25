@@ -92,7 +92,7 @@ export function classifyChatGPTFailure(
       cooldownSeconds: 0,
       affectsHealth: false,
       affectsAccount: false,
-      details: `chatgpt_responses_error_${status}: ${body.slice(0, 200)}`,
+      details: `chatgpt_responses_error_${status}: ${body.slice(0, 80).replace(/[\n\r]/g, " ")}`,
     };
   }
 

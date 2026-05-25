@@ -2,8 +2,9 @@
 // Runs via Cron trigger to warm health scores and detect issues early.
 
 import { MANIFEST } from "../config/manifest";
-import type { Deployment, FailureClass, Policy } from "../config/schema";
-import { applyPolicyCooldown } from "../attempts/attempt-loop";
+import type { Deployment, FailureClass } from "../config/schema";
+import { applyPolicyCooldown } from "../config/policy-cooldown";
+import { policyForDeploymentGroup } from "../planner/deployment-filter";
 import { applyDeploymentRuntimeOverrides } from "../config/runtime-overrides";
 
 export interface ProbeConfig {
@@ -234,7 +235,7 @@ export async function runCanaryProbes(
       if (result.success) {
         await recorder.recordSuccess(result.deploymentId);
       } else if (result.failureClass) {
-        const policy = deploymentPolicy(effectiveDeployment);
+        const policy = policyForDeploymentGroup(effectiveDeployment.group);
         const baseCooldown = result.failureClass === "rate_limit_overload" ? 30 : 0;
         const cooldownSeconds = applyPolicyCooldown(result.failureClass, baseCooldown, policy);
         await recorder.recordFailure(
@@ -493,6 +494,3 @@ export async function reapAllLeases(
   }
 }
 
-function deploymentPolicy(deployment: Deployment): Policy {
-  return MANIFEST.policies[deployment.group] ?? MANIFEST.defaultPolicy;
-}

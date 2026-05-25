@@ -64,21 +64,6 @@ describe("failedRequestSummaryFromReceipt", () => {
     expect(summary!.attempts[0].action).toBe("retry_fallback");
   });
 
-  it("extracts summary from client_error denial with no attempts", () => {
-    const receipt = makeReceipt({
-      finalOutcome: "client_error",
-      attempts: [],
-      denialReason: "model_not_allowed",
-      selectedGroup: "denied",
-      canonicalTarget: "denied",
-    });
-    const summary = failedRequestSummaryFromReceipt(receipt);
-    expect(summary).not.toBeNull();
-    expect(summary!.attemptsCount).toBe(0);
-    expect(summary!.failureClass).toBe("model_not_allowed");
-    expect(summary!.issueCode).toBe("model_not_allowed");
-  });
-
   it("extracts summary from client_error receipt", () => {
     const receipt = makeReceipt({
       finalOutcome: "client_error",

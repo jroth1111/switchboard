@@ -22,7 +22,12 @@ import { buildConfiguredPatterns } from "../nim/repair/aliases";
 import { executeStreamWithPreBuffer, type PreBufferConfig, type StreamDone } from "../streaming/pre-buffer";
 import { logInfo, logWarn } from "../observability/logging";
 import { applyDeploymentRuntimeOverrides } from "../config/runtime-overrides";
-import { buildFilterStateFromHealth, filterCandidates } from "../planner/deployment-filter";
+import { applyPolicyCooldown } from "../config/policy-cooldown";
+import {
+  buildFilterStateFromHealth,
+  filterCandidates,
+  filterOptionsForPolicy,
+} from "../planner/deployment-filter";
 import type { TokenUsage, UsageEventPayload } from "../observability/token-usage";
 import { normalizeProviderUsage, usageEventFromTokenUsage } from "../observability/token-usage";
 
@@ -1215,18 +1220,6 @@ function toRequestShape(envelope: RequestEnvelope): "chat" | "tool" | "multi_too
   return "chat";
 }
 
-const TRANSPORT_FAILURE_CLASSES = ["transport_error", "transport_timeout", "server_5xx"];
-const SEMANTIC_FAILURE_CLASSES = ["semantic_failure", "empty_response", "truncated_response", "repetition_detected", "reasoning_leak", "special_token_leak", "malformed_response"];
-
-export function applyPolicyCooldown(failureClass: string, cooldownSec: number, policy: Policy): number {
-  if (TRANSPORT_FAILURE_CLASSES.includes(failureClass) && policy.health.transportCooldownSeconds > 0)
-    return Math.max(cooldownSec, policy.health.transportCooldownSeconds);
-  if (SEMANTIC_FAILURE_CLASSES.includes(failureClass) && policy.health.semanticCooldownThreshold > 0 && cooldownSec === 0) return policy.health.semanticCooldownThreshold;
-  if (failureClass.startsWith("rate_limit_") && policy.health.rateLimitCooldownThreshold > 0 && cooldownSec === 0)
-    return policy.health.rateLimitCooldownThreshold;
-  return cooldownSec;
-}
-
 function failureRecordOptions(
   admission: AdmissionResponse,
   semanticSeverity?: "low" | "medium" | "high",
@@ -1246,13 +1239,13 @@ function filterDeploymentsForAttempt(
   policy: Policy,
 ): Deployment[] {
   const filterState = buildFilterStateFromHealth(durableHealth);
-  const result = filterCandidates(deployments, filterState, Date.now(), policy.budget.scopeMode, {
-    maxParallelOverride: policy.budget.maxParallelRequests,
-    quarantineFailureThreshold: policy.health.circuitFailureThreshold,
-    suspectMaxParallelDivisor: policy.health.suspectMaxParallelDivisor,
-    rpmLimit: policy.budget.rpmLimit,
-    tokenBudgetPerMinute: policy.budget.tokenBudgetPerMinute,
-  });
+  const result = filterCandidates(
+    deployments,
+    filterState,
+    Date.now(),
+    policy.budget.scopeMode,
+    filterOptionsForPolicy(policy),
+  );
   return result.passed.map((entry) => entry.deployment);
 }
 

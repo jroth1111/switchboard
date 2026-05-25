@@ -12,7 +12,13 @@ import {
   type RequestClass,
   type RequestEnvelope,
 } from "../planner/planner";
-import { createEmptyFilterState, filterCandidates, type FilterState } from "../planner/deployment-filter";
+import {
+  createEmptyFilterState,
+  filterCandidates,
+  filterOptionsForPolicy,
+  policyForDeploymentGroup,
+  type FilterState,
+} from "../planner/deployment-filter";
 
 type HealthProvider = {
   getHealth(): Promise<unknown>;
@@ -647,13 +653,13 @@ async function evaluateAliasShape(
     } else if (deployments.length === 0) {
       rejectedCandidates.push({ group: candidate.group, reason: "no_deployments", scope: "group" });
     } else {
-      const filtered = filterCandidates(deployments, filterState, now, candidate.policy.budget.scopeMode, {
-        maxParallelOverride: candidate.policy.budget.maxParallelRequests,
-        quarantineFailureThreshold: candidate.policy.health.circuitFailureThreshold,
-        suspectMaxParallelDivisor: candidate.policy.health.suspectMaxParallelDivisor,
-        rpmLimit: candidate.policy.budget.rpmLimit,
-        tokenBudgetPerMinute: candidate.policy.budget.tokenBudgetPerMinute,
-      });
+      const filtered = filterCandidates(
+        deployments,
+        filterState,
+        now,
+        candidate.policy.budget.scopeMode,
+        filterOptionsForPolicy(candidate.policy),
+      );
       dispatchableDeploymentCount = filtered.passed.length;
       for (const passed of filtered.passed) {
         const diagnostic = deploymentDiagnostics[passed.deployment.id];
@@ -866,14 +872,14 @@ function summarizeRouteGroupAvailability(
   filterState: FilterState,
   now: number,
 ): { availableDeployments: number; blockedDeployments: number; passedDeploymentIds: Set<string> } {
-  const policy = MANIFEST.policies[groupName] ?? MANIFEST.defaultPolicy;
-  const filtered = filterCandidates(deployments, filterState, now, policy.budget.scopeMode, {
-    maxParallelOverride: policy.budget.maxParallelRequests,
-    quarantineFailureThreshold: policy.health.circuitFailureThreshold,
-    suspectMaxParallelDivisor: policy.health.suspectMaxParallelDivisor,
-    rpmLimit: policy.budget.rpmLimit,
-    tokenBudgetPerMinute: policy.budget.tokenBudgetPerMinute,
-  });
+  const policy = policyForDeploymentGroup(groupName);
+  const filtered = filterCandidates(
+    deployments,
+    filterState,
+    now,
+    policy.budget.scopeMode,
+    filterOptionsForPolicy(policy),
+  );
   return {
     availableDeployments: filtered.passed.length,
     blockedDeployments: filtered.rejected.length,

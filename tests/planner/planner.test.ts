@@ -62,8 +62,10 @@ describe("planRequest", () => {
       stream: false,
       hasTools: false,
       hasStrictTools: false,
+      isMultiTool: false,
       hasTypedContent: false,
       requiresJsonMode: false,
+      requiresReasoning: false,
       ...opts,
     };
   }

@@ -12,6 +12,7 @@ import {
   encrypt,
   decrypt,
 } from "../../src/security/encryption";
+import { executeStreamWithPreBuffer } from "../../src/streaming/pre-buffer";
 
 function candidate(
   deploymentId: string,
@@ -21,6 +22,31 @@ function candidate(
   group = "test",
 ) {
   return { deploymentId, keyRef, rpm, maxParallel, group };
+}
+
+function streamFromSseData(...payloads: unknown[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const payload of payloads) {
+        const data = typeof payload === "string" ? payload : JSON.stringify(payload);
+        controller.enqueue(encoder.encode(`data: ${data}\n\n`));
+      }
+      controller.close();
+    },
+  });
+}
+
+function preBufferConfig() {
+  return {
+    preBufferChunks: 1,
+    enableThinkingLeakStripping: true,
+    enableSpecialTokenRepair: true,
+    heartbeatIntervalMs: 0,
+    maxSilenceMs: 0,
+    firstTokenTimeoutMs: 100,
+    hardTimeoutMs: 1000,
+  };
 }
 
 describe("Provider-specific failure scoping integration", () => {
@@ -157,15 +183,45 @@ describe("OAuth token encryption round-trip", () => {
 
 describe("Streaming pre-buffer integration", () => {
   it("detects invalid first chunk before committing", async () => {
-    // Simulate a pre-buffer scenario: first chunk has error markers
-    const firstChunk = { choices: [{ delta: { content: "Error: Rate limit exceeded" } }] };
-    const hasErrorMarker = firstChunk.choices[0].delta.content.startsWith("Error:");
-    expect(hasErrorMarker).toBe(true);
+    const result = executeStreamWithPreBuffer(
+      {
+        body: streamFromSseData({ error: { message: "Rate limit exceeded" } }, "[DONE]"),
+        status: 200,
+        headers: new Headers(),
+      },
+      preBufferConfig(),
+    );
+
+    await expect(result.ready).resolves.toEqual({
+      committed: false,
+      abortReason: "stream_error_payload",
+    });
+    await expect(result.done).resolves.toMatchObject({
+      wasAborted: true,
+      abortReason: "stream_error_payload",
+      totalChunks: 1,
+    });
+    await expect(new Response(result.readable).text()).resolves.not.toContain("Rate limit exceeded");
   });
 
-  it("passes through valid first chunk", () => {
-    const firstChunk = { choices: [{ delta: { content: "Hello! I can help" } }] };
-    const hasErrorMarker = firstChunk.choices[0].delta.content.startsWith("Error:");
-    expect(hasErrorMarker).toBe(false);
+  it("passes through valid first chunk", async () => {
+    const result = executeStreamWithPreBuffer(
+      {
+        body: streamFromSseData(
+          { choices: [{ delta: { content: "Hello! I can help" }, finish_reason: null }] },
+          "[DONE]",
+        ),
+        status: 200,
+        headers: new Headers(),
+      },
+      preBufferConfig(),
+    );
+
+    await expect(result.ready).resolves.toEqual({ committed: true });
+    await expect(new Response(result.readable).text()).resolves.toContain("Hello! I can help");
+    await expect(result.done).resolves.toMatchObject({
+      wasAborted: false,
+      finishReason: "done",
+    });
   });
 });

@@ -3,7 +3,7 @@
   "name": "llm-control-plane",
   "main": "src/index.ts",
   "compatibility_date": "2025-11-17",
-  "compatibility_flags": ["nodejs_compat"],
+  "minify": true,
   "observability": {
     "logs": { "enabled": true },
     "traces": { "enabled": true, "head_sampling_rate": 0.1 }

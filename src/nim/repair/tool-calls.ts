@@ -1,8 +1,6 @@
 // Tool-call repair and validation.
 // Ports behavior from litellm_logic/nim/repair/tool_calls.py.
 
-import { jsonrepair } from "jsonrepair";
-
 export interface ToolCallValidation {
   valid: boolean;
   reason?: string;
@@ -60,14 +58,15 @@ export function validateToolContract(
       }
     }
 
+    if (!parsedArgs || typeof parsedArgs !== "object" || Array.isArray(parsedArgs)) {
+      return {
+        valid: false,
+        reason: `invalid_json: tool '${name}' arguments must be an object`,
+      };
+    }
+
     const required = requiredByTool.get(name);
     if (required?.size) {
-      if (!parsedArgs || typeof parsedArgs !== "object" || Array.isArray(parsedArgs)) {
-        return {
-          valid: false,
-          reason: `missing_tool_arguments: tool '${name}' arguments must be an object`,
-        };
-      }
       const present = parsedArgs as Record<string, unknown>;
       const missing = [...required].filter((arg) => !(arg in present)).sort();
       if (missing.length > 0) {
@@ -87,6 +86,7 @@ export function repairToolCalls(
 ): Array<Record<string, unknown>> | null {
   let anyRepaired = false;
   const allowed = allowedToolNames(availableTools);
+  let hasUnrepairable = false;
   const repaired = toolCalls.map((tc) => {
     const fn = tc.function as Record<string, unknown> | undefined;
     if (!fn) return tc;
@@ -96,6 +96,7 @@ export function repairToolCalls(
 
     // Fix missing/empty name — can't auto-repair.
     if (!patched.name || typeof patched.name !== "string" || patched.name.trim() === "") {
+      hasUnrepairable = true;
       return null;
     }
     const fixedName = repairToolName(patched.name, allowed);
@@ -107,9 +108,13 @@ export function repairToolCalls(
     // Fix malformed JSON arguments
     if (patched.arguments !== undefined && patched.arguments !== null) {
       const wasString = typeof patched.arguments === "string";
-      const argsStr: string = wasString
+      const argsStr = wasString
         ? (patched.arguments as string)
-        : JSON.stringify(patched.arguments);
+        : safeStringify(patched.arguments);
+      if (argsStr === null) {
+        hasUnrepairable = true;
+        return null;
+      }
       try {
         JSON.parse(argsStr);
         patched.arguments = argsStr;
@@ -134,6 +139,7 @@ export function repairToolCalls(
   });
 
   // Filter out nulls (unrepairable tool calls)
+  if (hasUnrepairable) return null;
   const filtered = repaired.filter((tc): tc is Record<string, unknown> => tc !== null);
   if (filtered.length === 0 && toolCalls.length > 0) return null;
   return anyRepaired || filtered.length < toolCalls.length ? filtered : null;
@@ -141,19 +147,21 @@ export function repairToolCalls(
 
 export function repairToolName(toolName: unknown, allowed: Set<string>): string | null {
   if (typeof toolName !== "string" || !toolName || allowed.size === 0) return null;
-  if (allowed.has(toolName)) return null;
+  const trimmed = toolName.trim();
+  if (!trimmed) return null;
+  if (allowed.has(trimmed)) return trimmed === toolName ? null : trimmed;
 
   const candidates = [...allowed].filter(Boolean).sort((a, b) => b.length - a.length || a.localeCompare(b));
   for (const candidate of candidates) {
     if (
-      toolName.length > candidate.length
-      && toolName.length % candidate.length === 0
-      && toolName === candidate.repeat(toolName.length / candidate.length)
+      trimmed.length > candidate.length
+      && trimmed.length % candidate.length === 0
+      && trimmed === candidate.repeat(trimmed.length / candidate.length)
     ) {
       return candidate;
     }
-    if (toolName === `${candidate}.${candidate}`) return candidate;
-    if (toolName === `${candidate}(${candidate})`) return candidate;
+    if (trimmed === `${candidate}.${candidate}`) return candidate;
+    if (trimmed === `${candidate}(${candidate})`) return candidate;
   }
   return null;
 }
@@ -213,15 +221,168 @@ export function repairJson(text: string): string | null {
     // Continue with repair.
   }
 
-  // Use jsonrepair for broad syntax coverage (missing commas, comments,
-  // truncated JSON, single quotes, concatenation, escaping errors, etc.)
-  try {
-    const repaired = jsonrepair(candidate);
-    JSON.parse(repaired); // verify the output is valid
-    return repaired;
-  } catch {
-    return null;
+  for (const repaired of repairCandidates(candidate)) {
+    try {
+      JSON.parse(repaired);
+      return repaired;
+    } catch {
+      // Try the next local repair candidate.
+    }
   }
+  return null;
+}
+
+function repairCandidates(candidate: string): string[] {
+  const candidates = [
+    stripJsonComments(candidate),
+    pythonLikeToJson(candidate),
+  ];
+  candidates.push(...candidates.map(closeTruncatedJson));
+  return [...new Set(candidates.map((item) => item.trim()).filter(Boolean))];
+}
+
+function stripJsonComments(text: string): string {
+  let result = "";
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (inString) {
+      result += ch;
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === "\"") inString = false;
+      continue;
+    }
+    if (ch === "\"") {
+      inString = true;
+      result += ch;
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      while (i < text.length && text[i] !== "\n") i++;
+      result += "\n";
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      i += 2;
+      while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i++;
+      i++;
+      continue;
+    }
+    result += ch;
+  }
+  return removeTrailingCommas(result);
+}
+
+function pythonLikeToJson(text: string): string {
+  let result = "";
+  let inDoubleString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inDoubleString) {
+      result += ch;
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === "\"") inDoubleString = false;
+      continue;
+    }
+    if (ch === "\"") {
+      inDoubleString = true;
+      result += ch;
+      continue;
+    }
+    if (ch === "'") {
+      const parsed = readSingleQuotedString(text, i);
+      result += JSON.stringify(parsed.value);
+      i = parsed.endIndex;
+      continue;
+    }
+    if (startsBareWord(text, i, "True")) {
+      result += "true";
+      i += 3;
+      continue;
+    }
+    if (startsBareWord(text, i, "False")) {
+      result += "false";
+      i += 4;
+      continue;
+    }
+    if (startsBareWord(text, i, "None")) {
+      result += "null";
+      i += 3;
+      continue;
+    }
+    result += ch;
+  }
+  return removeTrailingCommas(result);
+}
+
+function readSingleQuotedString(text: string, startIndex: number): { value: string; endIndex: number } {
+  let value = "";
+  let escaped = false;
+  for (let i = startIndex + 1; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) {
+      value += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === "'") return { value, endIndex: i };
+    value += ch;
+  }
+  return { value, endIndex: text.length - 1 };
+}
+
+function startsBareWord(text: string, index: number, word: string): boolean {
+  if (!text.startsWith(word, index)) return false;
+  const before = text[index - 1];
+  const after = text[index + word.length];
+  return !isWordChar(before) && !isWordChar(after);
+}
+
+function isWordChar(value: string | undefined): boolean {
+  return value !== undefined && /[A-Za-z0-9_]/.test(value);
+}
+
+function closeTruncatedJson(text: string): string {
+  let result = text.trim();
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+  for (const ch of result) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === "\"") inString = false;
+      continue;
+    }
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") stack.push("}");
+    else if (ch === "[") stack.push("]");
+    else if (ch === "}" || ch === "]") {
+      if (stack[stack.length - 1] === ch) stack.pop();
+    }
+  }
+  if (inString) result += "\"";
+  for (let i = stack.length - 1; i >= 0; i--) {
+    result = result.replace(/,\s*$/u, "");
+    result += stack[i];
+  }
+  return removeTrailingCommas(result);
+}
+
+function removeTrailingCommas(text: string): string {
+  return text.replace(/,\s*([}\]])/gu, "$1");
 }
 
 function allowedToolNames(availableTools: Array<Record<string, unknown>>): Set<string> {
@@ -263,4 +424,13 @@ function requiredToolArgs(availableTools: Array<Record<string, unknown>>): Map<s
     if (names.size > 0) result.set((name as string).trim(), names);
   }
   return result;
+}
+
+function safeStringify(value: unknown): string | null {
+  try {
+    const serialized = JSON.stringify(value);
+    return typeof serialized === "string" ? serialized : null;
+  } catch {
+    return null;
+  }
 }

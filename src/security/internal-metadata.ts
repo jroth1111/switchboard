@@ -1,9 +1,14 @@
 // HMAC metadata signing for internal trust.
 
+const HMAC_SHA256_BASE64_RE = /^[A-Za-z0-9+/]{43}=$/;
+
 export async function signMetadata(
   payload: Record<string, unknown>,
   key: string,
 ): Promise<string> {
+  if (key.trim().length === 0) {
+    throw new Error("Metadata signing key is required");
+  }
   const data = JSON.stringify(payload);
   const encoder = new TextEncoder();
   const keyData = encoder.encode(key);
@@ -21,10 +26,13 @@ export async function verifyMetadataSignature(
   signature: string,
   key: string,
 ): Promise<boolean> {
+  if (key.trim().length === 0) return false;
+  const candidate = signature.trim();
+  if (!HMAC_SHA256_BASE64_RE.test(candidate)) return false;
   const expected = await signMetadata(payload, key);
   // Constant-time comparison to prevent timing attacks
   const aa = new TextEncoder().encode(expected);
-  const bb = new TextEncoder().encode(signature);
+  const bb = new TextEncoder().encode(candidate);
   let diff = aa.length ^ bb.length;
   const maxLength = Math.max(aa.length, bb.length);
   for (let i = 0; i < maxLength; i++) diff |= (aa[i] ?? 0) ^ (bb[i] ?? 0);
@@ -41,7 +49,8 @@ function isSafeObjectKey(key: string): boolean {
 }
 
 function isInternalMetadataKey(key: string): boolean {
-  return INTERNAL_PREFIXES.some((prefix) => key.toLowerCase().startsWith(prefix));
+  const normalized = key.toLowerCase();
+  return INTERNAL_PREFIXES.some((prefix) => normalized.startsWith(prefix));
 }
 
 function shouldDropClientKey(key: string): boolean {
@@ -73,6 +82,7 @@ export function sanitizeClientMetadata(body: Record<string, unknown>): Record<st
     }
     delete cleaned.extra_body;
   }
+  // Strip unsafe/internal fields that were on the top level or hoisted from extra_body.
   for (const key of Object.keys(cleaned)) {
     if (shouldDropClientKey(key)) delete cleaned[key];
   }

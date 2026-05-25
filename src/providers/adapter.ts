@@ -2,7 +2,7 @@
 // Each provider implements this interface to handle request building, response
 // normalization, stream conversion, and failure classification.
 
-import type { Deployment, FailureClass } from "../config/schema";
+import type { Deployment } from "../config/schema";
 import type { ProviderRequest } from "./base";
 import type { ProviderFailureClassification } from "../nim/classify/provider-failure";
 import type { OAuthAccountAccessor } from "./anthropic-subscription";
@@ -32,7 +32,9 @@ export interface StreamNormalizeContext {
 
 // ─── Provider adapter interface ───────────────────────────────────
 
-export interface ProviderAdapter {
+export type ProviderStreamFormat = "anthropic_subscription" | "chatgpt_responses";
+
+interface ProviderAdapterBase {
   /** Build the HTTP request for this provider. */
   buildRequest(ctx: ProviderBuildContext): Promise<ProviderRequest>;
 
@@ -44,10 +46,17 @@ export interface ProviderAdapter {
 
   /** Convert a provider-native SSE event to an OpenAI chat completion chunk. */
   normalizeStreamChunk(event: Record<string, unknown>, requestId: string, model: string): Record<string, unknown> | null;
-
-  /** Whether this is a subscription-based provider that needs stream wrapping. */
-  readonly needsStreamWrapping: boolean;
-
-  /** Stream format identifier for subscription providers. */
-  readonly streamFormat?: "anthropic_subscription" | "chatgpt_responses";
 }
+
+export type ProviderAdapter = ProviderAdapterBase & (
+  | {
+      /** Subscription providers must declare the native stream format to wrap. */
+      readonly needsStreamWrapping: true;
+      readonly streamFormat: ProviderStreamFormat;
+    }
+  | {
+      /** OpenAI-compatible providers stream in client-facing format already. */
+      readonly needsStreamWrapping: false;
+      readonly streamFormat?: undefined;
+    }
+);

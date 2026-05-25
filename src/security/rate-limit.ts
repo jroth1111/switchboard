@@ -1,5 +1,5 @@
 // Best-effort isolate-local rate limiter (NOT a global rate limiter).
-// Uses a sliding window counter with per-IP scoping. Module-level Maps are
+// Uses a fixed-window counter with per-IP scoping. Module-level Maps are
 // per-isolate: under load Cloudflare runs multiple isolates, so this provides
 // approximate smoothing — not exact enforcement. For strict global rate
 // limiting, use Durable Object state or a KV-based approach.
@@ -8,6 +8,8 @@ import { RATE_LIMIT_MAX_ENTRIES, RATE_LIMIT_PRUNE_INTERVAL_MS, RATE_LIMIT_WINDOW
 
 const windows = new Map<string, { count: number; expiresAt: number }>();
 let lastPrune = 0;
+const UNKNOWN_CLIENT_IP = "unknown:strict";
+const MAX_IP_LITERAL_LENGTH = 45;
 
 export interface RateLimitConfig {
   windowMs: number;
@@ -19,11 +21,25 @@ const DEFAULT_CONFIG: RateLimitConfig = {
   maxRequests: RATE_LIMIT_MAX_REQUESTS,
 };
 
+function normalizeConfig(config: RateLimitConfig): RateLimitConfig | null {
+  if (
+    !Number.isFinite(config.windowMs)
+    || !Number.isInteger(config.windowMs)
+    || config.windowMs <= 0
+    || !Number.isFinite(config.maxRequests)
+    || !Number.isInteger(config.maxRequests)
+    || config.maxRequests <= 0
+  ) {
+    return null;
+  }
+  return config;
+}
+
 function pruneExpired(now: number) {
   if (now - lastPrune < RATE_LIMIT_PRUNE_INTERVAL_MS && windows.size < RATE_LIMIT_MAX_ENTRIES) return;
   lastPrune = now;
   for (const [k, v] of windows) {
-    if (v.expiresAt < now) windows.delete(k);
+    if (v.expiresAt <= now) windows.delete(k);
   }
   // Hard cap: evict oldest entries (Map preserves insertion order)
   while (windows.size > RATE_LIMIT_MAX_ENTRIES) {
@@ -37,36 +53,73 @@ export function checkRateLimit(
   config: RateLimitConfig = DEFAULT_CONFIG,
 ): { allowed: boolean; remaining: number; resetAt: number } {
   const now = Date.now();
-  const key = `${identifier}:${Math.floor(now / config.windowMs)}`;
+  const normalizedConfig = normalizeConfig(config);
+  if (!normalizedConfig) {
+    return { allowed: false, remaining: 0, resetAt: now + DEFAULT_CONFIG.windowMs };
+  }
+  const bucket = Math.floor(now / normalizedConfig.windowMs);
+  const resetAt = (bucket + 1) * normalizedConfig.windowMs;
+  const key = `${identifier}:${bucket}`;
 
   pruneExpired(now);
 
   const entry = windows.get(key);
   const currentCount = entry?.count ?? 0;
+  if (!entry && windows.size >= RATE_LIMIT_MAX_ENTRIES) {
+    return { allowed: false, remaining: 0, resetAt };
+  }
 
-  if (currentCount >= config.maxRequests) {
+  if (currentCount >= normalizedConfig.maxRequests) {
     return {
       allowed: false,
       remaining: 0,
-      resetAt: (Math.floor(now / config.windowMs) + 1) * config.windowMs,
+      resetAt,
     };
   }
 
   windows.set(key, {
     count: currentCount + 1,
-    expiresAt: (Math.floor(now / config.windowMs) + 1) * config.windowMs,
+    expiresAt: resetAt,
   });
 
   return {
     allowed: true,
-    remaining: config.maxRequests - currentCount - 1,
-    resetAt: (Math.floor(now / config.windowMs) + 1) * config.windowMs,
+    remaining: normalizedConfig.maxRequests - currentCount - 1,
+    resetAt,
   };
 }
 
 export function extractClientIp(request: Request): string {
   // Trust only CF-Connecting-IP (set by Cloudflare edge). Do not fall back to
   // client-controlled headers (X-Real-IP, X-Forwarded-For) which allow rate-limit bypass.
-  return request.headers.get("CF-Connecting-IP")
-    ?? "unknown:strict";
+  const candidate = request.headers.get("CF-Connecting-IP")?.trim();
+  if (!candidate || !isValidIpLiteral(candidate)) return UNKNOWN_CLIENT_IP;
+  return candidate.toLowerCase();
+}
+
+function isValidIpLiteral(candidate: string): boolean {
+  if (candidate.length > MAX_IP_LITERAL_LENGTH) return false;
+  if (/[\s,[\]\\/]/.test(candidate)) return false;
+  return isValidIpv4(candidate) || isValidIpv6(candidate);
+}
+
+function isValidIpv4(candidate: string): boolean {
+  const parts = candidate.split(".");
+  if (parts.length !== 4) return false;
+  return parts.every((part) => {
+    if (!/^(0|[1-9]\d{0,2})$/.test(part)) return false;
+    const value = Number(part);
+    return value >= 0 && value <= 255;
+  });
+}
+
+function isValidIpv6(candidate: string): boolean {
+  if (!candidate.includes(":")) return false;
+  if (!/^[0-9a-fA-F:.]+$/.test(candidate)) return false;
+  try {
+    new URL(`https://[${candidate}]/`);
+    return true;
+  } catch {
+    return false;
+  }
 }

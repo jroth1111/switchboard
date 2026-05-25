@@ -209,6 +209,8 @@ describe("hedged non-streaming execution", () => {
       expect(body.model).toBe("fast-model");
       expect(result.attempts.some((attempt) => attempt.deploymentId === "fast" && attempt.action === "accept")).toBe(true);
       expect(state.recordSuccess).toHaveBeenCalledWith("fast", expect.any(Number), expect.any(Number), expect.any(Object), expect.any(Object));
+      expect(state.release).toHaveBeenCalledWith("res-1");
+      expect(state.release).toHaveBeenCalledWith("res-2");
     } finally {
       vi.unstubAllGlobals();
     }
@@ -263,8 +265,9 @@ describe("hedged non-streaming execution", () => {
       expect(result.success).toBe(true);
       // Only one upstream fetch should fire because lane 1 won during stagger window.
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      // The skipped lane's reservation must be released.
-      expect(state.release).toHaveBeenCalled();
+      expect(state.release).toHaveBeenCalledWith("res-1");
+      // The skipped lane's reservation must be released even though it never dispatched upstream.
+      expect(state.release).toHaveBeenCalledWith("res-2");
     } finally {
       vi.unstubAllGlobals();
     }

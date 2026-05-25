@@ -8,6 +8,7 @@ export class SSEEmitter {
   private encoder = new TextEncoder();
   private closed = false;
   private maxFrameSize: number;
+  private released = false;
 
   constructor(writable: WritableStream<Uint8Array>, maxFrameSize = MAX_SSE_FRAME_SIZE) {
     this.writer = writable.getWriter();
@@ -24,15 +25,7 @@ export class SSEEmitter {
     }
     msg += "\n";
     if (msg.length > this.maxFrameSize) {
-      // Truncate at a line boundary within the frame limit
-      const cutLimit = this.maxFrameSize - 2;
-      let cut = msg.lastIndexOf("\n", cutLimit);
-      if (cut <= 0) cut = cutLimit;
-      // Avoid splitting a surrogate pair at the cut boundary
-      if (cut > 0 && msg.charCodeAt(cut - 1) >= 0xD800 && msg.charCodeAt(cut - 1) <= 0xDBFF) {
-        cut--;
-      }
-      msg = msg.slice(0, cut) + "\n\n";
+      throw new Error(`sse_frame_too_large: ${msg.length} > ${this.maxFrameSize}`);
     }
     await this.writer.write(this.encoder.encode(msg));
   }
@@ -57,11 +50,23 @@ export class SSEEmitter {
       await this.writer.close();
     } catch {
       // writer may already be closed
+    } finally {
+      this.releaseWriter();
     }
   }
 
   get isClosed(): boolean {
     return this.closed;
+  }
+
+  private releaseWriter(): void {
+    if (this.released) return;
+    this.released = true;
+    try {
+      this.writer.releaseLock();
+    } catch {
+      // lock may already be released by the underlying stream implementation
+    }
   }
 }
 

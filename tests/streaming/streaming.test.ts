@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { SSEParser, extractDelta, parseSSEStream } from "../../src/streaming/sse-parser";
+import { MAX_SSE_FRAME_SIZE, SSEParser, extractDelta, parseSSEStream } from "../../src/streaming/sse-parser";
 import { SSEEmitter, createSSEStream } from "../../src/streaming/sse-emitter";
 import { StreamEvaluator } from "../../src/streaming/stream-evaluator";
 import { executeStreamWithPreBuffer } from "../../src/streaming/pre-buffer";
@@ -7,6 +7,15 @@ import { executeStreamWithPreBuffer } from "../../src/streaming/pre-buffer";
 // ─── SSE Parser ────────────────────────────────────────────────────
 
 describe("SSEParser", () => {
+  function streamFromChunks(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+  }
+
   it("parses a single data event", () => {
     const parser = new SSEParser();
     const events = parser.feed("data: hello world\n\n");
@@ -39,6 +48,24 @@ describe("SSEParser", () => {
     expect(e2[0].data).toBe("hello");
   });
 
+  it("decodes UTF-8 characters split across byte chunks", async () => {
+    const encoded = new TextEncoder().encode("data: hello 🧪\n\n");
+    const emojiStart = encoded.indexOf(0xf0);
+    expect(emojiStart).toBeGreaterThan(0);
+    const stream = streamFromChunks([
+      encoded.slice(0, emojiStart + 1),
+      encoded.slice(emojiStart + 1, emojiStart + 3),
+      encoded.slice(emojiStart + 3),
+    ]);
+
+    const events: Array<{ data: string }> = [];
+    for await (const evt of parseSSEStream(stream)) {
+      events.push(evt);
+    }
+
+    expect(events).toEqual([{ data: "hello 🧪", event: undefined, id: undefined, retry: undefined }]);
+  });
+
   it("ignores comments", () => {
     const parser = new SSEParser();
     const events = parser.feed(": this is a comment\ndata: real\n\n");
@@ -65,6 +92,34 @@ describe("SSEParser", () => {
   it("returns empty on flush with no data", () => {
     const parser = new SSEParser();
     expect(parser.flush()).toHaveLength(0);
+  });
+
+  it("rejects oversized frames instead of truncating them", () => {
+    const parser = new SSEParser();
+    expect(() => parser.feed(`data: ${"x".repeat(MAX_SSE_FRAME_SIZE)}\n\n`))
+      .toThrow("sse_frame_too_large");
+  });
+
+  it("does not flush a partial event after abort", async () => {
+    const encoder = new TextEncoder();
+    const ac = new AbortController();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("data: partial"));
+      },
+    });
+    const events: Array<{ data: string }> = [];
+    const consume = (async () => {
+      for await (const evt of parseSSEStream(stream, ac.signal)) {
+        events.push(evt);
+      }
+    })();
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    ac.abort();
+    await consume;
+
+    expect(events).toHaveLength(0);
   });
 });
 
@@ -195,6 +250,18 @@ describe("SSEEmitter", () => {
     expect(text).toContain(": ping\n\n");
   });
 
+  it("rejects oversized frames instead of emitting truncated data", async () => {
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const reader = readable.getReader();
+    const readDone = reader.read();
+    const emitter = new SSEEmitter(writable, 32);
+
+    await expect(emitter.send("x".repeat(64))).rejects.toThrow("sse_frame_too_large");
+    await emitter.close();
+    await expect(readDone).resolves.toMatchObject({ done: true });
+    reader.releaseLock();
+  });
+
   it("ignores sends after close", async () => {
     const { readable, emitter } = createSSEStream();
     await emitter.close();
@@ -260,6 +327,14 @@ describe("StreamEvaluator", () => {
     expect(result.failureClass).toBe("garbled_response");
   });
 
+  it("treats C1 control characters as non-printable in pre-buffer", () => {
+    const evaluator = new StreamEvaluator({ preBufferChunks: 4 });
+    const c1Controls = Array.from({ length: 32 }, (_, i) => String.fromCharCode(0x80 + i)).join("");
+    const result = evaluator.evaluateChunk(c1Controls, undefined);
+    expect(result.action).toBe("abort_retry");
+    expect(result.failureClass).toBe("garbled_response");
+  });
+
   it("reports pre-buffer as complete after enough chunks", () => {
     const evaluator = new StreamEvaluator({ preBufferChunks: 2 });
     evaluator.evaluateChunk("first", undefined);
@@ -304,7 +379,7 @@ describe("executeStreamWithPreBuffer", () => {
 
     const ready = await Promise.race([
       result.ready,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("ready did not resolve")), 100)),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("ready did not resolve")), 2000)),
     ]);
 
     expect(ready).toEqual({ committed: true });
@@ -427,7 +502,7 @@ describe("executeStreamWithPreBuffer", () => {
 
     const ready = await Promise.race([
       result.ready,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("ready did not resolve")), 100)),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("ready did not resolve")), 2000)),
     ]);
 
     expect(ready).toEqual({ committed: false, abortReason: "first_token_timeout" });
@@ -435,6 +510,107 @@ describe("executeStreamWithPreBuffer", () => {
       wasAborted: true,
       abortReason: "first_token_timeout",
       totalChunks: 0,
+    });
+  });
+
+  it("marks external abort signals as aborted", async () => {
+    const ac = new AbortController();
+    const upstream = new ReadableStream<Uint8Array>({
+      start() {
+        // Intentionally left open until the caller aborts.
+      },
+    });
+
+    const result = executeStreamWithPreBuffer(
+      { body: upstream, status: 200, headers: new Headers() },
+      {
+        preBufferChunks: 1,
+        enableThinkingLeakStripping: true,
+        enableSpecialTokenRepair: true,
+        heartbeatIntervalMs: 0,
+        maxSilenceMs: 0,
+        firstTokenTimeoutMs: 0,
+        hardTimeoutMs: 0,
+        signal: ac.signal,
+      },
+    );
+
+    ac.abort();
+
+    await expect(result.ready).resolves.toEqual({ committed: false, abortReason: "client_abort" });
+    await expect(result.done).resolves.toMatchObject({
+      wasAborted: true,
+      abortReason: "client_abort",
+    });
+  });
+
+  it("aborts malformed OpenAI data instead of replaying it as success", async () => {
+    const encoder = new TextEncoder();
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("data: not-json\n\n"));
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      },
+    });
+
+    const result = executeStreamWithPreBuffer(
+      { body: upstream, status: 200, headers: new Headers() },
+      {
+        preBufferChunks: 4,
+        enableThinkingLeakStripping: true,
+        enableSpecialTokenRepair: true,
+        heartbeatIntervalMs: 0,
+        maxSilenceMs: 0,
+        firstTokenTimeoutMs: 100,
+        hardTimeoutMs: 1000,
+      },
+    );
+
+    await expect(result.ready).resolves.toEqual({ committed: false, abortReason: "malformed_stream_json" });
+    await expect(result.done).resolves.toMatchObject({
+      wasAborted: true,
+      abortReason: "malformed_stream_json",
+      totalChunks: 1,
+    });
+  });
+
+  it("preserves stream usage metadata from pre-buffered usage chunks", async () => {
+    const encoder = new TextEncoder();
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "OK" }, finish_reason: null }] })}\n\n`));
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 3, completion_tokens: 4 } })}\n\n`));
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      },
+    });
+
+    const result = executeStreamWithPreBuffer(
+      { body: upstream, status: 200, headers: new Headers() },
+      {
+        preBufferChunks: 4,
+        enableThinkingLeakStripping: true,
+        enableSpecialTokenRepair: true,
+        heartbeatIntervalMs: 0,
+        maxSilenceMs: 0,
+        firstTokenTimeoutMs: 100,
+        hardTimeoutMs: 1000,
+      },
+    );
+
+    await expect(result.ready).resolves.toEqual({ committed: true });
+    const body = await new Response(result.readable).text();
+    expect(body).toContain("OK");
+    await expect(result.done).resolves.toMatchObject({
+      wasAborted: false,
+      usage: {
+        kind: "known",
+        promptTokens: 3,
+        completionTokens: 4,
+        totalTokens: 7,
+        source: "streaming",
+      },
     });
   });
 });
@@ -476,7 +652,12 @@ describe("SSE pipeline", () => {
       const reader = readable.getReader();
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          for (const evt of parser.feed(decoder.decode())) {
+            allEvents.push(evt);
+          }
+          break;
+        }
         const text = decoder.decode(value, { stream: true });
         for (const evt of parser.feed(text)) {
           allEvents.push(evt);

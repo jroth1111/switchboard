@@ -79,6 +79,27 @@ function structuredChatGPTAuth(): string {
   });
 }
 
+function makeEvalConfig(): ResponseEvaluationConfig {
+  return {
+    enableSemanticValidation: true,
+    enableToolRepair: true,
+    enableSpecialTokenDetection: true,
+    enableRepetitionDetection: true,
+    semanticMinChars: 1,
+    semanticMinEntropy: 2.5,
+    semanticMinPrintableRatio: 0.8,
+    repetitionMaxRatio: 0.4,
+    stripReasoningFromSuccess: true,
+    enableSchemaAwareRepair: false,
+    repairPolicy: {
+      allowDestructive: false,
+      enumAliases: {},
+      toolNameAliases: {},
+      relationalDefaults: {},
+    },
+  };
+}
+
 // ─── Provider request building ────────────────────────────────────
 
 describe("Provider request building integration", () => {
@@ -198,17 +219,7 @@ describe("End-to-end plan -> admit -> evaluate flow", () => {
     };
 
     // 5. Evaluate
-    const evaluation = evaluateResponse(envelope.body, mockResponse, {
-      enableSemanticValidation: true,
-      enableToolRepair: true,
-      enableSpecialTokenDetection: true,
-      enableRepetitionDetection: true,
-      semanticMinChars: 1,
-      semanticMinEntropy: 2.5,
-      semanticMinPrintableRatio: 0.8,
-      repetitionMaxRatio: 0.4,
-      stripReasoningFromSuccess: true,
-    });
+    const evaluation = evaluateResponse(envelope.body, mockResponse, makeEvalConfig());
     expect(evaluation.action).toBe("accept");
 
     // 6. Record success
@@ -244,8 +255,9 @@ describe("End-to-end plan -> admit -> evaluate flow", () => {
     release(store, r2.reservationId!);
     recordSuccess(store, "deploy-2");
 
-    // Health scores reflect history
-    expect(store.getHealthScore("deploy-1")!.score).toBeLessThan(100);
+    // Overload pressure keeps fallback behavior without poisoning route health.
+    expect(store.getHealthScore("deploy-1")!.score).toBe(100);
+    expect(store.getCircuit("deploy-1")).toBeNull();
     expect(store.getHealthScore("deploy-2")!.score).toBeGreaterThan(0);
   });
 
@@ -314,17 +326,7 @@ describe("End-to-end plan -> admit -> evaluate flow", () => {
 // ─── Response evaluation integration ──────────────────────────────
 
 describe("Response evaluation integration", () => {
-  const evalConfig: ResponseEvaluationConfig = {
-    enableSemanticValidation: true,
-    enableToolRepair: true,
-    enableSpecialTokenDetection: true,
-    enableRepetitionDetection: true,
-    semanticMinChars: 1,
-    semanticMinEntropy: 2.5,
-    semanticMinPrintableRatio: 0.8,
-    repetitionMaxRatio: 0.4,
-    stripReasoningFromSuccess: true,
-  };
+  const evalConfig = makeEvalConfig();
 
   it("accepts good response", () => {
     const body = { model: "glm-5.1", messages: [{ role: "user", content: "hello" }] };
@@ -394,8 +396,9 @@ describe("Response evaluation integration", () => {
       usage: { prompt_tokens: 5, completion_tokens: 8, total_tokens: 13 },
     };
     const evaluation = evaluateResponse(body, response, evalConfig);
-    // Truncated response should trigger retry
-    expect(["retry_same", "retry_fallback", "accept"]).toContain(evaluation.action);
+    expect(evaluation.action).toBe("retry_fallback");
+    expect(evaluation.failureClass).toBe("truncated_response");
+    expect(evaluation.failureMessage).toBe("finish_reason_length_truncation");
   });
 });
 

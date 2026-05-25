@@ -248,7 +248,7 @@ describe("Rolling deployment metrics and weighted penalties", () => {
     expect(store.getHealthScore("deploy-cap")!.recentOutcomes).toHaveLength(50);
   });
 
-  it("weights transport timeouts heavier than server failures and generic failures", () => {
+  it("records transport timeouts as rolling pressure without score decay", () => {
     const generic = new InMemoryStorageAdapter();
     const server = new InMemoryStorageAdapter();
     const timeout = new InMemoryStorageAdapter();
@@ -258,15 +258,17 @@ describe("Rolling deployment metrics and weighted penalties", () => {
     recordFailure(timeout, "d", "transport_timeout", 0, 10, 300);
 
     expect(server.getHealthScore("d")!.score).toBeLessThan(generic.getHealthScore("d")!.score);
-    expect(timeout.getHealthScore("d")!.score).toBeLessThan(server.getHealthScore("d")!.score);
+    expect(timeout.getHealthScore("d")!.score).toBe(100);
+    expect(computeRollingMetrics(timeout.getHealthScore("d")!.recentOutcomes ?? []).timeoutRate).toBe(1);
+    expect(deploymentPenalty(toHealthSnapshot(timeout.getHealthScore("d")), Date.now())).toBeGreaterThan(0);
   });
 
   it("discounts failure penalty when dispatch happened at the concurrency ceiling", () => {
     const normal = new InMemoryStorageAdapter();
     const saturated = new InMemoryStorageAdapter();
 
-    recordFailure(normal, "d", "transport_timeout", 0, 10, 300);
-    recordFailure(saturated, "d", "transport_timeout", 0, 10, 300, undefined, false, 300, {
+    recordFailure(normal, "d", "server_5xx", 0, 10, 300);
+    recordFailure(saturated, "d", "server_5xx", 0, 10, 300, undefined, false, 300, {
       inflightAtDispatch: 4,
       maxParallelAtDispatch: 4,
     });
@@ -274,12 +276,12 @@ describe("Rolling deployment metrics and weighted penalties", () => {
     expect(saturated.getHealthScore("d")!.score).toBeGreaterThan(normal.getHealthScore("d")!.score);
   });
 
-  it("feeds semantic severity into health decay", () => {
+  it("feeds explicit severity into route-failure health decay", () => {
     const low = new InMemoryStorageAdapter();
     const high = new InMemoryStorageAdapter();
 
-    recordFailure(low, "d", "semantic_failure", 0, 10, 300, undefined, false, 300, { semanticSeverity: "low" });
-    recordFailure(high, "d", "semantic_failure", 0, 10, 300, undefined, false, 300, { semanticSeverity: "high" });
+    recordFailure(low, "d", "unknown_failure", 0, 10, 300, undefined, false, 300, { semanticSeverity: "low" });
+    recordFailure(high, "d", "unknown_failure", 0, 10, 300, undefined, false, 300, { semanticSeverity: "high" });
 
     expect(high.getHealthScore("d")!.score).toBeLessThan(low.getHealthScore("d")!.score);
   });
@@ -288,12 +290,12 @@ describe("Rolling deployment metrics and weighted penalties", () => {
     const single = new InMemoryStorageAdapter();
     const burst = new InMemoryStorageAdapter();
 
-    recordFailure(single, "d", "transport_timeout", 0, 10, 300);
+    recordFailure(single, "d", "server_5xx", 0, 10, 300);
 
     // Two failures of the same class arriving in the same burst should
     // not over-decay: the second is treated as ~10% penalty.
-    recordFailure(burst, "d", "transport_timeout", 0, 10, 300);
-    recordFailure(burst, "d", "transport_timeout", 0, 10, 300);
+    recordFailure(burst, "d", "server_5xx", 0, 10, 300);
+    recordFailure(burst, "d", "server_5xx", 0, 10, 300);
 
     const singleScore = single.getHealthScore("d")!.score;
     const burstScore = burst.getHealthScore("d")!.score;
@@ -304,11 +306,11 @@ describe("Rolling deployment metrics and weighted penalties", () => {
 
   it("does not dampen failures of a different class", () => {
     const store = new InMemoryStorageAdapter();
-    recordFailure(store, "d", "transport_timeout", 0, 10, 300);
+    recordFailure(store, "d", "unknown_failure", 0, 10, 300);
     const afterFirst = store.getHealthScore("d")!.score;
     recordFailure(store, "d", "server_5xx", 0, 10, 300);
     const afterSecond = store.getHealthScore("d")!.score;
-    // Different class → full penalty applies
+    // Different class -> full penalty applies.
     expect(afterSecond).toBeLessThan(afterFirst * 0.6);
   });
 

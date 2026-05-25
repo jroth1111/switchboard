@@ -1,7 +1,16 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import {
+  assertOperationalEnvLoaded,
+  loadOperationalEnv,
+  optionalOperationalEnv,
+  requiredOperationalEnv,
+} from "./operational-env.ts";
 
 type ProbeStatus = "pass" | "fail" | "skip";
+
+const FIXTURE_ACK_ENV = "LIVE_SMOKE_FIXTURE_ACK";
+const FIXTURE_ACK_VALUE = "provider-overrides-configured";
 
 interface ProbeResult {
   name: string;
@@ -42,28 +51,49 @@ Environment:
   CONTROL_PLANE_URL or LIVE_BASE_URL   Deployed control-plane Worker URL.
   LIVE_SMOKE_MODE                      surface | provider | fixture. Default: surface.
   LIVE_SMOKE_MODEL                     Model alias to exercise. Default: nim-primary.
-  SWITCHBOARD_API_KEY                        Enables authenticated model catalog; required for provider/fixture chat probes.
-  ADMIN_API_KEY or NIM_HEALTH_TOKEN     Enables authorized health, receipts, and cooldown cleanup.
+  SWITCHBOARD_API_KEY or PROXY_API_KEY  Enables authenticated model catalog; required for provider/fixture chat probes.
+  ADMIN_API_KEY                         Enables /admin health, receipts, and cooldown cleanup.
+  NIM_HEALTH_TOKEN or LITELLM_MASTER_KEY Enables authorized /nim/health when ADMIN_API_KEY is absent.
   LIVE_SMOKE_REPORT                    Optional JSON report path.
   FIXTURE_WORKER_URL                   Optional fixture worker URL for subscription format probes.
+  LIVE_SMOKE_FIXTURE_ACK               Required for LIVE_SMOKE_MODE=fixture; set to
+                                       ${FIXTURE_ACK_VALUE} after confirming provider API base
+                                       overrides route provider calls to fixtures.
+
+Local .dev.vars/.env/.env.local values are loaded automatically when process
+environment values are absent.
 
 Fixture mode expects the target Worker to route provider calls to the fixture endpoint,
 usually via PROVIDER_API_BASE_* vars in its staging Worker configuration.`);
   process.exit(0);
 }
 
-const baseUrl = trimTrailingSlash(requiredEnv("CONTROL_PLANE_URL", "LIVE_BASE_URL"));
-const mode = (process.env.LIVE_SMOKE_MODE ?? "surface").trim().toLowerCase();
-const model = process.env.LIVE_SMOKE_MODEL ?? "nim-primary";
-const switchboardApiKey = process.env.SWITCHBOARD_API_KEY;
-const adminKey = process.env.ADMIN_API_KEY ?? process.env.NIM_HEALTH_TOKEN;
-const reportPath = process.env.LIVE_SMOKE_REPORT;
-const fixtureWorkerUrl = process.env.FIXTURE_WORKER_URL?.trim() ? trimTrailingSlash(process.env.FIXTURE_WORKER_URL.trim()) : undefined;
-const probeTimeoutMs = parsePositiveInt(process.env.LIVE_SMOKE_TIMEOUT_MS, 30_000);
+const operationalEnv = loadOperationalEnv();
+try {
+  assertOperationalEnvLoaded(operationalEnv);
+} catch (err) {
+  failSetup((err as Error).message);
+}
 
+const mode = (optionalEnv("LIVE_SMOKE_MODE") ?? "surface").trim().toLowerCase();
 if (!["surface", "provider", "fixture"].includes(mode)) {
   failSetup(`LIVE_SMOKE_MODE must be surface, provider, or fixture; got ${mode}`);
 }
+if (mode === "fixture" && optionalEnv(FIXTURE_ACK_ENV) !== FIXTURE_ACK_VALUE) {
+  failSetup(
+    `LIVE_SMOKE_MODE=fixture requires ${FIXTURE_ACK_ENV}=${FIXTURE_ACK_VALUE} after confirming provider API base overrides route provider calls to fixtures.`,
+  );
+}
+
+const baseUrl = trimTrailingSlash(requiredEnv("CONTROL_PLANE_URL", "LIVE_BASE_URL"));
+const model = optionalEnv("LIVE_SMOKE_MODEL") ?? "nim-primary";
+const switchboardApiKey = optionalEnv("SWITCHBOARD_API_KEY", "PROXY_API_KEY");
+const adminApiKey = optionalEnv("ADMIN_API_KEY");
+const healthApiKey = optionalEnv("NIM_HEALTH_TOKEN", "ADMIN_API_KEY", "LITELLM_MASTER_KEY");
+const reportPath = optionalEnv("LIVE_SMOKE_REPORT");
+const fixtureWorkerUrlValue = optionalEnv("FIXTURE_WORKER_URL");
+const fixtureWorkerUrl = fixtureWorkerUrlValue ? trimTrailingSlash(fixtureWorkerUrlValue) : undefined;
+const probeTimeoutMs = parsePositiveInt(optionalEnv("LIVE_SMOKE_TIMEOUT_MS"), 30_000);
 
 const probes: ProbeResult[] = [];
 const startedAt = new Date().toISOString();
@@ -74,11 +104,15 @@ await run("ping", "GET", "/ping", undefined, async (resp, body) => {
   if (data.status !== "ok") throw new Error(`expected status=ok body, got: ${body.slice(0, 200)}`);
 });
 
-await run("models list", "GET", "/models", switchboardApiKey ? { headers: bearer(switchboardApiKey) } : undefined, async (resp, body) => {
-  assertStatus(resp, 200);
-  const data = expectJson(body) as Record<string, unknown>;
-  if (!Array.isArray(data.data)) throw new Error("models response missing data array");
-});
+if (switchboardApiKey) {
+  await run("models list", "GET", "/models", { headers: bearer(switchboardApiKey) }, async (resp, body) => {
+    assertStatus(resp, 200);
+    const data = expectJson(body) as Record<string, unknown>;
+    if (!Array.isArray(data.data)) throw new Error("models response missing data array");
+  });
+} else {
+  skip("models list", "GET", "/models", "SWITCHBOARD_API_KEY or PROXY_API_KEY not set");
+}
 
 await run("admin health rejects missing auth", "GET", "/admin/health", undefined, async (resp) => {
   assertStatus(resp, 401);
@@ -91,33 +125,36 @@ await run("proxy rejects bad auth", "POST", "/v1/chat/completions", {
   assertStatus(resp, 401);
 });
 
-if (adminKey) {
-  await run("admin health authorized", "GET", "/admin/health", {
-    headers: bearer(adminKey),
+const healthProbeAuth = getHealthProbeAuth();
+if (healthProbeAuth) {
+  await run("authorized health", "GET", healthProbeAuth.path, {
+    headers: bearer(healthProbeAuth.token),
   }, async (resp, body) => {
     assertStatus(resp, 200);
     const data = expectJson(body) as Record<string, unknown>;
     if (!data.status) throw new Error("health response missing status");
   });
 } else {
-  skip("admin health authorized", "GET", "/admin/health", "ADMIN_API_KEY or NIM_HEALTH_TOKEN not set");
+  skip("authorized health", "GET", "/nim/health", "ADMIN_API_KEY, NIM_HEALTH_TOKEN, or LITELLM_MASTER_KEY not set");
 }
 
 if (mode !== "surface") {
   if (!switchboardApiKey) {
-    skip("provider chat completion", "POST", "/v1/chat/completions", "SWITCHBOARD_API_KEY not set");
+    skip("provider chat completion", "POST", "/v1/chat/completions", "SWITCHBOARD_API_KEY or PROXY_API_KEY not set");
     markRequiredProviderFailure();
   } else {
     const healthBefore = await fetchHealth();
     const successRequestId = await chatProbe("provider chat completion", "fixture:success", false, 200);
     await receiptProbe(successRequestId);
     await chatProbe("provider streaming completion", "fixture:stream", true, 200);
-    const healthAfter = await fetchHealth();
 
-    if (healthBefore && healthAfter) {
-      await run("health telemetry recorded after probes", "GET", "/admin/health", {
-        headers: bearer(adminKey),
-      }, () => {
+    const telemetryHealthAuth = getHealthProbeAuth();
+    if (healthBefore && telemetryHealthAuth) {
+      await run("health telemetry recorded after probes", "GET", telemetryHealthAuth.path, {
+        headers: bearer(telemetryHealthAuth.token),
+      }, (resp, body) => {
+        assertStatus(resp, 200);
+        const healthAfter = expectJson(body) as Record<string, unknown>;
         const successBefore = recentSuccessCount(healthBefore);
         const successAfter = recentSuccessCount(healthAfter);
         if (successAfter <= successBefore && !hasScoredRouteGroup(healthAfter)) {
@@ -125,14 +162,14 @@ if (mode !== "surface") {
         }
       });
     } else {
-      skip("health telemetry recorded after probes", "GET", "/admin/health", "ADMIN_API_KEY not set or health fetch failed");
+      skip("health telemetry recorded after probes", "GET", "/nim/health", "health token not set or health fetch failed");
     }
   }
 }
 
 if (mode === "fixture") {
   if (!switchboardApiKey) {
-    skip("fixture failure classification", "POST", "/v1/chat/completions", "SWITCHBOARD_API_KEY not set");
+    skip("fixture failure classification", "POST", "/v1/chat/completions", "SWITCHBOARD_API_KEY or PROXY_API_KEY not set");
   } else {
     await chatProbe("fixture rate-limit classification", "fixture:rate_limit", false, 502, [429, 502]);
     await chatProbe("fixture empty-response handling", "fixture:empty", false, 502);
@@ -226,8 +263,8 @@ async function chatProbe(
 // ─── Receipt probe ─────────────────────────────────────────────────
 
 async function receiptProbe(requestId: string | undefined): Promise<void> {
-  if (!adminKey) {
-    skip("receipt lookup", "GET", "/admin/receipts", "ADMIN_API_KEY or NIM_HEALTH_TOKEN not set");
+  if (!adminApiKey) {
+    skip("receipt lookup", "GET", "/admin/receipts", "ADMIN_API_KEY not set");
     return;
   }
   if (!requestId) {
@@ -235,7 +272,7 @@ async function receiptProbe(requestId: string | undefined): Promise<void> {
     return;
   }
   await run("receipt lookup", "GET", `/admin/receipts?id=${encodeURIComponent(requestId)}`, {
-    headers: bearer(adminKey),
+    headers: bearer(adminApiKey),
   }, async (resp, body) => {
     assertStatus(resp, 200);
     const data = expectJson(body) as Record<string, unknown>;
@@ -284,12 +321,12 @@ async function subscriptionStreamProbe(name: string, fixturePath: string): Promi
 // ─── Cleanup ────────────────────────────────────────────────────────
 
 async function cleanupCooldowns(): Promise<void> {
-  if (!adminKey) {
-    skip("fixture cooldown cleanup", "POST", "/admin/cooldowns/clear", "ADMIN_API_KEY or NIM_HEALTH_TOKEN not set");
+  if (!adminApiKey) {
+    skip("fixture cooldown cleanup", "POST", "/admin/cooldowns/clear", "ADMIN_API_KEY not set");
     return;
   }
   await run("fixture cooldown cleanup", "POST", "/admin/cooldowns/clear", {
-    headers: bearer(adminKey),
+    headers: bearer(adminApiKey),
   }, async (resp) => {
     assertStatus(resp, 200);
   });
@@ -298,13 +335,18 @@ async function cleanupCooldowns(): Promise<void> {
 // ─── Health helper (Gap 4) ─────────────────────────────────────────
 
 async function fetchHealth(): Promise<Record<string, unknown> | undefined> {
-  if (!adminKey) return undefined;
+  const auth = getHealthProbeAuth();
+  if (!auth) return undefined;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), probeTimeoutMs);
   try {
-    const resp = await fetch(`${baseUrl}/admin/health`, { headers: bearer(adminKey) });
+    const resp = await fetch(`${baseUrl}${auth.path}`, { headers: bearer(auth.token), signal: controller.signal });
     if (!resp.ok) return undefined;
     return (await resp.json()) as Record<string, unknown>;
   } catch {
     return undefined;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -450,7 +492,7 @@ function skip(name: string, method: string, path: string, reason: string): void 
     name,
     status: "skip",
     method,
-    url: `${baseUrl}${path}`,
+    url: path.startsWith("http") ? path : `${baseUrl}${path}`,
     startedAt: new Date().toISOString(),
     durationMs: 0,
     error: reason,
@@ -466,7 +508,7 @@ function markRequiredProviderFailure(): void {
       url: baseUrl,
       startedAt: new Date().toISOString(),
       durationMs: 0,
-      error: "SWITCHBOARD_API_KEY is required when LIVE_SMOKE_MODE is provider or fixture",
+      error: "SWITCHBOARD_API_KEY or PROXY_API_KEY is required when LIVE_SMOKE_MODE is provider or fixture",
     });
   }
 }
@@ -504,12 +546,22 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function getHealthProbeAuth(): { path: string; token: string } | undefined {
+  if (adminApiKey) return { path: "/admin/health", token: adminApiKey };
+  if (healthApiKey) return { path: "/nim/health", token: healthApiKey };
+  return undefined;
+}
+
+function optionalEnv(...names: string[]): string | undefined {
+  return optionalOperationalEnv(operationalEnv, ...names);
+}
+
 function requiredEnv(...names: string[]): string {
-  for (const name of names) {
-    const value = process.env[name];
-    if (value?.trim()) return value.trim();
+  try {
+    return requiredOperationalEnv(operationalEnv, ...names);
+  } catch (err) {
+    failSetup((err as Error).message);
   }
-  failSetup(`missing required env var: ${names.join(" or ")}`);
 }
 
 function failSetup(message: string): never {

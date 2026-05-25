@@ -2,7 +2,7 @@
 // admission, circuit breaking, health scoring, and rate budgeting.
 // Delegates storage to StorageAdapter (SQL in production, Maps in tests).
 
-import type { StorageAdapter, HealthScoreRow, CircuitRow, RecentOutcome } from "./storage-adapter";
+import type { StorageAdapter, HealthScoreRow, RecentOutcome } from "./storage-adapter";
 import type { FailureClass } from "../config/schema";
 import { RESERVATION_TTL_MS, LEARNED_CONCURRENCY_TTL_MS } from "../config/constants";
 
@@ -102,6 +102,7 @@ export interface AdmissionResponse {
 export interface RecordSuccessOptions {
   firstByteLatencyMs?: number;
   inflightAtDispatch?: number;
+  maxParallelCap?: number;
 }
 
 export interface RecordFailureOptions {
@@ -163,10 +164,9 @@ export function admit(
       } else if (circuit.state === "open") {
         circuit = { ...circuit, state: "half_open", successCount: 0, updatedAt: now };
         store.setCircuit(candidate.deploymentId, circuit);
-        // Zero out stale unconfirmed inflight — confirmed reservations will decrement via
-        // release() which clamps to 0, so this doesn't lose active request tracking.
-        // Unconfirmed reservations that expired will be reaped by reapExpired.
-        store.setInflight(candidate.deploymentId, 0, now);
+        // Preserve durable reservations that are still outstanding. The half-open
+        // probe limit must not erase active long-running requests and over-admit.
+        store.setInflight(candidate.deploymentId, store.countReservations(candidate.deploymentId), now);
       }
     }
 
@@ -184,7 +184,10 @@ export function admit(
 
     // Check learned concurrency limit
     const learned = store.getLearnedLimit(candidate.deploymentId, now);
-    let effectiveMaxParallel = (learned !== null && learned !== undefined) ? learned.maxParallel : candidate.maxParallel;
+    let effectiveMaxParallel = candidate.maxParallel;
+    if ((learned !== null && learned !== undefined)) {
+      effectiveMaxParallel = Math.min(candidate.maxParallel, learned.maxParallel);
+    }
 
     // Apply policy-level max parallel override
     if (req.maxParallelOverride && req.maxParallelOverride > 0) {
@@ -197,9 +200,9 @@ export function admit(
     let effectiveMax = effectiveMaxParallel;
     if (isHalfOpen) {
       // Half-open allows exactly 1 concurrent probe request
-      effectiveMax = 1;
+      effectiveMax = Math.min(1, effectiveMaxParallel);
     } else if (isSuspect && req.suspectMaxParallelDivisor && req.suspectMaxParallelDivisor > 0) {
-      effectiveMax = Math.max(1, Math.floor(effectiveMaxParallel / req.suspectMaxParallelDivisor));
+      effectiveMax = Math.min(effectiveMaxParallel, Math.max(1, Math.floor(effectiveMaxParallel / req.suspectMaxParallelDivisor)));
     }
 
     // Check inflight
@@ -373,7 +376,10 @@ export function recordSuccess(
   if (learnedConcurrencyEnabled) {
     const learned = store.getLearnedLimit(deploymentId, now);
     if ((learned !== null && learned !== undefined)) {
-      const newLimit = learned.maxParallel + 1;
+      const uncapped = learned.maxParallel + 1;
+      const newLimit = (options.maxParallelCap !== null && options.maxParallelCap !== undefined)
+        ? Math.min(uncapped, options.maxParallelCap)
+        : uncapped;
       store.setLearnedLimit(deploymentId, {
         maxParallel: newLimit, reason: "learned:success",
         expiresAt: now + learnedConcurrencyTtlSeconds * 1000,
@@ -406,8 +412,38 @@ export function recordFailure(
     return;
   }
 
-  // EMA decay
   const existing = store.getHealthScore(deploymentId);
+  const disposition = failureDisposition(failureClass);
+  if (disposition.kind === "pressure") {
+    const pressure = recordPressureOutcome(store, deploymentId, failureClass, existing, now, options, disposition);
+    const cooldownFailureCount = disposition.countsTowardRouteFailure
+      ? pressure.consecutiveFailureCount
+      : recentFailureClassStreak(pressure.recentOutcomes, failureClass);
+    maybeSetFailureCooldown(store, deploymentId, failureClass, cooldownSeconds, now, cooldownFailureCount, options);
+    applyPressureCircuitDisposition(
+      store,
+      deploymentId,
+      failureClass,
+      disposition.circuit,
+      pressure.consecutiveFailureCount,
+      now,
+      circuitThreshold,
+      circuitDurationSeconds,
+      suspectThresholdFraction,
+      options,
+    );
+    updatePressureLearnedConcurrency(
+      store,
+      deploymentId,
+      failureClass,
+      now,
+      learnedConcurrencyTtlSeconds,
+      options,
+    );
+    return;
+  }
+
+  // EMA decay
   const currentScore = existing?.score ?? 100;
   const penaltyWeight = failurePenaltyWeight(failureClass, options);
   // Reduce penalty for burst duplicates: same failure class within dedup window
@@ -445,64 +481,24 @@ export function recordFailure(
     totalLatencyHistoryMs: existing?.totalLatencyHistoryMs ?? [],
   });
 
-  // Cooldown — transport failures are suppressed until consecutiveFailureCount reaches threshold
-  const isTransportClass = failureClass === "transport_error" || failureClass === "transport_timeout" || failureClass === "server_5xx";
-  const belowTransportThreshold = isTransportClass
-    && typeof options.transportCooldownThreshold === "number"
-    && options.transportCooldownThreshold > 0
-    && consecutiveFailureCount < options.transportCooldownThreshold;
-  if (cooldownSeconds > 0 && !belowTransportThreshold) {
-    store.setCooldown(deploymentId, failureClass, now + cooldownSeconds * 1000,
-      JSON.stringify({ failureClass }));
-  }
+  maybeSetFailureCooldown(store, deploymentId, failureClass, cooldownSeconds, now, consecutiveFailureCount, options);
+  recordCircuitFailure(
+    store,
+    deploymentId,
+    now,
+    circuitThreshold,
+    circuitDurationSeconds,
+    suspectThresholdFraction,
+  );
 
-  // Circuit breaker
-  const circuit = store.getCircuit(deploymentId);
-  const currentFailures = circuit?.failureCount ?? 0;
-  const currentState = circuit?.state ?? "closed";
-
-  if (currentState === "half_open") {
-    store.setCircuit(deploymentId, {
-      state: "open", failureCount: currentFailures + 1, successCount: 0,
-      openedAt: now, halfOpenAfter: now + circuitDurationSeconds * 1000, updatedAt: now,
-    });
-  } else if ((currentFailures + 1) >= circuitThreshold) {
-    store.setCircuit(deploymentId, {
-      state: "open", failureCount: currentFailures + 1, successCount: 0,
-      openedAt: now, halfOpenAfter: now + circuitDurationSeconds * 1000, updatedAt: now,
-    });
-  } else if (currentState === "closed" && (currentFailures + 1) >= Math.floor(circuitThreshold * (suspectThresholdFraction ?? 0.6))) {
-    store.setCircuit(deploymentId, {
-      state: "suspect", failureCount: currentFailures + 1, successCount: 0, updatedAt: now,
-    });
-  } else if (currentState === "suspect") {
-    store.setCircuit(deploymentId, {
-      state: "suspect", failureCount: currentFailures + 1, successCount: 0, updatedAt: now,
-    });
-  } else {
-    store.setCircuit(deploymentId, {
-      state: currentState, failureCount: currentFailures + 1, successCount: 0, updatedAt: now,
-    });
-  }
-
-  // Learned concurrency: multiplicative decrease
-  if (learnedConcurrencyEnabled) {
-    const learned = store.getLearnedLimit(deploymentId, now);
-    const currentLimit = learned?.maxParallel ?? 0;
-    if (currentLimit > 1) {
-      const newLimit = Math.max(1, Math.floor(currentLimit / 2));
-      store.setLearnedLimit(deploymentId, {
-        maxParallel: newLimit, reason: `learned:${failureClass}`,
-        expiresAt: now + learnedConcurrencyTtlSeconds * 1000,
-      });
-    }
-  } else if (failureClass === "rate_limit_concurrency" || failureClass === "rate_limit_concurrency_ambiguous") {
-    const currentMax = options.inflightAtDispatch ?? store.getInflight(deploymentId);
-    store.setLearnedLimit(deploymentId, {
-      maxParallel: Math.max(1, currentMax > 0 ? currentMax - 1 : 2),
-      reason: failureClass, expiresAt: now + LEARNED_CONCURRENCY_TTL_MS,
-    });
-  }
+  updateGenericLearnedConcurrency(
+    store,
+    deploymentId,
+    failureClass,
+    now,
+    learnedConcurrencyEnabled,
+    learnedConcurrencyTtlSeconds,
+  );
 }
 
 // ─── Health check ─────────────────────────────────────────────────
@@ -518,6 +514,259 @@ export function isHealthNeutralFailure(failureClass: string): boolean {
     "context_length_exceeded",
     "invalid_model",
   ].includes(failureClass);
+}
+
+type PressureCircuitDisposition = "none" | "threshold" | "suspect";
+
+type FailureDisposition =
+  | { kind: "pressure"; circuit: PressureCircuitDisposition; countsTowardRouteFailure: boolean }
+  | { kind: "route_failure" };
+
+function failureDisposition(failureClass: FailureClass): FailureDisposition {
+  if (
+    failureClass === "rate_limit_overload" ||
+    failureClass === "rate_limit_concurrency" ||
+    failureClass === "rate_limit_concurrency_ambiguous"
+  ) {
+    return { kind: "pressure", circuit: "none", countsTowardRouteFailure: false };
+  }
+
+  if (
+    failureClass === "rate_limit_quota_window" ||
+    failureClass === "transport_timeout" ||
+    failureClass === "transport_error" ||
+    failureClass === "stream_interruption"
+  ) {
+    return { kind: "pressure", circuit: "none", countsTowardRouteFailure: false };
+  }
+
+  if (isInvalidSuccessFailure(failureClass)) {
+    return { kind: "pressure", circuit: "suspect", countsTowardRouteFailure: true };
+  }
+
+  return { kind: "route_failure" };
+}
+
+function recordPressureOutcome(
+  store: StorageAdapter,
+  deploymentId: string,
+  failureClass: FailureClass,
+  existing: HealthScoreRow | null,
+  now: number,
+  options: RecordFailureOptions,
+  disposition: FailureDisposition & { kind: "pressure" },
+): HealthScoreRow {
+  const consecutiveFailureCount = disposition.countsTowardRouteFailure
+    ? (existing?.consecutiveFailureCount ?? 0) + 1
+    : existing?.consecutiveFailureCount ?? 0;
+  const row: HealthScoreRow = {
+    score: existing?.score ?? 100,
+    lastSuccessAt: existing?.lastSuccessAt ?? null,
+    lastFailureAt: now,
+    failureClass,
+    updatedAt: now,
+    successCount: existing?.successCount ?? 0,
+    failureCount: (existing?.failureCount ?? 0) + 1,
+    consecutiveFailureCount,
+    latencyEmaMs: existing?.latencyEmaMs ?? null,
+    latencySampleCount: existing?.latencySampleCount ?? 0,
+    recentOutcomes: appendRecentOutcome(existing?.recentOutcomes, {
+      outcome: "failure",
+      atMs: now,
+      failureClass,
+      timeout: failureClass === "transport_timeout",
+      invalidSuccess: isInvalidSuccessFailure(failureClass),
+      semanticSeverity: options.semanticSeverity,
+      inflightAtDispatch: options.inflightAtDispatch,
+    }),
+    firstByteLatencyHistoryMs: existing?.firstByteLatencyHistoryMs ?? [],
+    totalLatencyHistoryMs: existing?.totalLatencyHistoryMs ?? [],
+  };
+  store.setHealthScore(deploymentId, row);
+  return row;
+}
+
+function maybeSetFailureCooldown(
+  store: StorageAdapter,
+  deploymentId: string,
+  failureClass: FailureClass,
+  cooldownSeconds: number,
+  now: number,
+  consecutiveFailureCount: number,
+  options: RecordFailureOptions,
+): void {
+  if (cooldownSeconds <= 0) return;
+  if (isBelowTransportCooldownThreshold(failureClass, consecutiveFailureCount, options)) return;
+  store.setCooldown(deploymentId, failureClass, now + cooldownSeconds * 1000,
+    JSON.stringify({ failureClass }));
+}
+
+function isBelowTransportCooldownThreshold(
+  failureClass: FailureClass,
+  consecutiveFailureCount: number,
+  options: RecordFailureOptions,
+): boolean {
+  const isTransportClass = failureClass === "transport_error" || failureClass === "transport_timeout" || failureClass === "server_5xx";
+  return isTransportClass
+    && typeof options.transportCooldownThreshold === "number"
+    && options.transportCooldownThreshold > 0
+    && consecutiveFailureCount < options.transportCooldownThreshold;
+}
+
+function applyPressureCircuitDisposition(
+  store: StorageAdapter,
+  deploymentId: string,
+  failureClass: FailureClass,
+  disposition: PressureCircuitDisposition,
+  consecutiveFailureCount: number,
+  now: number,
+  circuitThreshold: number,
+  circuitDurationSeconds: number,
+  suspectThresholdFraction: number | undefined,
+  options: RecordFailureOptions,
+): void {
+  if (disposition === "none") return;
+
+  const threshold = pressureCircuitThreshold(failureClass, circuitThreshold, options);
+  if (disposition === "threshold") {
+    if (consecutiveFailureCount < threshold) return;
+    recordCircuitFailure(
+      store,
+      deploymentId,
+      now,
+      circuitThreshold,
+      circuitDurationSeconds,
+      suspectThresholdFraction,
+      consecutiveFailureCount,
+    );
+    return;
+  }
+
+  setSuspectCircuit(store, deploymentId, now, consecutiveFailureCount);
+}
+
+function pressureCircuitThreshold(
+  failureClass: FailureClass,
+  circuitThreshold: number,
+  options: RecordFailureOptions,
+): number {
+  if (failureClass === "transport_timeout" || failureClass === "transport_error") {
+    return Math.max(2, options.transportCooldownThreshold ?? 0);
+  }
+  return Math.max(2, circuitThreshold);
+}
+
+function setSuspectCircuit(
+  store: StorageAdapter,
+  deploymentId: string,
+  now: number,
+  observedFailureCount: number,
+): void {
+  const circuit = store.getCircuit(deploymentId);
+  if (circuit?.state === "open") return;
+  store.setCircuit(deploymentId, {
+    state: "suspect",
+    failureCount: Math.max(circuit?.failureCount ?? 0, observedFailureCount),
+    successCount: 0,
+    updatedAt: now,
+  });
+}
+
+function recordCircuitFailure(
+  store: StorageAdapter,
+  deploymentId: string,
+  now: number,
+  circuitThreshold: number,
+  circuitDurationSeconds: number,
+  suspectThresholdFraction?: number,
+  observedFailureCount?: number,
+): void {
+  const circuit = store.getCircuit(deploymentId);
+  const currentFailures = circuit?.failureCount ?? 0;
+  const currentState = circuit?.state ?? "closed";
+  const nextFailureCount = Math.max(currentFailures + 1, observedFailureCount ?? 0);
+
+  if (currentState === "half_open") {
+    store.setCircuit(deploymentId, {
+      state: "open", failureCount: nextFailureCount, successCount: 0,
+      openedAt: now, halfOpenAfter: now + circuitDurationSeconds * 1000, updatedAt: now,
+    });
+  } else if (currentState !== "open" && nextFailureCount >= circuitThreshold) {
+    store.setCircuit(deploymentId, {
+      state: "open", failureCount: nextFailureCount, successCount: 0,
+      openedAt: now, halfOpenAfter: now + circuitDurationSeconds * 1000, updatedAt: now,
+    });
+  } else if (currentState === "closed" && nextFailureCount >= Math.floor(circuitThreshold * (suspectThresholdFraction ?? 0.6))) {
+    store.setCircuit(deploymentId, {
+      state: "suspect", failureCount: nextFailureCount, successCount: 0, updatedAt: now,
+    });
+  } else if (currentState === "suspect") {
+    store.setCircuit(deploymentId, {
+      state: "suspect", failureCount: nextFailureCount, successCount: 0, updatedAt: now,
+    });
+  } else {
+    store.setCircuit(deploymentId, {
+      state: currentState, failureCount: nextFailureCount, successCount: 0, updatedAt: now,
+    });
+  }
+}
+
+function updatePressureLearnedConcurrency(
+  store: StorageAdapter,
+  deploymentId: string,
+  failureClass: FailureClass,
+  now: number,
+  learnedConcurrencyTtlSeconds: number,
+  options: RecordFailureOptions,
+): void {
+  if (failureClass !== "rate_limit_concurrency" && failureClass !== "rate_limit_concurrency_ambiguous") return;
+
+  const learned = store.getLearnedLimit(deploymentId, now);
+  const baseline = Math.max(
+    learned?.maxParallel ?? 0,
+    options.maxParallelAtDispatch ?? 0,
+    options.inflightAtDispatch ?? 0,
+    store.getInflight(deploymentId),
+  );
+  const newLimit = Math.max(1, baseline > 1 ? Math.floor(baseline / 2) : 1);
+  const ttlMs = learnedConcurrencyTtlSeconds > 0
+    ? learnedConcurrencyTtlSeconds * 1000
+    : LEARNED_CONCURRENCY_TTL_MS;
+  store.setLearnedLimit(deploymentId, {
+    maxParallel: newLimit,
+    reason: failureClass,
+    expiresAt: now + ttlMs,
+  });
+}
+
+function updateGenericLearnedConcurrency(
+  store: StorageAdapter,
+  deploymentId: string,
+  failureClass: FailureClass,
+  now: number,
+  learnedConcurrencyEnabled: boolean,
+  learnedConcurrencyTtlSeconds: number,
+): void {
+  if (!learnedConcurrencyEnabled) return;
+
+  const learned = store.getLearnedLimit(deploymentId, now);
+  const currentLimit = learned?.maxParallel ?? 0;
+  if (currentLimit <= 1) return;
+  const newLimit = Math.max(1, Math.floor(currentLimit / 2));
+  store.setLearnedLimit(deploymentId, {
+    maxParallel: newLimit, reason: `learned:${failureClass}`,
+    expiresAt: now + learnedConcurrencyTtlSeconds * 1000,
+  });
+}
+
+function recentFailureClassStreak(recentOutcomes: RecentOutcome[] | undefined, failureClass: FailureClass): number {
+  let count = 0;
+  for (let i = (recentOutcomes?.length ?? 0) - 1; i >= 0; i--) {
+    const outcome = recentOutcomes![i];
+    if (outcome.outcome !== "failure" || outcome.failureClass !== failureClass) break;
+    count++;
+  }
+  return count;
 }
 
 function keyWindowScope(keyRef: string, group: string, scopeMode: "global" | "per_key"): string {

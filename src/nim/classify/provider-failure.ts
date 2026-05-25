@@ -2,6 +2,7 @@
 // Ports behavior from litellm_logic/nim/classify/provider_failure.py.
 
 import type { FailureClass } from "../../config/schema";
+import { classifyRateLimit } from "./rate-limit";
 
 export interface ProviderFailureClassification {
   failureClass: FailureClass;
@@ -12,10 +13,18 @@ export interface ProviderFailureClassification {
 }
 
 export function isContextLengthError(bodyLower: string): boolean {
-  if (bodyLower.includes("context") || bodyLower.includes("maximum") || bodyLower.includes("too long")) {
+  if (isTokenAuthError(bodyLower)) return false;
+  if (
+    [
+      /\bcontext(?:\s+window|\s+length)?\b.{0,80}\b(exceeded|exceeds|too\s+long|max(?:imum)?|limit)\b/,
+      /\bprompt\b.{0,80}\b(too\s+long|exceeded|exceeds|max(?:imum)?|limit)\b/,
+      /\b(max(?:imum)?[_\s-]?tokens?|too\s+many\s+tokens|token\s+limit|tokens?\s+exceed(?:ed|s)?)\b/,
+      /\bmaximum\s+context\b/,
+    ].some((pattern) => pattern.test(bodyLower))
+  ) {
     return true;
   }
-  if (/\btoo many tokens\b/.test(bodyLower) || /\bmax(?:imum)?\s+tokens\b/.test(bodyLower)) {
+  if (bodyLower.includes("context") || bodyLower.includes("maximum") || bodyLower.includes("too long")) {
     return true;
   }
   if (bodyLower.includes("token") && !isTokenAuthError(bodyLower)) {
@@ -34,6 +43,13 @@ function isTokenAuthError(bodyLower: string): boolean {
     || bodyLower.includes("api key")
     || bodyLower.includes("apikey")
     || bodyLower.includes("authentication")
+  );
+}
+
+function isInvalidModelError(bodyLower: string): boolean {
+  return (
+    /\bmodel\b.{0,120}\b(not\s+found|does\s+not\s+exist|is\s+invalid|invalid|not\s+available|not\s+supported|unavailable|unknown)\b/.test(bodyLower)
+    || /\bunknown\s+model\b/.test(bodyLower)
   );
 }
 
@@ -66,6 +82,16 @@ export function classifyProviderFailure(
 
   // Rate limit (delegated to rate_limit classifier, but provide fallback)
   if (status === 429) {
+    const rateLimit = classifyRateLimit(status, body, {});
+    if (rateLimit) {
+      return {
+        failureClass: rateLimit.failureClass,
+        cooldownSeconds: rateLimit.cooldownSeconds,
+        affectsHealth: rateLimit.failureClass !== "rate_limit_quota_window",
+        affectsAccount: rateLimit.failureClass === "rate_limit_quota_window",
+        details: rateLimit.details,
+      };
+    }
     return {
       failureClass: "rate_limit_overload",
       cooldownSeconds: 60,
@@ -88,7 +114,7 @@ export function classifyProviderFailure(
 
   // Invalid model — use specific patterns to avoid false positives on responses
   // that merely mention the word "model" (e.g. "this request is not a good model for...")
-  if (status === 404 || (status === 400 && /model\s*(not\s*found|does\s*not\s*exist|is\s*invalid|not\s*available|not\s*supported|unavailable)/i.test(bodyLower))) {
+  if (status === 404 || (status === 400 && isInvalidModelError(bodyLower))) {
     return {
       failureClass: "invalid_model",
       cooldownSeconds: 300,
@@ -173,10 +199,10 @@ export function classifyThrownError(err: unknown): ProviderFailureClassification
     if (err.message.includes("abort") || err.name === "AbortError") {
       return {
         failureClass: "transport_timeout",
-        cooldownSeconds: 15,
-        affectsHealth: true,
+        cooldownSeconds: 0,
+        affectsHealth: false,
         affectsAccount: false,
-        details: `aborted: ${err.message}`,
+        details: "abort",
       };
     }
   }

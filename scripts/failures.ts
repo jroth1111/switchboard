@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 // Inspect failed-request records through the Worker observability endpoint.
 
-import { pathToFileURL } from "node:url";
+import {
+  assertOperationalEnvLoaded,
+  loadOperationalEnv,
+  optionalOperationalEnv,
+} from "./operational-env.ts";
 
 const USAGE = `Usage:
   CONTROL_PLANE_URL=http://127.0.0.1:8787 NIM_HEALTH_TOKEN=... npm run failures -- recent [filters]
@@ -98,6 +102,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     if (!param) throw new Error(`unsupported flag: ${arg}`);
     const value = argv[++i];
     if (!value?.trim()) throw new Error(`${arg} requires a value`);
+    if (param === "limit") validateLimit(value);
     filters[param] = value;
   }
 
@@ -109,9 +114,22 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 async function fetchFailures(args: ParsedArgs): Promise<unknown> {
-  const baseUrl = trimTrailingSlash(process.env.CONTROL_PLANE_URL ?? process.env.SWITCHBOARD_URL ?? "");
+  const operationalEnv = loadOperationalEnv();
+  assertOperationalEnvLoaded(operationalEnv);
+
+  const baseUrl = trimTrailingSlash(optionalOperationalEnv(
+    operationalEnv,
+    "CONTROL_PLANE_URL",
+    "SWITCHBOARD_URL",
+    "LIVE_BASE_URL",
+  ) ?? "");
   if (!baseUrl) throw new Error("CONTROL_PLANE_URL or SWITCHBOARD_URL is required");
-  const token = process.env.NIM_HEALTH_TOKEN ?? process.env.ADMIN_API_KEY ?? process.env.LITELLM_MASTER_KEY ?? "";
+  const token = optionalOperationalEnv(
+    operationalEnv,
+    "NIM_HEALTH_TOKEN",
+    "ADMIN_API_KEY",
+    "LITELLM_MASTER_KEY",
+  ) ?? "";
   if (!token) throw new Error("NIM_HEALTH_TOKEN, ADMIN_API_KEY, or LITELLM_MASTER_KEY is required");
 
   const url = new URL(args.command === "show"
@@ -134,9 +152,16 @@ async function fetchFailures(args: ParsedArgs): Promise<unknown> {
     const error = body && typeof body === "object" && "error" in body
       ? String((body as Record<string, unknown>).error)
       : `HTTP ${response.status}`;
-    throw new Error(error);
+    throw new Error(`HTTP ${response.status}: ${error}`);
   }
   return body;
+}
+
+function validateLimit(value: string): void {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || String(parsed) !== value || parsed < 1 || parsed > 500) {
+    throw new Error("--limit must be an integer between 1 and 500");
+  }
 }
 
 function printTable(payload: { failures?: Array<Record<string, unknown>> }): void {
@@ -172,7 +197,7 @@ function clip(value: string): string {
   return value.length > 28 ? `${value.slice(0, 25)}...` : value;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (import.meta.url === `file://${process.argv[1]}`) {
   const code = await main();
   process.exit(code);
 }

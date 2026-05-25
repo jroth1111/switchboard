@@ -8,17 +8,13 @@ import type { Deployment } from "../config/schema";
 
 export interface FilterState {
   cooldowns: Map<string, { until: number }>;
-  circuits: Map<string, { state: "open" | "half_open" | "closed" | "suspect"; halfOpenAfter?: number; failureCount?: number }>;
+  circuits: Map<string, { state: "open" | "half_open" | "closed" | "suspect"; failureCount?: number; halfOpenAfter?: number }>;
   inflight: Map<string, number>;
   learnedLimits: Map<string, { maxParallel: number; expiresAt?: number }>;
   keyWindows: Map<string, { windowStart: number; count: number }>;
+  groupWindows: Map<string, { windowStart: number; count: number }>;
+  tokenWindows: Map<string, { windowStart: number; promptTokens: number; completionTokens: number }>;
   healthScores: Map<string, { consecutiveFailureCount?: number }>;
-}
-
-export interface FilterOptions {
-  scopeMode?: "global" | "per_key";
-  quarantineFailureThreshold?: number;
-  suspectMaxParallelDivisor?: number;
 }
 
 export function createEmptyFilterState(): FilterState {
@@ -28,6 +24,8 @@ export function createEmptyFilterState(): FilterState {
     inflight: new Map(),
     learnedLimits: new Map(),
     keyWindows: new Map(),
+    groupWindows: new Map(),
+    tokenWindows: new Map(),
     healthScores: new Map(),
   };
 }
@@ -108,9 +106,15 @@ export function filterCandidates(
   candidates: Deployment[],
   state: FilterState,
   now: number,
-  options: FilterOptions = {},
+  scopeMode: "global" | "per_key" = "per_key",
+  options: {
+    maxParallelOverride?: number | null;
+    quarantineFailureThreshold?: number;
+    suspectMaxParallelDivisor?: number;
+    rpmLimit?: number | null;
+    tokenBudgetPerMinute?: number | null;
+  } = {},
 ): FilterResult {
-  const scopeMode = options.scopeMode ?? "per_key";
   const passed: FilterResult["passed"] = [];
   const rejected: FilterResult["rejected"] = [];
 
@@ -122,33 +126,24 @@ export function filterCandidates(
       continue;
     }
 
-    // Circuit breaker — open circuits reject until halfOpenAfter; probe windows cap concurrency at 1.
+    // Circuit breaker
     const circuit = state.circuits.get(deployment.id);
-    let halfOpenProbe = false;
-    let isRecoveryState = false;
     if (circuit) {
       if (circuit.state === "open") {
         if (!circuit.halfOpenAfter || now < circuit.halfOpenAfter) {
           rejected.push({ deployment, reason: "circuit_open" });
           continue;
         }
-        halfOpenProbe = true;
-        isRecoveryState = true;
-      } else if (circuit.state === "half_open") {
-        halfOpenProbe = true;
-        isRecoveryState = true;
-      } else if (circuit.state === "suspect") {
-        isRecoveryState = true;
       }
     }
 
-    // Quarantine (aligned with admission-engine admit())
-    const quarantineThreshold = options.quarantineFailureThreshold ?? 0;
-    if (quarantineThreshold > 0 && !isRecoveryState) {
-      const healthSnap = state.healthScores.get(deployment.id);
-      const consecutiveFailures = healthSnap?.consecutiveFailureCount ?? 0;
-      const circuitFailureCount = circuit?.failureCount ?? 0;
-      if (Math.max(consecutiveFailures, circuitFailureCount) >= quarantineThreshold) {
+    const inHalfOpenRecovery =
+      circuit?.state === "open" && circuit.halfOpenAfter !== undefined && circuit.halfOpenAfter <= now;
+    const isRecoveryState = circuit && (circuit.state === "half_open" || circuit.state === "suspect" || inHalfOpenRecovery);
+    if ((options.quarantineFailureThreshold ?? 0) > 0 && !isRecoveryState) {
+      const consecutiveFailures = state.healthScores.get(deployment.id)?.consecutiveFailureCount ?? 0;
+      const circuitFailures = circuit?.failureCount ?? 0;
+      if (Math.max(consecutiveFailures, circuitFailures) >= options.quarantineFailureThreshold!) {
         rejected.push({ deployment, reason: "quarantine" });
         continue;
       }
@@ -158,10 +153,13 @@ export function filterCandidates(
     const learned = state.learnedLimits.get(deployment.id);
     const learnedExpired = (learned?.expiresAt !== null && learned?.expiresAt !== undefined) && learned.expiresAt <= now;
     let effectiveMax = (learned && !learnedExpired) ? learned.maxParallel : deployment.maxParallelRequests;
-    if (halfOpenProbe) {
-      effectiveMax = Math.min(effectiveMax, 1);
-    } else if (circuit?.state === "suspect" && options.suspectMaxParallelDivisor && options.suspectMaxParallelDivisor > 0) {
-      effectiveMax = Math.max(1, Math.floor(effectiveMax / options.suspectMaxParallelDivisor));
+    if ((options.maxParallelOverride ?? 0) > 0) {
+      effectiveMax = Math.min(effectiveMax, options.maxParallelOverride!);
+    }
+    if (circuit?.state === "half_open" || inHalfOpenRecovery) {
+      effectiveMax = 1;
+    } else if (circuit?.state === "suspect" && (options.suspectMaxParallelDivisor ?? 0) > 0) {
+      effectiveMax = Math.max(1, Math.floor(effectiveMax / options.suspectMaxParallelDivisor!));
     }
 
     const currentInflight = state.inflight.get(deployment.id) ?? 0;
@@ -177,6 +175,29 @@ export function filterCandidates(
       if (windowEnd > now && keyWindow.count >= deployment.rpm) {
         rejected.push({ deployment, reason: "key_rpm_exhausted" });
         continue;
+      }
+    }
+
+    if ((options.rpmLimit ?? 0) > 0) {
+      const groupWindow = state.groupWindows.get(deployment.group);
+      if (groupWindow) {
+        const windowEnd = groupWindow.windowStart + 60000;
+        if (windowEnd > now && groupWindow.count >= options.rpmLimit!) {
+          rejected.push({ deployment, reason: "group_rpm_exhausted" });
+          continue;
+        }
+      }
+    }
+
+    if ((options.tokenBudgetPerMinute ?? 0) > 0) {
+      const tokenWindow = state.tokenWindows.get(deployment.keyRef);
+      if (tokenWindow) {
+        const windowEnd = tokenWindow.windowStart + 60000;
+        const used = tokenWindow.promptTokens + tokenWindow.completionTokens;
+        if (windowEnd > now && used >= options.tokenBudgetPerMinute!) {
+          rejected.push({ deployment, reason: "token_budget_exhausted" });
+          continue;
+        }
       }
     }
 

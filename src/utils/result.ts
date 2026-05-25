@@ -12,7 +12,7 @@ export function err<E>(error: E): Result<never, E> {
   return { ok: false, error };
 }
 
-export function safeJsonParse(text: string | null): unknown {
+export function safeJsonParse<T = unknown>(text: string | null): T | undefined {
   if (!text) return undefined;
-  try { return JSON.parse(text); } catch { return undefined; }
+  try { return JSON.parse(text) as T; } catch { return undefined; }
 }

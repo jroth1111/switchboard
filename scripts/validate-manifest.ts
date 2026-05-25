@@ -150,10 +150,16 @@ function validateChatGPTSubscriptionRuntimeAuth(): void {
     error(`Unable to inspect local secret surface for ChatGPT auth: ${loadError}`);
   }
 
-  for (const issue of validateChatGPTStructuredAuthSurface(localSecrets.values, {
+  const issues = validateChatGPTStructuredAuthSurface(localSecrets.values, {
     localSecretSurfacePresent: localSecrets.localSecretSurfacePresent,
     chatgptResponsesEnabled,
-  })) {
+  });
+  const ciWithoutSecrets = process.env.CI === "true" && !localSecrets.localSecretSurfacePresent;
+  for (const issue of issues) {
+    if (issue.kind === "error" && ciWithoutSecrets) {
+      warn(`${issue.message} (CI: set CHATGPT_AUTH_JSON for strict validate)`);
+      continue;
+    }
     if (issue.kind === "error") error(issue.message);
     else warn(issue.message);
   }

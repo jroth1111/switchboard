@@ -2,22 +2,22 @@
 
 | ID | Branch | PR | Status |
 |----|--------|-----|--------|
-| audit | `cursor/competitive-audit-cb1e` | #2 | open (docs) |
-| P0-1 | `cursor/p0-1-vibeproxy-aliases-cb1e` | #3 | superseded by #18 |
-| P0-5 | `cursor/p0-5-thinking-suffix-cb1e` | #4 | superseded by #18 |
-| P0-4 | `cursor/p0-4-ccr-error-shapes-cb1e` | #5 | superseded by #18 |
-| P0-2 | `cursor/p0-2-oauth-model-visibility-cb1e` | #6 | superseded by #18 |
-| P0-3 | `cursor/p0-3-oauth-round-robin-cb1e` | #7 | superseded by #18 |
-| P1-3 | `cursor/p1-3-fallback-types-cb1e` | #8 | superseded by #18 |
-| P1-2 | `cursor/p1-2-fallback-chains-cb1e` | #9 | superseded by #18 |
-| P1-1 | `cursor/p1-1-smart-route-complexity-cb1e` | #10 | superseded by #18 |
-| P1-4 | `cursor/p1-4-hedge-profile-default-cb1e` | #11 | superseded by #18 |
-| P1-5 | `cursor/p1-5-segment-rate-limits-cb1e` | #12 | superseded by #18 |
-| P2-1 | `cursor/p2-1-receipt-metadata-cb1e` | #13 | superseded by #18 |
-| P2-3 | `cursor/p2-3-usage-billing-columns-cb1e` | #14 | superseded by #18 |
-| P2-4 | `cursor/p2-4-sync-free-models-cb1e` | #15 | superseded by #18 |
-| P3-2 | `cursor/p3-2-team-client-keys-cb1e` | #16 | superseded by #18 |
-| P2-2 | `cursor/p2-2-usage-export-cb1e` | #17 | superseded by #18 |
-| **all** | `cursor/close-audit-gaps-cb1e` | [#18](https://github.com/jroth1111/switchboard/pull/18) | **integration — merge target** |
+| audit | `cursor/competitive-audit-cb1e` | #2 | **merged** |
+| P0-1 | `cursor/p0-1-vibeproxy-aliases-cb1e` | #3 | superseded by #18 (merged) |
+| P0-5 | `cursor/p0-5-thinking-suffix-cb1e` | #4 | superseded by #18 (merged) |
+| P0-4 | `cursor/p0-4-ccr-error-shapes-cb1e` | #5 | superseded by #18 (merged) |
+| P0-2 | `cursor/p0-2-oauth-model-visibility-cb1e` | #6 | superseded by #18 (merged) |
+| P0-3 | `cursor/p0-3-oauth-round-robin-cb1e` | #7 | superseded by #18 (merged) |
+| P1-3 | `cursor/p1-3-fallback-types-cb1e` | #8 | superseded by #18 (merged) |
+| P1-2 | `cursor/p1-2-fallback-chains-cb1e` | #9 | superseded by #18 (merged) |
+| P1-1 | `cursor/p1-1-smart-route-complexity-cb1e` | #10 | superseded by #18 (merged) |
+| P1-4 | `cursor/p1-4-hedge-profile-default-cb1e` | #11 | superseded by #18 (merged) |
+| P1-5 | `cursor/p1-5-segment-rate-limits-cb1e` | #12 | superseded by #18 (merged) |
+| P2-1 | `cursor/p2-1-receipt-metadata-cb1e` | #13 | superseded by #18 (merged) |
+| P2-3 | `cursor/p2-3-usage-billing-columns-cb1e` | #14 | superseded by #18 (merged) |
+| P2-4 | `cursor/p2-4-sync-free-models-cb1e` | #15 | superseded by #18 (merged) |
+| P3-2 | `cursor/p3-2-team-client-keys-cb1e` | #16 | superseded by #18 (merged) |
+| P2-2 | `cursor/p2-2-usage-export-cb1e` | #17 | superseded by #18 (merged) |
+| **all** | `cursor/close-audit-gaps-cb1e` | [#18](https://github.com/jroth1111/switchboard/pull/18) | **merged to main** |
 
 Rejected (no PR): P2-5, P3-1, P3-3, P3-4.

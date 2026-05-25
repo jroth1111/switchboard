@@ -31,8 +31,37 @@ export function validateManifest(m: RouteManifest): ValidationIssue[] {
   validateDeployments(m, issues);
   validateDeploymentsByGroup(m, issues);
   validatePolicies(m, issues);
+  validateOAuthExcludedModels(m, issues);
 
   return issues;
+}
+
+const OAUTH_EXCLUSION_PROVIDER_KEYS = new Set(["anthropic", "chatgpt", "nim", "openai"]);
+
+function validateOAuthExcludedModels(m: RouteManifest, issues: ValidationIssue[]): void {
+  const exclusions = m.oauthExcludedModels;
+  if (!exclusions) return;
+  if (!isPlainRecord(exclusions)) {
+    issues.push({ kind: "error", code: "oauth_excluded_invalid", message: "oauthExcludedModels must be an object" });
+    return;
+  }
+  for (const [provider, models] of Object.entries(exclusions)) {
+    if (!OAUTH_EXCLUSION_PROVIDER_KEYS.has(provider)) {
+      issues.push({
+        kind: "error",
+        code: "oauth_excluded_provider_unknown",
+        message: `oauthExcludedModels unknown provider '${provider}'`,
+        detail: `expected one of: ${[...OAUTH_EXCLUSION_PROVIDER_KEYS].join(", ")}`,
+      });
+    }
+    if (!Array.isArray(models) || !models.every((m) => typeof m === "string" && m.trim().length > 0)) {
+      issues.push({
+        kind: "error",
+        code: "oauth_excluded_models_invalid",
+        message: `oauthExcludedModels['${provider}'] must be a non-empty string array`,
+      });
+    }
+  }
 }
 
 const PROVIDERS = new Set<ProviderType>(["nvidia_nim", "openai", "chatgpt", "anthropic_subscription"]);

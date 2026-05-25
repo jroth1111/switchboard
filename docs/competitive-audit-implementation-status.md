@@ -1,8 +1,8 @@
 # Competitive audit — implementation status
 
-Integration PR [#18](https://github.com/jroth1111/switchboard/pull/18) on branch `cursor/close-audit-gaps-cb1e` supersedes draft PRs #3–#17. Tracking table: [competitive-audit-pr-tracking.md](competitive-audit-pr-tracking.md).
+Integration PR [#18](https://github.com/jroth1111/switchboard/pull/18) is **merged to `main`** and superseded draft PRs #3–#17. Tracking: [competitive-audit-pr-tracking.md](competitive-audit-pr-tracking.md).
 
-Plan source: `docs/competitive-audit-2026-05-25.md` on branch `cursor/competitive-audit-cb1e` (PR #2).
+Plan and artifacts: [competitive-audit-2026-05-25.md](competitive-audit-2026-05-25.md) (PR #2, merged).
 
 ## P0 — Supersession
 
@@ -45,8 +45,8 @@ Plan source: `docs/competitive-audit-2026-05-25.md` on branch `cursor/competitiv
 
 - **OAuth exclusions:** `manifest.oauthExcludedModels` defaults to `{}`; operators set provider → model list (VibeProxy-style).
 - **Billing:** `estimated_cost_usd` uses heuristic pricing, not invoice-grade.
-- **Live smoke:** Subscription routes need secrets in operator CI (`CHATGPT_AUTH_JSON`, etc.).
-- **Draft PRs:** Close #3–#17 after merging #18.
+- **Live smoke / strict validate:** Subscription routes need `CHATGPT_AUTH_JSON` or `CHATGPT_AUTH_FILE`. In `CI=true` without secrets, `pnpm validate` warns instead of failing on missing ChatGPT auth.
+- **Draft PRs:** #3–#17 were superseded by #18 (merged); individual draft branches should not be merged separately.
 
 ## Verification
 

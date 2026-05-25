@@ -92,6 +92,7 @@ export interface RouteGroup {
   target: string;
   hidden: boolean;
   fallbacks: string[];
+  fallbackByProfile?: Partial<Record<FallbackProfile, string[]>>;
   dedicatedToolLane?: boolean;
   planner?: {
     toolGroup?: string;

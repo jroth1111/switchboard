@@ -97,7 +97,7 @@ export async function handleChatCompletions(
     }, 400, requestId, client);
   }
 
-  return handlePreparedModelRequest({ body, env, ctx, client, requestId, surface: "chat_completions" });
+  return handlePreparedModelRequest({ request, body, env, ctx, client, requestId, surface: "chat_completions" });
 }
 
 export async function handleResponses(

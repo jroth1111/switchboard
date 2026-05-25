@@ -9,8 +9,8 @@ describe("estimateUsageCostUsd", () => {
       completionTokens: 0,
       totalTokens: 1_000_000,
       source: "test",
-    });
-    expect(cost).toBe(3);
+    }, "claude-opus-4-7");
+    expect(cost).toBe(15);
   });
 
   it("returns null for unknown usage", () => {

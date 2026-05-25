@@ -1,20 +1,13 @@
-import type { ProviderType } from "../config/schema";
+import { ratesForUsageCost } from "../config/usage-pricing";
 import type { TokenUsage } from "./token-usage";
-
-/** Rough USD per 1M tokens for hosted billing estimates (operator-facing, not invoice-grade). */
-const USD_PER_MILLION: Partial<Record<ProviderType, { prompt: number; completion: number }>> = {
-  anthropic_subscription: { prompt: 3, completion: 15 },
-  openai: { prompt: 2.5, completion: 10 },
-  chatgpt: { prompt: 2.5, completion: 10 },
-  nvidia_nim: { prompt: 0, completion: 0 },
-};
 
 export function estimateUsageCostUsd(
   provider: string,
   usage: Pick<TokenUsage, "kind"> & Partial<Pick<TokenUsage, "promptTokens" | "completionTokens">>,
+  model?: string,
 ): number | null {
   if (usage.kind === "unknown") return null;
-  const rates = USD_PER_MILLION[provider as ProviderType];
+  const rates = ratesForUsageCost(provider, model);
   if (!rates) return null;
   const prompt = usage.promptTokens ?? 0;
   const completion = usage.completionTokens ?? 0;

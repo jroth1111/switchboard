@@ -497,6 +497,7 @@ function persistReceiptAsync(
     routeDecision: receipt.routeDecision,
     sessionId: receipt.sessionId,
     traceId: receipt.traceId,
+    properties: receipt.properties,
     originalModel: receipt.originalModel,
     canonicalTarget: receipt.canonicalTarget,
     selectedGroup: receipt.selectedGroup,
@@ -622,6 +623,8 @@ export async function handleAdminClientRequests(
   const url = new URL(request.url);
   const clientId = url.searchParams.get("client_id") ?? undefined;
   const appId = url.searchParams.get("app_id") ?? undefined;
+  const sessionId = url.searchParams.get("session_id") ?? undefined;
+  const traceId = url.searchParams.get("trace_id") ?? undefined;
   const sinceParam = optionalFiniteQueryNumber(url.searchParams.get("since"));
   const untilParam = optionalFiniteQueryNumber(url.searchParams.get("until"));
   const limit = boundedQueryLimit(url.searchParams.get("limit"), 100, 1000);
@@ -632,6 +635,8 @@ export async function handleAdminClientRequests(
   const requests = await stateDo.queryClientRequests({
     clientId,
     appId,
+    sessionId,
+    traceId,
     since: sinceParam,
     until: untilParam,
     limit,
@@ -742,6 +747,7 @@ export async function handleAdminUsage(
   const deploymentId = url.searchParams.get("deployment_id") ?? undefined;
   const clientId = url.searchParams.get("client_id") ?? undefined;
   const appId = url.searchParams.get("app_id") ?? undefined;
+  const teamId = url.searchParams.get("team_id") ?? undefined;
   const granularity = url.searchParams.get("granularity") ?? "rollup";
 
   const stateDo = env.CONTROL_PLANE_STATE.get(
@@ -757,6 +763,7 @@ export async function handleAdminUsage(
       deploymentId,
       clientId,
       appId,
+      teamId,
       since,
       limit: 1000,
     });

@@ -52,12 +52,15 @@ Plan and artifacts: [competitive-audit-2026-05-25.md](competitive-audit-2026-05-
 | Admin JSON usage `totals.estimatedCostUsd` | Wired |
 | GitHub Actions `ci.yml` | `validate` + `test` + `bundle-size` |
 | `oauthExcludedModels` manifest validation | Provider keys enforced at validate |
+| PR #20 post-merge gaps | Merged (usage totals, client metadata, CI workflow) |
+| CI strict ChatGPT validate | `config/fixtures/chatgpt-auth.ci.json` when `CI=true` |
+| Operator examples | `config/client-keys.example.json`, `.dev.vars.example` |
 
 ## Residual / operator-owned
 
-- **OAuth exclusions:** `manifest.oauthExcludedModels` defaults to `{}`; operators set provider → model list (`anthropic`, `chatgpt`, `nim`, `openai`).
+- **OAuth exclusions:** `manifest.oauthExcludedModels` defaults to `{}`; copy patterns from `config/client-keys.example.json`.
 - **Billing:** `estimated_cost_usd` uses heuristic pricing, not invoice-grade.
-- **Live smoke / strict validate:** Subscription routes need `CHATGPT_AUTH_JSON` or `CHATGPT_AUTH_FILE`. In `CI=true` without secrets, `pnpm validate` warns instead of failing on missing ChatGPT auth.
+- **Production secrets:** Replace CI fixture tokens with real `CHATGPT_AUTH_JSON` / `.dev.vars` for deploy and `pnpm live:smoke`.
 
 ## Verification
 

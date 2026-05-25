@@ -388,7 +388,7 @@ export const MANIFEST: RouteManifest = {
     "nim-", "nvidia_nim/", "nvidia/", "zai-",
   ],
 
-  /** Operator default OAuth visibility for health probes (merged with per-client policy). */
+  /** Operator default OAuth visibility (merged with per-client policy). See config/client-keys.example.json. */
   oauthExcludedModels: {},
 
   routeGroups: {

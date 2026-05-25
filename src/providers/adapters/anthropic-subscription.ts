@@ -13,6 +13,7 @@ import {
   convertAnthropicStreamChunk,
   getValidAnthropicToken,
 } from "../anthropic-subscription";
+import { anthropicOAuthAccountCandidates } from "../oauth-account-pool";
 
 export const anthropicSubscriptionAdapter: ProviderAdapter = {
   needsStreamWrapping: true,
@@ -24,7 +25,8 @@ export const anthropicSubscriptionAdapter: ProviderAdapter = {
     }
 
     let lastError: { error: string; failureClass: FailureClass } | null = null;
-    for (const accountId of anthropicOAuthAccountCandidates(ctx.apiKey, ctx.deployment.id)) {
+    const pool = ctx.subscriptionCtx.anthropicOAuth.accountIds;
+    for (const accountId of anthropicOAuthAccountCandidates(ctx.apiKey, ctx.deployment.id, pool, ctx.requestId)) {
       const tokenResult = await getValidAnthropicToken(
         accountId,
         ctx.requestId,
@@ -66,11 +68,3 @@ export const anthropicSubscriptionAdapter: ProviderAdapter = {
     return convertAnthropicStreamChunk(event as { type: string; [key: string]: unknown }, requestId, model);
   },
 };
-
-function anthropicOAuthAccountCandidates(configuredAccountId: string, deploymentId: string): string[] {
-  const candidates: string[] = [];
-  const configured = configuredAccountId.trim();
-  if (configured) candidates.push(configured);
-  candidates.push(`anthropic:${deploymentId}`);
-  return Array.from(new Set(candidates));
-}

@@ -20,6 +20,7 @@ import { hasHiddenOnlyResponsesInput, hasHiddenOnlyTypedContent } from "../nim/r
 import type { OAuthAccountAccessor } from "../providers/anthropic-subscription";
 import type { ControlPlaneStateDO } from "../state/control-plane-state";
 import { applyClientPolicyToPlan, authorizeModelForClient, type ClientIdentity } from "./client-policy";
+import { parseOAuthAccountList } from "../providers/oauth-account-pool";
 
 const CONTROL_PLANE_STATE_NAME = "control-plane";
 const HOUR_MS = 3600000;
@@ -1055,12 +1056,14 @@ function buildSubscriptionContext(env: Env) {
     env.OAUTH_ACCOUNT.idFromName("anthropic-subscription"),
   ) as unknown as OAuthAccountAccessor;
   const tokenUrl = (env as { ANTHROPIC_OAUTH_TOKEN_URL?: string }).ANTHROPIC_OAUTH_TOKEN_URL;
+  const accountIds = parseOAuthAccountList((env as { ANTHROPIC_OAUTH_ACCOUNTS?: string }).ANTHROPIC_OAUTH_ACCOUNTS);
   return {
     anthropicOAuth: {
       accessor: oauthDo,
       clientId: anthropicClientId,
       clientSecret: env.ANTHROPIC_CLIENT_SECRET,
       ...(tokenUrl ? { tokenUrl } : {}),
+      ...(accountIds.length ? { accountIds } : {}),
     },
   };
 }

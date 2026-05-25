@@ -13,16 +13,19 @@ import {
 import { getAdapter } from "../providers/registry";
 import type { ProviderAdapter } from "../providers/adapter";
 import type { OAuthAccountAccessor } from "../providers/anthropic-subscription";
+import { chatgptAuthMaterialCandidates } from "../providers/chatgpt-auth-pool";
 import { isChatGPTSubscriptionAuthJsonText, resolveChatGPTSubscriptionAuth } from "../providers/chatgpt-responses";
 import { evaluateResponse, type ResponseEvaluationConfig } from "../nim/evaluate/response";
 import { classifyRateLimit } from "../nim/classify/rate-limit";
 import { wrapSubscriptionStream, type SubscriptionStreamFormat } from "../streaming/format-converter";
 import { classifyProviderFailure, classifyThrownError, SubscriptionTokenError, type ProviderFailureClassification } from "../nim/classify/provider-failure";
+import { openAIErrorJson } from "../providers/openai-error-shape";
 import { buildConfiguredPatterns } from "../nim/repair/aliases";
 import { executeStreamWithPreBuffer, type PreBufferConfig, type StreamDone } from "../streaming/pre-buffer";
 import { logInfo, logWarn } from "../observability/logging";
 import { applyDeploymentRuntimeOverrides } from "../config/runtime-overrides";
 import { applyPolicyCooldown } from "../config/policy-cooldown";
+import { promoteProfileFallbacks } from "./fallback-sequence";
 import {
   buildFilterStateFromHealth,
   filterCandidates,
@@ -64,6 +67,8 @@ export interface SubscriptionContext {
     clientId: string;
     clientSecret?: string;
     tokenUrl?: string;
+    /** Extra OAuth account ids (env ANTHROPIC_OAUTH_ACCOUNTS), round-robin per request. */
+    accountIds?: string[];
   };
 }
 
@@ -121,7 +126,7 @@ export async function executeAttemptLoop(
   const startTime = Date.now();
   let attemptIndex = 0;
 
-  const { sequence: attemptSequence, health: durableHealth } = await orderAttemptSequenceWithHealth([
+  let { sequence: attemptSequence, health: durableHealth } = await orderAttemptSequenceWithHealth([
     { group: plan.selectedGroup, policy: plan.selectedPolicy, deployments: plan.selectedDeployments },
     ...plan.fallbackSequence,
   ], plan, envelope, stateDo);
@@ -222,7 +227,7 @@ export async function executeAttemptLoop(
       const adapter = getAdapter(deployment.provider, deployment.mode);
 
       try {
-        const apiKey = resolveKey(env, admission.keyRef!, deployment);
+        const apiKey = resolveKey(env, admission.keyRef!, deployment, envelope.requestId);
         const providerReq = await adapter.buildRequest({
           deployment, body: envelope.body, apiKey,
           requestId: envelope.requestId, subscriptionCtx,
@@ -251,6 +256,11 @@ export async function executeAttemptLoop(
           if (lastAttempt.action === "retry_same" && semanticRetriesLeft > 0) { semanticRetriesLeft--; continue; }
           if (transportRetriesLeft > 0) { transportRetriesLeft--; continue; }
         }
+        if (lastAttempt?.failureClass) {
+          attemptSequence = promoteProfileFallbacks(
+            attemptSequence, modelIndex + 1, lastAttempt.failureClass, plan.selectedGroup,
+          );
+        }
         break;
       } catch (err) {
         const failure = classifyThrownError(err);
@@ -270,12 +280,15 @@ export async function executeAttemptLoop(
         emitUnknownUsage(stateDo, {
           requestId: envelope.requestId, attemptIndex, canonicalTarget: plan.canonicalTarget,
           clientId: envelope.clientId, appId: envelope.appId,
-          userHash: envelope.userHash, policyId: envelope.policyId,
+          userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
           selectedGroup: group, deploymentId: admission.deploymentId!, provider: deployment.provider,
           model: deployment.providerModel, stream: false, finalOutcome: "retry_fallback", usageSource: deployment.provider,
         });
         if (isRetryable && transportRetriesLeft > 0) { transportRetriesLeft--; continue; }
+        attemptSequence = promoteProfileFallbacks(
+          attemptSequence, modelIndex + 1, failure.failureClass, plan.selectedGroup,
+        );
         break;
       } finally {
         if (releaseInFinally) await stateDo.release(admission.reservationId!);
@@ -447,7 +460,7 @@ async function admitHedgeLanes(
       policy: entry.policy,
       admission,
       deployment,
-      apiKey: resolveKey(env, admission.keyRef!, deployment),
+      apiKey: resolveKey(env, admission.keyRef!, deployment, envelope.requestId),
       attemptIndex: baseAttemptIndex + lanes.length,
       attemptTimeoutMs,
       deploymentHealth,
@@ -510,7 +523,7 @@ async function runHedgeLane(
     emitUnknownUsage(stateDo, {
       requestId: envelope.requestId, attemptIndex: lane.attemptIndex, canonicalTarget: plan.canonicalTarget,
       clientId: envelope.clientId, appId: envelope.appId,
-      userHash: envelope.userHash, policyId: envelope.policyId,
+      userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
       selectedGroup: lane.group, deploymentId: lane.admission.deploymentId!, provider: lane.deployment.provider,
       model: lane.deployment.providerModel, stream: false, finalOutcome: "retry_fallback", usageSource: lane.deployment.provider,
@@ -601,7 +614,7 @@ async function handleNonStreamingAttempt(
     emitUnknownUsage(stateDo, {
       requestId: envelope.requestId, attemptIndex: currentAttemptIndex, canonicalTarget: plan.canonicalTarget,
       clientId: envelope.clientId, appId: envelope.appId,
-      userHash: envelope.userHash, policyId: envelope.policyId,
+      userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
       selectedGroup: group, deploymentId: admission.deploymentId!, provider: deployment.provider,
       model: deployment.providerModel, stream: false, finalOutcome: "retry_fallback", usageSource: deployment.provider,
@@ -685,12 +698,12 @@ async function handleNonStreamingAttempt(
     emitUsageEvent(stateDo, {
       requestId: envelope.requestId, attemptIndex: currentAttemptIndex, timestamp: Date.now(),
       clientId: envelope.clientId, appId: envelope.appId,
-      userHash: envelope.userHash, policyId: envelope.policyId,
+      userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
       canonicalTarget: plan.canonicalTarget, selectedGroup: group,
       deploymentId: admission.deploymentId!, provider: deployment.provider,
       model: deployment.providerModel, stream: false, finalOutcome: evaluation.action,
-      ...usageEventFromTokenUsage(tokenUsage),
+      ...usageEventFromTokenUsage(tokenUsage, deployment.provider, deployment.providerModel),
     });
 
     return { success: true, response: resp, attempts };
@@ -712,16 +725,17 @@ async function handleNonStreamingAttempt(
     emitUsageEvent(stateDo, {
       requestId: envelope.requestId, attemptIndex: currentAttemptIndex, timestamp: Date.now(),
       clientId: envelope.clientId, appId: envelope.appId,
-      userHash: envelope.userHash, policyId: envelope.policyId,
+      userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
       canonicalTarget: plan.canonicalTarget, selectedGroup: group,
       deploymentId: admission.deploymentId!, provider: deployment.provider,
       model: deployment.providerModel, stream: false, finalOutcome: "fail_client",
-      ...usageEventFromTokenUsage(clientUsage),
+      ...usageEventFromTokenUsage(clientUsage, deployment.provider, deployment.providerModel),
     });
-    const errResp = new Response(JSON.stringify({
-      error: { message: evaluation.failureMessage, type: evaluation.failureClass },
-    }), { status: 400, headers: { "Content-Type": "application/json" } });
+    const errResp = new Response(
+      openAIErrorJson(evaluation.failureClass, evaluation.failureMessage ?? "request failed", envelope.requestId),
+      { status: 400, headers: { "Content-Type": "application/json" } },
+    );
     return { success: false, response: errResp, failureClass: evaluation.failureClass, attempts };
   }
 
@@ -751,12 +765,12 @@ async function handleNonStreamingAttempt(
   emitUsageEvent(stateDo, {
     requestId: envelope.requestId, attemptIndex: currentAttemptIndex, timestamp: Date.now(),
     clientId: envelope.clientId, appId: envelope.appId,
-    userHash: envelope.userHash, policyId: envelope.policyId,
+    userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
     canonicalTarget: plan.canonicalTarget, selectedGroup: group,
     deploymentId: admission.deploymentId!, provider: deployment.provider,
     model: deployment.providerModel, stream: false, finalOutcome: evaluation.action,
-    ...usageEventFromTokenUsage(retryUsage),
+    ...usageEventFromTokenUsage(retryUsage, deployment.provider, deployment.providerModel),
   });
   return null;
 }
@@ -839,7 +853,7 @@ async function handleStreamingAttempt(
       emitUnknownUsage(stateDo, {
         requestId: envelope.requestId, attemptIndex: currentAttemptIndex, canonicalTarget: plan.canonicalTarget,
         clientId: envelope.clientId, appId: envelope.appId,
-        userHash: envelope.userHash, policyId: envelope.policyId,
+        userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
         selectedGroup: group, deploymentId: admission.deploymentId!, provider: deployment.provider,
         model: deployment.providerModel, stream: true, finalOutcome: "stream_abort", usageSource: deployment.provider,
@@ -897,13 +911,13 @@ async function handleStreamingAttempt(
       stateDo.storeUsageEvent?.({
         requestId: envelope.requestId, attemptIndex: currentAttemptIndex, timestamp: Date.now(),
         clientId: envelope.clientId, appId: envelope.appId,
-        userHash: envelope.userHash, policyId: envelope.policyId,
+        userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
         canonicalTarget: plan.canonicalTarget, selectedGroup: group,
         deploymentId: admission.deploymentId!, provider: deployment.provider,
         model: deployment.providerModel, stream: true,
         finalOutcome: streamDone.wasAborted ? "stream_abort" : "success",
-        ...usageEventFromTokenUsage(streamUsage),
+        ...usageEventFromTokenUsage(streamUsage, deployment.provider, deployment.providerModel),
       }).catch((e) => logWarn("fire_forget_failed", { error: String(e) }));
     }).finally(() => {
       clearTimeout(releaseDeadlineTimer);
@@ -936,7 +950,7 @@ async function handleStreamingAttempt(
     emitUnknownUsage(stateDo, {
       requestId: envelope.requestId, attemptIndex: currentAttemptIndex, canonicalTarget: plan.canonicalTarget,
       clientId: envelope.clientId, appId: envelope.appId,
-      userHash: envelope.userHash, policyId: envelope.policyId,
+      userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
       selectedGroup: group, deploymentId: admission.deploymentId!, provider: deployment.provider,
       model: deployment.providerModel, stream: true, finalOutcome: "retry_fallback", usageSource: deployment.provider,
@@ -1010,7 +1024,7 @@ function handleProviderHttpError(
   emitUnknownUsage(stateDo, {
     requestId: envelope.requestId, attemptIndex: currentAttemptIndex, canonicalTarget: plan.canonicalTarget,
     clientId: envelope.clientId, appId: envelope.appId,
-    userHash: envelope.userHash, policyId: envelope.policyId,
+    userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
           policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
     selectedGroup: group, deploymentId: admission.deploymentId!, provider: deployment.provider,
     model: deployment.providerModel, stream: isStream, finalOutcome: "retry_fallback", usageSource: deployment.provider,
@@ -1249,31 +1263,61 @@ function filterDeploymentsForAttempt(
   return result.passed.map((entry) => entry.deployment);
 }
 
-function resolveKey(env: Record<string, unknown>, keyRef: string, deployment?: Deployment): string {
+function resolveKey(
+  env: Record<string, unknown>,
+  keyRef: string,
+  deployment?: Deployment,
+  requestId?: string,
+): string {
   if (deployment?.provider === "chatgpt" && deployment.mode === "responses") {
-    return resolveChatGPTSubscriptionAuthMaterial(env);
+    return resolveChatGPTSubscriptionAuthMaterial(env, requestId, deployment);
   }
   return (env[keyRef] as string) ?? "";
 }
 
-function resolveChatGPTSubscriptionAuthMaterial(env: Record<string, unknown>): string {
-  const authJson = envString(env, "CHATGPT_AUTH_JSON");
-  if (authJson) {
-    return requireStructuredChatGPTAuthMaterial(authJson, "CHATGPT_AUTH_JSON");
+function resolveChatGPTSubscriptionAuthMaterial(
+  env: Record<string, unknown>,
+  requestId?: string,
+  deployment?: Deployment,
+): string {
+  const fileContent = envString(env, "CHATGPT_AUTH_FILE");
+  const sources: Array<{ material: string; credentialName: string; nonJsonMessage?: string }> = [];
+  const primary = envString(env, "CHATGPT_AUTH_JSON");
+  if (primary) sources.push({ material: primary, credentialName: "CHATGPT_AUTH_JSON" });
+  if (fileContent) {
+    sources.push({
+      material: fileContent,
+      credentialName: "CHATGPT_AUTH_FILE",
+      nonJsonMessage: "CHATGPT_AUTH_FILE must contain structured ChatGPT subscription auth JSON in the Worker runtime; "
+        + "filesystem paths must be resolved before deployment",
+    });
+  }
+  for (const material of chatgptAuthMaterialCandidates(env, deployment, requestId)) {
+    if (!sources.some((s) => s.material === material)) {
+      sources.push({ material, credentialName: "CHATGPT_AUTH_JSON" });
+    }
   }
 
-  const authFileContent = envString(env, "CHATGPT_AUTH_FILE");
-  if (authFileContent) {
-    return requireStructuredChatGPTAuthMaterial(
-      authFileContent,
-      "CHATGPT_AUTH_FILE",
-      "CHATGPT_AUTH_FILE must contain structured ChatGPT subscription auth JSON in the Worker runtime; "
-      + "filesystem paths must be resolved before deployment",
-    );
+  let lastError: SubscriptionTokenError | null = null;
+  for (const source of sources) {
+    try {
+      return requireStructuredChatGPTAuthMaterial(
+        source.material,
+        source.credentialName,
+        source.nonJsonMessage,
+      );
+    } catch (e) {
+      if (e instanceof SubscriptionTokenError) {
+        lastError = e;
+        continue;
+      }
+      throw e;
+    }
   }
 
+  if (lastError) throw lastError;
   throw new SubscriptionTokenError(
-    "ChatGPT Responses subscription auth requires structured CHATGPT_AUTH_JSON or CHATGPT_AUTH_FILE material",
+    "ChatGPT Responses subscription auth requires structured CHATGPT_AUTH_JSON, CHATGPT_AUTH_FILE, or CHATGPT_AUTH_ACCOUNTS material",
     "oauth_session_failure",
   );
 }
@@ -1349,7 +1393,7 @@ function emitUsageEvent(stateObj: AttemptStateAccessor, event: UsageEventPayload
 
 function emitUnknownUsage(stateObj: AttemptStateAccessor, params: {
   requestId: string; attemptIndex: number; canonicalTarget: string;
-  clientId?: string; appId?: string; userHash?: string; policyId?: string;
+  clientId?: string; appId?: string; userHash?: string; teamId?: string; policyId?: string;
   policyVersion?: string; routeVersion?: string;
   selectedGroup: string; deploymentId: string; provider: string;
   model: string | undefined; stream: boolean; finalOutcome: string; usageSource: string;
@@ -1357,7 +1401,7 @@ function emitUnknownUsage(stateObj: AttemptStateAccessor, params: {
   emitUsageEvent(stateObj, {
     requestId: params.requestId, attemptIndex: params.attemptIndex, timestamp: Date.now(),
     clientId: params.clientId, appId: params.appId,
-    userHash: params.userHash, policyId: params.policyId,
+    userHash: params.userHash, teamId: params.teamId, policyId: params.policyId,
     policyVersion: params.policyVersion, routeVersion: params.routeVersion,
     canonicalTarget: params.canonicalTarget, selectedGroup: params.selectedGroup,
     deploymentId: params.deploymentId, provider: params.provider, model: params.model ?? "",

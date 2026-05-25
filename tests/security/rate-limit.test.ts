@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
 import { RATE_LIMIT_MAX_ENTRIES } from "../../src/config/constants";
-import { checkRateLimit, extractClientIp } from "../../src/security/rate-limit";
+import {
+  checkRateLimit,
+  extractClientIp,
+  extractRateLimitSegment,
+  clientRateLimitBucket,
+} from "../../src/security/rate-limit";
 
 describe("Rate limiting", () => {
   it("allows requests within limit", () => {
@@ -134,5 +139,17 @@ describe("Client IP extraction", () => {
   it("returns unknown when no headers", () => {
     const req = new Request("https://example.com");
     expect(extractClientIp(req).startsWith("unknown")).toBe(true);
+  });
+
+  it("extracts rate limit segment from Switchboard header", () => {
+    const req = new Request("https://example.com", {
+      headers: { "X-Switchboard-RateLimit-Segment": "team-alpha" },
+    });
+    expect(extractRateLimitSegment(req)).toBe("team-alpha");
+  });
+
+  it("builds composite client rate bucket", () => {
+    expect(clientRateLimitBucket("abc", "tenant-1")).toBe("abc|tenant-1");
+    expect(clientRateLimitBucket(undefined, "tenant-1")).toBe("tenant-1");
   });
 });

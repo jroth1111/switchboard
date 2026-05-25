@@ -172,8 +172,8 @@ describe("End-to-end plan -> admit -> evaluate flow", () => {
     // 1. Plan
     const envelope: RequestEnvelope = {
       requestId: "req-e2e-1",
-      originalModel: "glm-5.1",
-      body: { model: "glm-5.1", messages: [{ role: "user", content: "Hello" }] },
+      originalModel: "nim-primary",
+      body: { model: "nim-primary", messages: [{ role: "user", content: "Hello" }] },
       stream: false,
       hasTools: false,
       hasStrictTools: false,
@@ -602,7 +602,7 @@ describe("ChatGPT Responses auth resolution in the attempt loop", () => {
       expect(result.success).toBe(false);
       expect(fetchMock).not.toHaveBeenCalled();
       expect(result.attempts[0].failureClass).toBe("oauth_session_failure");
-      expect(result.attempts[0].failureMessage).toContain("requires structured CHATGPT_AUTH_JSON or CHATGPT_AUTH_FILE");
+      expect(result.attempts[0].failureMessage).toContain("requires structured CHATGPT_AUTH_JSON");
       expect(result.attempts[0].failureMessage).not.toContain("legacy-token");
     } finally {
       vi.unstubAllGlobals();

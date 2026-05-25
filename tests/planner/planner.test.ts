@@ -28,6 +28,12 @@ describe("canonicalize", () => {
     expect(canonicalize("sonnet-4-6").canonicalTarget).toBe("anthropic-subscription-sonnet-4-6-high");
   });
 
+  it("resolves VibeProxy GHCP editor aliases", () => {
+    expect(canonicalize("ghcp-op-46").canonicalTarget).toBe("anthropic-subscription-opus-4-7-high");
+    expect(canonicalize("ghcp-son-46").canonicalTarget).toBe("anthropic-subscription-sonnet-4-6-high");
+    expect(canonicalize("ghcp-haik-45").canonicalTarget).toBe("anthropic-subscription-sonnet-4-6-low");
+  });
+
   it("returns unmanaged for unknown models", () => {
     const result = canonicalize("totally-unknown-model");
     expect(result.isManaged).toBe(false);
@@ -70,12 +76,21 @@ describe("planRequest", () => {
     };
   }
 
-  it("plans smart-route-worker chat to Z.AI with NIM fallbacks", () => {
+  it("routes simple smart-route prompts to low-tier subscription", () => {
     const plan = planRequest(makeEnvelope("smart-route"));
     expect(plan).not.toBeNull();
-    expect(plan!.selectedGroup).toBe("smart-route-worker");
-    expect(plan!.fallbackSequence.length).toBeGreaterThan(0);
-    expect(plan!.fallbackSequence.map((f) => f.group)).toContain("nim-primary");
+    expect(plan!.selectedGroup).toBe("anthropic-subscription-sonnet-4-6-low");
+  });
+
+  it("routes complex smart-route prompts to high-tier subscription", () => {
+    const plan = planRequest(makeEnvelope("smart-route", {
+      body: {
+        model: "smart-route",
+        messages: [{ role: "user", content: "Architect and refactor a comprehensive multi-file microservice migration." }],
+      },
+    }));
+    expect(plan).not.toBeNull();
+    expect(plan!.selectedGroup).toBe("anthropic-subscription-opus-4-7-high");
   });
 
   it("routes tool requests to nim-tool-primary", () => {
@@ -110,11 +125,11 @@ describe("planRequest", () => {
     expect(plan!.selectedGroup).toBe("nim-primary");
   });
 
-  it("chatgpt subscription routes have no fallbacks", () => {
+  it("chatgpt subscription routes include profile fallbacks", () => {
     const plan = planRequest(makeEnvelope("gpt-5.5"));
     expect(plan).not.toBeNull();
     expect(plan!.selectedGroup).toBe("chatgpt-subscription-gpt-5.5-medium");
-    expect(plan!.fallbackSequence.length).toBe(0);
+    expect(plan!.fallbackSequence.map((f) => f.group)).toContain("chatgpt-subscription-gpt-5.5-high");
   });
 
   it("anthropic subscription routes have no fallbacks", () => {

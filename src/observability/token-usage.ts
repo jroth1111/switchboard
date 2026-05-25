@@ -1,5 +1,7 @@
 // Token usage observability: tri-state usage tracking.
 
+import { estimateUsageCostUsd } from "./usage-cost";
+
 export type TokenUsage =
   | { kind: "known"; promptTokens: number; completionTokens: number; totalTokens: number; source: string }
   | { kind: "estimated"; promptTokens: number; completionTokens: number; totalTokens: number; source: string }
@@ -15,6 +17,7 @@ export interface UsageEventPayload {
   policyId?: string;
   policyVersion?: string;
   routeVersion?: string;
+  teamId?: string;
   canonicalTarget: string;
   selectedGroup: string;
   deploymentId: string;
@@ -27,6 +30,7 @@ export interface UsageEventPayload {
   completionTokens: number | null;
   totalTokens: number | null;
   usageSource: string;
+  estimatedCostUsd?: number | null;
 }
 
 export function normalizeProviderUsage(
@@ -87,7 +91,9 @@ function parseTokenCount(value: unknown): number | undefined {
 
 export function usageEventFromTokenUsage(
   usage: TokenUsage,
-): Pick<UsageEventPayload, "usageKind" | "promptTokens" | "completionTokens" | "totalTokens" | "usageSource"> {
+  provider?: string,
+  model?: string,
+): Pick<UsageEventPayload, "usageKind" | "promptTokens" | "completionTokens" | "totalTokens" | "usageSource" | "estimatedCostUsd"> {
   if (usage.kind === "unknown") {
     return {
       usageKind: "unknown",
@@ -95,13 +101,16 @@ export function usageEventFromTokenUsage(
       completionTokens: null,
       totalTokens: null,
       usageSource: usage.source,
+      estimatedCostUsd: null,
     };
   }
+  const estimatedCostUsd = provider ? estimateUsageCostUsd(provider, usage, model?.trim()) : null;
   return {
     usageKind: usage.kind,
     promptTokens: usage.promptTokens,
     completionTokens: usage.completionTokens,
     totalTokens: usage.totalTokens,
     usageSource: usage.source,
+    estimatedCostUsd,
   };
 }

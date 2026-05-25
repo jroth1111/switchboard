@@ -3,6 +3,8 @@
 import { MANIFEST, ROUTE_MANIFEST_VERSION } from "../config/manifest";
 import type { FailureClass, Surface } from "../config/schema";
 import { planRequest, applyTransforms, type RequestEnvelope } from "../planner/planner";
+import { applyModelSuffixToBody } from "../planner/model-suffix";
+import { failureClassToOpenAIError } from "../providers/openai-error-shape";
 import { executeAttemptLoop } from "../attempts/attempt-loop";
 import { validateResponsesContract } from "../providers/chatgpt-responses";
 import { sanitizeClientMetadata, signMetadata } from "../security/internal-metadata";
@@ -17,7 +19,16 @@ import { runCanaryProbes, type CanaryHealthSnapshot, type CanaryHistoryRow } fro
 import { hasHiddenOnlyResponsesInput, hasHiddenOnlyTypedContent } from "../nim/repair/content-parts";
 import type { OAuthAccountAccessor } from "../providers/anthropic-subscription";
 import type { ControlPlaneStateDO } from "../state/control-plane-state";
-import { applyClientPolicyToPlan, authorizeModelForClient, type ClientIdentity } from "./client-policy";
+import {
+  applyClientPolicyToPlan,
+  authorizeModelForClient,
+  parseTeamLimits,
+  resolveClientAdmissionLimits,
+  type ClientIdentity,
+} from "./client-policy";
+import { extractRequestMetadata } from "../observability/request-metadata";
+import { parseOAuthAccountList } from "../providers/oauth-account-pool";
+import { extractRateLimitSegment } from "../security/rate-limit";
 
 const CONTROL_PLANE_STATE_NAME = "control-plane";
 const HOUR_MS = 3600000;
@@ -97,7 +108,7 @@ export async function handleChatCompletions(
     }, 400, requestId, client);
   }
 
-  return handlePreparedModelRequest({ body, env, ctx, client, requestId, surface: "chat_completions" });
+  return handlePreparedModelRequest({ request, body, env, ctx, client, requestId, surface: "chat_completions" });
 }
 
 export async function handleResponses(
@@ -153,10 +164,11 @@ export async function handleResponses(
     }, 400, requestId, client);
   }
 
-  return handlePreparedModelRequest({ body, env, ctx, client, requestId, surface: "responses" });
+  return handlePreparedModelRequest({ request, body, env, ctx, client, requestId, surface: "responses" });
 }
 
 async function handlePreparedModelRequest(params: {
+  request: Request;
   body: Record<string, unknown>;
   env: Env;
   ctx: ExecutionContext;
@@ -164,8 +176,10 @@ async function handlePreparedModelRequest(params: {
   requestId: string;
   surface: Surface;
 }): Promise<Response> {
-  const { body, env, ctx, client, requestId, surface } = params;
-  const model = body.model as string;
+  const { request, body, env, ctx, client, requestId, surface } = params;
+  const requestMetadata = extractRequestMetadata(request);
+  const suffixRewrite = applyModelSuffixToBody(body);
+  const model = suffixRewrite.model;
   const modelAuth = authorizeModelForClient(model, client);
   if (!modelAuth.allowed) {
     const denialReceipt: RouteReceipt = {
@@ -178,6 +192,7 @@ async function handlePreparedModelRequest(params: {
       policyId: client.policyId,
       policyVersion: client.policyVersion,
       routeVersion: ROUTE_MANIFEST_VERSION,
+      ...requestMetadata,
       denialReason: modelAuth.reason,
       routeDecision: {
         canonicalization: {
@@ -220,7 +235,7 @@ async function handlePreparedModelRequest(params: {
   // Build envelope
   const envelope: RequestEnvelope = {
     requestId,
-    originalModel: model,
+    originalModel: suffixRewrite.originalModel,
     surface,
     clientId: client.clientId,
     appId: client.appId,
@@ -228,6 +243,7 @@ async function handlePreparedModelRequest(params: {
     policyId: client.policyId,
     policyVersion: client.policyVersion,
     routeVersion: ROUTE_MANIFEST_VERSION,
+    teamId: client.policy.teamId,
     body,
     stream: body.stream === true,
     hasTools: !!(body.tools && (body.tools as unknown[]).length > 0),
@@ -235,7 +251,7 @@ async function handlePreparedModelRequest(params: {
     isMultiTool: Array.isArray(body.tools) && (body.tools as unknown[]).length >= 2,
     hasTypedContent: surface === "responses" ? detectResponsesTypedContent(body) : detectTypedContent(body),
     requiresJsonMode: surface === "chat_completions" ? body.response_format !== undefined : body.text !== undefined,
-    requiresReasoning: !!(body.reasoning || body.reasoning_effort || (body.extra_body as Record<string, unknown>)?.reasoning_effort),
+    requiresReasoning: suffixRewrite.requiresReasoning || !!(body.reasoning || body.reasoning_effort || (body.extra_body as Record<string, unknown>)?.reasoning_effort),
   };
 
   logInfo("request_start", {
@@ -277,14 +293,22 @@ async function handlePreparedModelRequest(params: {
   const stateId = env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME);
   const stateDo = env.CONTROL_PLANE_STATE.get(stateId);
   const subscriptionCtx = buildSubscriptionContext(env);
+  const rateLimitSegment = extractRateLimitSegment(request);
+  const teams = parseTeamLimits(env.CLIENT_KEYS_JSON);
+  const admissionLimits = resolveClientAdmissionLimits(client.policy, teams);
   const clientAdmission = await (stateDo as unknown as ControlPlaneStateDO).admitClientRequest({
     requestId,
     clientId: client.clientId,
     appId: client.appId,
     userHash: client.userHash,
-    rpmLimit: client.policy.rpmLimit ?? null,
-    maxConcurrency: client.policy.maxConcurrency ?? null,
-    tokenBudgetPerMinute: client.policy.tokenBudgetPerMinute ?? null,
+    rateLimitSegment,
+    teamId: admissionLimits.teamId,
+    teamRpmLimit: admissionLimits.teamRpmLimit,
+    teamMaxConcurrency: admissionLimits.teamMaxConcurrency,
+    teamTokenBudgetPerMinute: admissionLimits.teamTokenBudgetPerMinute,
+    rpmLimit: admissionLimits.rpmLimit,
+    maxConcurrency: admissionLimits.maxConcurrency,
+    tokenBudgetPerMinute: admissionLimits.tokenBudgetPerMinute,
     estimatedTokens: estimateClientTokenCost(envelope.body, client.policy.tokenBudgetPerMinute),
   });
   if (!clientAdmission.admitted) {
@@ -299,6 +323,7 @@ async function handlePreparedModelRequest(params: {
       policyId: client.policyId,
       policyVersion: client.policyVersion,
       routeVersion: ROUTE_MANIFEST_VERSION,
+      ...requestMetadata,
       denialReason: reason,
       routeDecision: plan.routeDecision,
       canonicalTarget: plan.canonicalTarget,
@@ -322,11 +347,11 @@ async function handlePreparedModelRequest(params: {
   const releaseAdmission = () => {
     if (admissionReleased) return;
     admissionReleased = true;
-    waitUntilLogged(
-      ctx,
-      (stateDo as unknown as ControlPlaneStateDO).releaseClientRequest(clientAdmission.reservationId),
-      "client_limit_release_failed",
-    );
+    const doRef = stateDo as unknown as ControlPlaneStateDO;
+    waitUntilLogged(ctx, doRef.releaseClientRequest(clientAdmission.reservationId), "client_limit_release_failed");
+    if (clientAdmission.teamReservationId) {
+      waitUntilLogged(ctx, doRef.releaseClientRequest(clientAdmission.teamReservationId), "team_limit_release_failed");
+    }
   };
 
   // Execute attempt loop
@@ -377,6 +402,7 @@ async function handlePreparedModelRequest(params: {
     finalOutcome,
     stream: envelope.stream,
     totalDurationMs: result.attempts.reduce((sum, a) => sum + a.durationMs, 0),
+    ...requestMetadata,
   };
 
   recordReceipt(receipt);
@@ -406,7 +432,12 @@ async function handlePreparedModelRequest(params: {
     addVersionHeaders(respHeaders, client);
     if (metaSignature) respHeaders.set("X-Nim-Signature", metaSignature);
     const body = envelope.stream
-      ? releaseClientOnStreamEnd(result.response.body, stateDo as unknown as ControlPlaneStateDO, clientAdmission.reservationId)
+      ? releaseClientOnStreamEnd(
+        result.response.body,
+        stateDo as unknown as ControlPlaneStateDO,
+        clientAdmission.reservationId,
+        clientAdmission.teamReservationId,
+      )
       : result.response.body;
     return new Response(body, {
       status: result.response.status,
@@ -420,11 +451,11 @@ async function handlePreparedModelRequest(params: {
     releaseAdmission();
   }
   logWarn("request_exhausted", { requestId, failureClass: result.failureClass, attempts: result.attempts.length });
-  return errorResponse({
-    message: result.failureMessage ?? "all attempts exhausted",
-    type: result.failureClass ?? "exhausted",
-    code: "exhausted",
-  }, 502, requestId, client);
+  const exhausted = failureClassToOpenAIError(
+    result.failureClass ?? "unknown_failure",
+    result.failureMessage ?? "all attempts exhausted",
+  );
+  return errorResponse(exhausted, 502, requestId, client);
 }
 
 function waitUntilLogged(ctx: ExecutionContext, promise: Promise<unknown>, event: string): void {
@@ -498,6 +529,7 @@ export function releaseClientOnStreamEnd(
   body: ReadableStream<Uint8Array> | null,
   stateDo: ControlPlaneStateDO,
   reservationId: string,
+  teamReservationId?: string,
 ): ReadableStream<Uint8Array> | null {
   let released = false;
   const release = () => {
@@ -505,6 +537,10 @@ export function releaseClientOnStreamEnd(
     released = true;
     stateDo.releaseClientRequest(reservationId)
       .catch((e) => logWarn("client_limit_release_failed", { error: String(e) }));
+    if (teamReservationId) {
+      stateDo.releaseClientRequest(teamReservationId)
+        .catch((e) => logWarn("team_limit_release_failed", { error: String(e) }));
+    }
   };
 
   if (!body) {
@@ -742,6 +778,18 @@ export async function handleAdminUsage(
       deploymentId,
       since: rollupSince,
     });
+
+  const format = url.searchParams.get("format") ?? "json";
+  if (format === "csv") {
+    const header = "hour_start,selected_group,deployment_id,provider,model,requests,prompt_tokens,completion_tokens,total_tokens,estimated_cost_usd";
+    const lines = rollups.map((r) => [
+      r.hourStart, r.selectedGroup, r.deploymentId, r.provider, r.model,
+      r.requests, r.promptTokens, r.completionTokens, r.totalTokens, r.estimatedCostUsd,
+    ].map((v) => String(v ?? "")).join(","));
+    return new Response([header, ...lines].join("\n"), {
+      headers: { "Content-Type": "text/csv; charset=utf-8" },
+    });
+  }
 
   const totals = rollups.reduce<Record<string, number>>((acc, r) => ({
     requests: acc.requests + Number(r.requests ?? 0),
@@ -1052,12 +1100,14 @@ function buildSubscriptionContext(env: Env) {
     env.OAUTH_ACCOUNT.idFromName("anthropic-subscription"),
   ) as unknown as OAuthAccountAccessor;
   const tokenUrl = (env as { ANTHROPIC_OAUTH_TOKEN_URL?: string }).ANTHROPIC_OAUTH_TOKEN_URL;
+  const accountIds = parseOAuthAccountList((env as { ANTHROPIC_OAUTH_ACCOUNTS?: string }).ANTHROPIC_OAUTH_ACCOUNTS);
   return {
     anthropicOAuth: {
       accessor: oauthDo,
       clientId: anthropicClientId,
       clientSecret: env.ANTHROPIC_CLIENT_SECRET,
       ...(tokenUrl ? { tokenUrl } : {}),
+      ...(accountIds.length ? { accountIds } : {}),
     },
   };
 }
@@ -1112,23 +1162,39 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+const CLIENT_DENIAL_FAILURE: Record<string, FailureClass> = {
+  oauth_provider_excluded: "invalid_model",
+  model_denied: "invalid_model",
+  model_not_allowed: "invalid_model",
+  unknown_model: "invalid_model",
+  route_group_denied: "invalid_model",
+  hidden_route: "invalid_model",
+  client_rpm_exceeded: "rate_limit_overload",
+  client_concurrency_exceeded: "rate_limit_concurrency",
+  client_token_budget_exceeded: "rate_limit_quota_window",
+  team_rpm_exceeded: "rate_limit_overload",
+  team_concurrency_exceeded: "rate_limit_concurrency",
+  team_token_budget_exceeded: "rate_limit_quota_window",
+  team_token_estimate_required: "rate_limit_quota_window",
+};
+
 function errorResponse(
-  error: { message: string; type: string; code: string },
+  error: { message: string; type: string; code: string; param?: string },
   status: number,
   requestId: string,
   client?: ClientIdentity,
 ): Response {
+  const mapped = CLIENT_DENIAL_FAILURE[error.code];
+  const openai = mapped
+    ? failureClassToOpenAIError(mapped, error.message)
+    : { message: error.message, type: error.type, code: error.code, ...(error.param ? { param: error.param } : {}) };
   const headers = new Headers({
     "Content-Type": "application/json",
     "X-Request-Id": requestId,
   });
   if (client) addVersionHeaders(headers, client);
   return new Response(JSON.stringify({
-    error: {
-      message: error.message,
-      type: error.type,
-      code: error.code,
-    },
+    error: openai,
     request_id: requestId,
   }), {
     status,

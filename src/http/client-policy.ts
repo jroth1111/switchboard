@@ -1,11 +1,22 @@
 import { MANIFEST } from "../config/manifest";
 import { canonicalize, type ExecutionPlan } from "../planner/planner";
 import { getBearerToken, timingSafeEqual } from "./auth";
+import {
+  isOAuthExcluded,
+  mergeOAuthExcludedModels,
+  modelIdentitySet,
+} from "./oauth-exclusions";
+import { parseTeamLimits, resolveClientAdmissionLimits, type ClientAdmissionLimits } from "./team-limits";
+
+export { parseTeamLimits, resolveClientAdmissionLimits, type ClientAdmissionLimits };
 
 export interface ClientPolicy {
+  teamId?: string;
   allowedModels?: string[];
   deniedModels?: string[];
   deniedRouteGroups?: string[];
+  /** VibeProxy-style provider -> model ids or "*" to hide subscription-backed routes. */
+  oauthExcludedModels?: Record<string, string[]>;
   allowHiddenRoutes?: boolean;
   rpmLimit?: number;
   maxConcurrency?: number;
@@ -87,6 +98,10 @@ export function authorizeModelForClient(model: string, client: ClientIdentity): 
   if (group.hidden && !client.policy.allowHiddenRoutes) return { allowed: false, reason: "hidden_route" };
 
   const modelKeys = modelIdentitySet(model, canonical.canonicalTarget);
+  const oauthExclusions = mergedOAuthExclusionsForClient(client);
+  if (isOAuthExcluded(canonical.canonicalTarget, modelKeys, oauthExclusions)) {
+    return { allowed: false, reason: "oauth_provider_excluded" };
+  }
   if (client.policy.deniedModels?.some((entry) => modelKeys.has(entry))) {
     return { allowed: false, reason: "model_denied" };
   }
@@ -169,9 +184,11 @@ function parseClientKeys(raw: string | undefined): ParsedClientConfig[] {
         policyId: stringValue(cfg.policyId) ?? DEFAULT_POLICY_ID,
         policyVersion: stringValue(cfg.policyVersion) ?? `${stringValue(cfg.policyId) ?? DEFAULT_POLICY_ID}:unversioned`,
         policy: {
+          teamId: stringValue(cfg.teamId),
           allowedModels: stringList(cfg.allowedModels),
           deniedModels: stringList(cfg.deniedModels),
           deniedRouteGroups: stringList(cfg.deniedRouteGroups),
+          oauthExcludedModels: parseOAuthExcludedModels(cfg.oauthExcludedModels),
           allowHiddenRoutes: cfg.allowHiddenRoutes === true,
           rpmLimit: positiveInteger(cfg.rpmLimit),
           maxConcurrency: positiveInteger(cfg.maxConcurrency),
@@ -184,12 +201,19 @@ function parseClientKeys(raw: string | undefined): ParsedClientConfig[] {
   return clients;
 }
 
-function modelIdentitySet(requestedModel: string, canonicalTarget: string): Set<string> {
-  const values = new Set([requestedModel, canonicalTarget]);
-  for (const [alias, target] of Object.entries(MANIFEST.aliases)) {
-    if (target === canonicalTarget) values.add(alias);
+function parseOAuthExcludedModels(value: unknown): Record<string, string[]> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: Record<string, string[]> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof key !== "string" || !key.trim()) continue;
+    const list = stringList(raw);
+    if (list?.length) out[key.trim()] = list;
   }
-  return values;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+export function mergedOAuthExclusionsForClient(client: ClientIdentity): Record<string, string[]> | undefined {
+  return mergeOAuthExcludedModels(MANIFEST.oauthExcludedModels, client.policy.oauthExcludedModels);
 }
 
 function routeGroupAllowedForFallback(groupName: string, client: ClientIdentity): { allowed: true } | { allowed: false; reason: string } {
@@ -198,6 +222,9 @@ function routeGroupAllowedForFallback(groupName: string, client: ClientIdentity)
   if (client.policy.deniedRouteGroups?.includes(groupName)) return { allowed: false, reason: "route_group_denied" };
   if (group.hidden && !client.policy.allowHiddenRoutes) return { allowed: false, reason: "hidden_route" };
   const modelKeys = modelIdentitySet(groupName, groupName);
+  if (isOAuthExcluded(groupName, modelKeys, mergedOAuthExclusionsForClient(client))) {
+    return { allowed: false, reason: "oauth_provider_excluded" };
+  }
   if (client.policy.deniedModels?.some((entry) => modelKeys.has(entry))) {
     return { allowed: false, reason: "model_denied" };
   }

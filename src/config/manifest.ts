@@ -388,6 +388,9 @@ export const MANIFEST: RouteManifest = {
     "nim-", "nvidia_nim/", "nvidia/", "zai-",
   ],
 
+  /** Operator default OAuth visibility for health probes (merged with per-client policy). */
+  oauthExcludedModels: {},
+
   routeGroups: {
     "smart-route-worker": {
       target: "zai-glm-5.1", hidden: false,
@@ -404,6 +407,11 @@ export const MANIFEST: RouteManifest = {
     "nim-tool-primary": {
       target: "nim-gemma-4-31b-it", hidden: false, dedicatedToolLane: true,
       fallbacks: ["nim-secondary", "nim-primary", "smart-route-worker"],
+      fallbackByProfile: {
+        context_window: ["nim-primary", "zai-glm-5.1-terminal-fallback"],
+        general: ["nim-secondary", "nim-primary", "smart-route-worker"],
+        content_policy: ["nim-secondary"],
+      },
     },
     "nim-secondary": {
       target: "nim-minimax-m2.7", hidden: false, dedicatedToolLane: true,
@@ -412,6 +420,11 @@ export const MANIFEST: RouteManifest = {
     "nim-primary": {
       target: "nim-primary", hidden: false,
       fallbacks: ["nim-deepseek-v4-pro", "nim-kimi-k2.5", "nim-minimax-m2.7", "zai-glm-5.1-terminal-fallback"],
+      fallbackByProfile: {
+        context_window: ["zai-glm-5.1-terminal-fallback", "nim-deepseek-v4-pro"],
+        general: ["nim-deepseek-v4-pro", "nim-kimi-k2.5", "nim-minimax-m2.7", "zai-glm-5.1-terminal-fallback"],
+        content_policy: ["nim-secondary", "zai-glm-5.1-terminal-fallback"],
+      },
     },
     "nim-deepseek-v4-pro": {
       target: "nim-deepseek-v4-pro", hidden: false,
@@ -437,7 +450,14 @@ export const MANIFEST: RouteManifest = {
     "chatgpt-subscription-gpt-5.5-none": { target: "chatgpt-subscription-gpt-5.5-none", hidden: true, fallbacks: [] },
     "chatgpt-subscription-gpt-5.5-minimal": { target: "chatgpt-subscription-gpt-5.5-minimal", hidden: true, fallbacks: [] },
     "chatgpt-subscription-gpt-5.5-low": { target: "chatgpt-subscription-gpt-5.5-low", hidden: true, fallbacks: [] },
-    "chatgpt-subscription-gpt-5.5-medium": { target: "chatgpt-subscription-gpt-5.5-medium", hidden: true, fallbacks: [] },
+    "chatgpt-subscription-gpt-5.5-medium": {
+      target: "chatgpt-subscription-gpt-5.5-medium", hidden: true,
+      fallbacks: ["chatgpt-subscription-gpt-5.5-high", "chatgpt-subscription-gpt-5.5-low"],
+      fallbackByProfile: {
+        context_window: ["chatgpt-subscription-gpt-5.5-low"],
+        general: ["chatgpt-subscription-gpt-5.5-high", "chatgpt-subscription-gpt-5.5-low"],
+      },
+    },
     "chatgpt-subscription-gpt-5.5-high": { target: "chatgpt-subscription-gpt-5.5-high", hidden: true, fallbacks: [] },
     "chatgpt-subscription-gpt-5.5-xhigh": { target: "chatgpt-subscription-gpt-5.5-xhigh", hidden: true, fallbacks: [] },
   },

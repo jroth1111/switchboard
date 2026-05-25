@@ -13,6 +13,7 @@ import {
 import { getAdapter } from "../providers/registry";
 import type { ProviderAdapter } from "../providers/adapter";
 import type { OAuthAccountAccessor } from "../providers/anthropic-subscription";
+import { chatgptAuthMaterialCandidates } from "../providers/chatgpt-auth-pool";
 import { isChatGPTSubscriptionAuthJsonText, resolveChatGPTSubscriptionAuth } from "../providers/chatgpt-responses";
 import { evaluateResponse, type ResponseEvaluationConfig } from "../nim/evaluate/response";
 import { classifyRateLimit } from "../nim/classify/rate-limit";
@@ -226,7 +227,7 @@ export async function executeAttemptLoop(
       const adapter = getAdapter(deployment.provider, deployment.mode);
 
       try {
-        const apiKey = resolveKey(env, admission.keyRef!, deployment);
+        const apiKey = resolveKey(env, admission.keyRef!, deployment, envelope.requestId);
         const providerReq = await adapter.buildRequest({
           deployment, body: envelope.body, apiKey,
           requestId: envelope.requestId, subscriptionCtx,
@@ -459,7 +460,7 @@ async function admitHedgeLanes(
       policy: entry.policy,
       admission,
       deployment,
-      apiKey: resolveKey(env, admission.keyRef!, deployment),
+      apiKey: resolveKey(env, admission.keyRef!, deployment, envelope.requestId),
       attemptIndex: baseAttemptIndex + lanes.length,
       attemptTimeoutMs,
       deploymentHealth,
@@ -702,7 +703,7 @@ async function handleNonStreamingAttempt(
       canonicalTarget: plan.canonicalTarget, selectedGroup: group,
       deploymentId: admission.deploymentId!, provider: deployment.provider,
       model: deployment.providerModel, stream: false, finalOutcome: evaluation.action,
-      ...usageEventFromTokenUsage(tokenUsage, deployment.provider),
+      ...usageEventFromTokenUsage(tokenUsage, deployment.provider, deployment.providerModel),
     });
 
     return { success: true, response: resp, attempts };
@@ -729,7 +730,7 @@ async function handleNonStreamingAttempt(
       canonicalTarget: plan.canonicalTarget, selectedGroup: group,
       deploymentId: admission.deploymentId!, provider: deployment.provider,
       model: deployment.providerModel, stream: false, finalOutcome: "fail_client",
-      ...usageEventFromTokenUsage(clientUsage, deployment.provider),
+      ...usageEventFromTokenUsage(clientUsage, deployment.provider, deployment.providerModel),
     });
     const errResp = new Response(
       openAIErrorJson(evaluation.failureClass, evaluation.failureMessage ?? "request failed", envelope.requestId),
@@ -769,7 +770,7 @@ async function handleNonStreamingAttempt(
     canonicalTarget: plan.canonicalTarget, selectedGroup: group,
     deploymentId: admission.deploymentId!, provider: deployment.provider,
     model: deployment.providerModel, stream: false, finalOutcome: evaluation.action,
-    ...usageEventFromTokenUsage(retryUsage, deployment.provider),
+    ...usageEventFromTokenUsage(retryUsage, deployment.provider, deployment.providerModel),
   });
   return null;
 }
@@ -916,7 +917,7 @@ async function handleStreamingAttempt(
         deploymentId: admission.deploymentId!, provider: deployment.provider,
         model: deployment.providerModel, stream: true,
         finalOutcome: streamDone.wasAborted ? "stream_abort" : "success",
-        ...usageEventFromTokenUsage(streamUsage, deployment.provider),
+        ...usageEventFromTokenUsage(streamUsage, deployment.provider, deployment.providerModel),
       }).catch((e) => logWarn("fire_forget_failed", { error: String(e) }));
     }).finally(() => {
       clearTimeout(releaseDeadlineTimer);
@@ -1262,31 +1263,61 @@ function filterDeploymentsForAttempt(
   return result.passed.map((entry) => entry.deployment);
 }
 
-function resolveKey(env: Record<string, unknown>, keyRef: string, deployment?: Deployment): string {
+function resolveKey(
+  env: Record<string, unknown>,
+  keyRef: string,
+  deployment?: Deployment,
+  requestId?: string,
+): string {
   if (deployment?.provider === "chatgpt" && deployment.mode === "responses") {
-    return resolveChatGPTSubscriptionAuthMaterial(env);
+    return resolveChatGPTSubscriptionAuthMaterial(env, requestId, deployment);
   }
   return (env[keyRef] as string) ?? "";
 }
 
-function resolveChatGPTSubscriptionAuthMaterial(env: Record<string, unknown>): string {
-  const authJson = envString(env, "CHATGPT_AUTH_JSON");
-  if (authJson) {
-    return requireStructuredChatGPTAuthMaterial(authJson, "CHATGPT_AUTH_JSON");
+function resolveChatGPTSubscriptionAuthMaterial(
+  env: Record<string, unknown>,
+  requestId?: string,
+  deployment?: Deployment,
+): string {
+  const fileContent = envString(env, "CHATGPT_AUTH_FILE");
+  const sources: Array<{ material: string; credentialName: string; nonJsonMessage?: string }> = [];
+  const primary = envString(env, "CHATGPT_AUTH_JSON");
+  if (primary) sources.push({ material: primary, credentialName: "CHATGPT_AUTH_JSON" });
+  if (fileContent) {
+    sources.push({
+      material: fileContent,
+      credentialName: "CHATGPT_AUTH_FILE",
+      nonJsonMessage: "CHATGPT_AUTH_FILE must contain structured ChatGPT subscription auth JSON in the Worker runtime; "
+        + "filesystem paths must be resolved before deployment",
+    });
+  }
+  for (const material of chatgptAuthMaterialCandidates(env, deployment, requestId)) {
+    if (!sources.some((s) => s.material === material)) {
+      sources.push({ material, credentialName: "CHATGPT_AUTH_JSON" });
+    }
   }
 
-  const authFileContent = envString(env, "CHATGPT_AUTH_FILE");
-  if (authFileContent) {
-    return requireStructuredChatGPTAuthMaterial(
-      authFileContent,
-      "CHATGPT_AUTH_FILE",
-      "CHATGPT_AUTH_FILE must contain structured ChatGPT subscription auth JSON in the Worker runtime; "
-      + "filesystem paths must be resolved before deployment",
-    );
+  let lastError: SubscriptionTokenError | null = null;
+  for (const source of sources) {
+    try {
+      return requireStructuredChatGPTAuthMaterial(
+        source.material,
+        source.credentialName,
+        source.nonJsonMessage,
+      );
+    } catch (e) {
+      if (e instanceof SubscriptionTokenError) {
+        lastError = e;
+        continue;
+      }
+      throw e;
+    }
   }
 
+  if (lastError) throw lastError;
   throw new SubscriptionTokenError(
-    "ChatGPT Responses subscription auth requires structured CHATGPT_AUTH_JSON or CHATGPT_AUTH_FILE material",
+    "ChatGPT Responses subscription auth requires structured CHATGPT_AUTH_JSON, CHATGPT_AUTH_FILE, or CHATGPT_AUTH_ACCOUNTS material",
     "oauth_session_failure",
   );
 }

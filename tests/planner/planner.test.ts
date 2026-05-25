@@ -125,11 +125,11 @@ describe("planRequest", () => {
     expect(plan!.selectedGroup).toBe("nim-primary");
   });
 
-  it("chatgpt subscription routes have no fallbacks", () => {
+  it("chatgpt subscription routes include profile fallbacks", () => {
     const plan = planRequest(makeEnvelope("gpt-5.5"));
     expect(plan).not.toBeNull();
     expect(plan!.selectedGroup).toBe("chatgpt-subscription-gpt-5.5-medium");
-    expect(plan!.fallbackSequence.length).toBe(0);
+    expect(plan!.fallbackSequence.map((f) => f.group)).toContain("chatgpt-subscription-gpt-5.5-high");
   });
 
   it("anthropic subscription routes have no fallbacks", () => {

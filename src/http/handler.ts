@@ -3,6 +3,7 @@
 import { MANIFEST, ROUTE_MANIFEST_VERSION } from "../config/manifest";
 import type { FailureClass, Surface } from "../config/schema";
 import { planRequest, applyTransforms, type RequestEnvelope } from "../planner/planner";
+import { failureClassToOpenAIError } from "../providers/openai-error-shape";
 import { executeAttemptLoop } from "../attempts/attempt-loop";
 import { validateResponsesContract } from "../providers/chatgpt-responses";
 import { sanitizeClientMetadata, signMetadata } from "../security/internal-metadata";
@@ -420,11 +421,11 @@ async function handlePreparedModelRequest(params: {
     releaseAdmission();
   }
   logWarn("request_exhausted", { requestId, failureClass: result.failureClass, attempts: result.attempts.length });
-  return errorResponse({
-    message: result.failureMessage ?? "all attempts exhausted",
-    type: result.failureClass ?? "exhausted",
-    code: "exhausted",
-  }, 502, requestId, client);
+  const exhausted = failureClassToOpenAIError(
+    result.failureClass ?? "unknown_failure",
+    result.failureMessage ?? "all attempts exhausted",
+  );
+  return errorResponse(exhausted, 502, requestId, client);
 }
 
 function waitUntilLogged(ctx: ExecutionContext, promise: Promise<unknown>, event: string): void {

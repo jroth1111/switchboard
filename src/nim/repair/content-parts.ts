@@ -137,14 +137,8 @@ export function hasHiddenOnlyTypedContent(data: Record<string, unknown>): boolea
       continue;
     }
     if (!Array.isArray(content)) return false;
-    for (const part of content) {
-      const action = typedContentPartAction(part);
-      if (action === "strip_hidden_reasoning" || action === "strip_metadata") {
-        sawHidden = true;
-        continue;
-      }
-      return false;
-    }
+    if (!hiddenOnlyInContentParts(content)) return false;
+    sawHidden = true;
   }
   return sawHidden;
 }

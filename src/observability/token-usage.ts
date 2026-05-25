@@ -27,6 +27,7 @@ export interface UsageEventPayload {
   completionTokens: number | null;
   totalTokens: number | null;
   usageSource: string;
+  estimatedCostUsd?: number | null;
 }
 
 export function normalizeProviderUsage(

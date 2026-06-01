@@ -1,4 +1,4 @@
-// VibeProxy-style model suffix rewriting before canonicalize/planning.
+// Model suffix rewriting before canonicalize/planning.
 // Strips `-thinking-NUMBER` from model id and injects Anthropic thinking budget.
 
 const THINKING_SUFFIX = "-thinking-";

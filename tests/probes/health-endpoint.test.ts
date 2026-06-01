@@ -210,6 +210,37 @@ describe("buildHealthReport", () => {
     expect(report.routeGroups[groupName].available).toBe(true);
   });
 
+  it("blocks route-group deployments when every manifest credential is on cooldown", async () => {
+    const { MANIFEST } = await import("../../src/config/manifest");
+    const { manifestCredentialIds } = await import("../../src/credentials/manifest-ids");
+    const groupName = "nim-primary";
+    const deployments = MANIFEST.deploymentsByGroup[groupName] ?? [];
+    expect(deployments.length).toBeGreaterThan(0);
+
+    const now = Date.now();
+    const credentialCooldowns: Record<string, { reason: string; until: number }> = {};
+    for (const deployment of deployments) {
+      for (const credentialId of manifestCredentialIds(deployment)) {
+        credentialCooldowns[`cred:${credentialId}`] = {
+          reason: "rate_limit_overload",
+          until: now + 60_000,
+        };
+      }
+    }
+
+    const report = await buildHealthReport({
+      getHealth: async () => ({
+        circuits: {},
+        healthScores: {},
+        cooldowns: {},
+        credentialCooldowns,
+      }),
+    } as Parameters<typeof buildHealthReport>[0]);
+
+    expect(report.routeGroups[groupName].availableDeployments).toBe(0);
+    expect(report.routeGroups[groupName].blockedDeployments).toBe(deployments.length);
+  });
+
   it("exposes alias visibility and request-shape dispatchability for operator aliases", async () => {
     const mockStateDo = {
       getHealth: async () => ({ circuits: {}, healthScores: {}, cooldowns: {}, inflight: {}, learnedLimits: {} }),

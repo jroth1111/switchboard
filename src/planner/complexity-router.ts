@@ -2,6 +2,12 @@
 
 export type ComplexityTier = "low" | "medium" | "high";
 
+export interface SmartRouteShadow {
+  tier: ComplexityTier;
+  selectedModel: string;
+  skippedReason?: string;
+}
+
 const SIMPLE_PATTERNS = [
   /\b(what is|define|explain briefly|how do i|syntax for)\b/i,
   /\b(hello|hi|thanks|thank you)\b/i,

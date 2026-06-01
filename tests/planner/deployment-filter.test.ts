@@ -161,7 +161,7 @@ describe("Deployment pre-routing filter", () => {
     const state = createEmptyFilterState();
     const now = Date.now();
     const windowStart = Math.floor(now / 1000) * 1000;
-    state.tokenWindows.set("TEST_KEY", { windowStart, promptTokens: 50, completionTokens: 50 });
+    state.tokenWindows.set("test-group:TEST_KEY", { windowStart, promptTokens: 50, completionTokens: 50 });
 
     const result = filterCandidates([makeDeployment()], state, now, "per_key", { tokenBudgetPerMinute: 100 });
 
@@ -184,7 +184,7 @@ describe("Deployment pre-routing filter", () => {
     });
     const tokenState = buildFilterStateFromHealth({
       tokenWindows: {
-        TEST_KEY: { windowStart, promptTokens: 50, completionTokens: 50 },
+        "test-group:TEST_KEY": { windowStart, promptTokens: 50, completionTokens: 50 },
       },
     });
 
@@ -195,6 +195,67 @@ describe("Deployment pre-routing filter", () => {
     expect(keyResult.rejected[0].reason).toBe("key_rpm_exhausted");
     expect(groupResult.rejected[0].reason).toBe("group_rpm_exhausted");
     expect(tokenResult.rejected[0].reason).toBe("token_budget_exhausted");
+  });
+
+  it("shares token budget across deployments in the same group under global scopeMode", () => {
+    const state = createEmptyFilterState();
+    const now = Date.now();
+    const windowStart = Math.floor(now / 1000) * 1000;
+    state.tokenWindows.set("test-group:global", { windowStart, promptTokens: 50, completionTokens: 50 });
+
+    const d1 = makeDeployment({ id: "deploy-a", keyRef: "KEY_A" });
+    const d2 = makeDeployment({ id: "deploy-b", keyRef: "KEY_B", group: "test-group" });
+    const result = filterCandidates([d1, d2], state, now, "global", { tokenBudgetPerMinute: 100 });
+
+    expect(result.passed).toHaveLength(0);
+    expect(result.rejected.every((r) => r.reason === "token_budget_exhausted")).toBe(true);
+  });
+
+  it("passes credential pool check when discovered NIM keys are only in env", () => {
+    const state = createEmptyFilterState();
+    const now = Date.now();
+    const deployment = makeDeployment({ keyRef: "NIM_KEY_1", provider: "nvidia_nim" });
+    const credentialIds = new Map([["deploy-1", ["NIM_KEY_1", "NIM_KEY_2", "NIM_KEY_3"]]]);
+    const result = filterCandidates(
+      [deployment],
+      state,
+      now,
+      "per_key",
+      { credentialIdsByDeployment: credentialIds },
+    );
+    expect(result.passed).toHaveLength(1);
+  });
+
+  it("passes credentialOptional deployments when every credential is on cooldown", () => {
+    const state = createEmptyFilterState();
+    const now = Date.now();
+    state.credentialCooldowns.set("cred:NIM_KEY_1", { until: now + 60_000 });
+    const credentialIds = new Map([["deploy-1", ["NIM_KEY_1"]]]);
+    const result = filterCandidates(
+      [makeDeployment({ credentialOptional: true })],
+      state,
+      now,
+      "per_key",
+      { credentialIdsByDeployment: credentialIds },
+    );
+    expect(result.passed).toHaveLength(1);
+  });
+
+  it("rejects deployments when every credential in the pool is on cooldown", () => {
+    const state = createEmptyFilterState();
+    const now = Date.now();
+    state.credentialCooldowns.set("cred:NIM_KEY_1", { until: now + 60_000 });
+    state.credentialCooldowns.set("cred:NIM_KEY_2", { until: now + 60_000 });
+    const credentialIds = new Map([["deploy-1", ["NIM_KEY_1", "NIM_KEY_2"]]]);
+    const result = filterCandidates(
+      [makeDeployment()],
+      state,
+      now,
+      "per_key",
+      { credentialIdsByDeployment: credentialIds },
+    );
+    expect(result.passed).toHaveLength(0);
+    expect(result.rejected[0].reason).toBe("credential_pool_exhausted");
   });
 
   it("passes deployments in different RPM window", () => {

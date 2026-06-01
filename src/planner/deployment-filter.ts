@@ -2,13 +2,16 @@
 // runtime state (cooldowns, circuits, inflight, learned limits, key RPM)
 // to produce a partition of passed vs rejected candidates.
 
+import { keyWindowScope, tokenWindowKey } from "../config/budget-keys";
 import { MANIFEST } from "../config/manifest";
 import type { Deployment, Policy } from "../config/schema";
+import { credentialCooldownScope } from "../credentials/types";
 
 // ─── State ────────────────────────────────────────────────────────
 
 export interface FilterState {
   cooldowns: Map<string, { until: number }>;
+  credentialCooldowns: Map<string, { until: number }>;
   circuits: Map<string, { state: "open" | "half_open" | "closed" | "suspect"; failureCount?: number; halfOpenAfter?: number }>;
   inflight: Map<string, number>;
   learnedLimits: Map<string, { maxParallel: number; expiresAt?: number }>;
@@ -21,6 +24,7 @@ export interface FilterState {
 export function createEmptyFilterState(): FilterState {
   return {
     cooldowns: new Map(),
+    credentialCooldowns: new Map(),
     circuits: new Map(),
     inflight: new Map(),
     learnedLimits: new Map(),
@@ -33,6 +37,7 @@ export function createEmptyFilterState(): FilterState {
 
 export interface DurableHealthForFilter {
   cooldowns?: Record<string, { until?: number }>;
+  credentialCooldowns?: Record<string, { until?: number }>;
   circuits?: Record<string, { state?: string; halfOpenAfter?: number | null; failureCount?: number }>;
   inflight?: Record<string, { count?: number }>;
   learnedLimits?: Record<string, { maxParallel?: number; expiresAt?: number }>;
@@ -51,6 +56,12 @@ export function buildFilterStateFromHealth(
   for (const [id, cooldown] of Object.entries(health.cooldowns ?? {})) {
     if (typeof cooldown?.until === "number") {
       state.cooldowns.set(id, { until: cooldown.until });
+    }
+  }
+
+  for (const [scope, cooldown] of Object.entries(health.credentialCooldowns ?? {})) {
+    if (typeof cooldown?.until === "number") {
+      state.credentialCooldowns.set(scope, { until: cooldown.until });
     }
   }
 
@@ -142,6 +153,7 @@ export function filterCandidates(
     suspectMaxParallelDivisor?: number;
     rpmLimit?: number | null;
     tokenBudgetPerMinute?: number | null;
+    credentialIdsByDeployment?: Map<string, string[]>;
   } = {},
 ): FilterResult {
   const passed: FilterResult["passed"] = [];
@@ -153,6 +165,19 @@ export function filterCandidates(
     if (cooldown && cooldown.until > now) {
       rejected.push({ deployment, reason: "cooldown" });
       continue;
+    }
+
+    const credentialIds = options.credentialIdsByDeployment?.get(deployment.id);
+    if (credentialIds && credentialIds.length > 0 && !deployment.credentialOptional) {
+      const anyAvailable = credentialIds.some((credentialId) => {
+        const scope = credentialCooldownScope(credentialId);
+        const credCooldown = state.credentialCooldowns.get(scope);
+        return !credCooldown || credCooldown.until <= now;
+      });
+      if (!anyAvailable) {
+        rejected.push({ deployment, reason: "credential_pool_exhausted" });
+        continue;
+      }
     }
 
     // Circuit breaker
@@ -219,7 +244,9 @@ export function filterCandidates(
     }
 
     if ((options.tokenBudgetPerMinute ?? 0) > 0) {
-      const tokenWindow = state.tokenWindows.get(deployment.keyRef);
+      const tokenWindow = state.tokenWindows.get(
+        tokenWindowKey(deployment.keyRef, deployment.group, scopeMode),
+      );
       if (tokenWindow) {
         const windowEnd = tokenWindow.windowStart + 60000;
         const used = tokenWindow.promptTokens + tokenWindow.completionTokens;
@@ -234,10 +261,6 @@ export function filterCandidates(
   }
 
   return { passed, rejected };
-}
-
-function keyWindowScope(keyRef: string, group: string, scopeMode: "global" | "per_key"): string {
-  return scopeMode === "global" ? `${group}:global` : `${group}:${keyRef}`;
 }
 
 export function policyForDeploymentGroup(group: string): Policy {

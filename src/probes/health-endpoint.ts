@@ -13,8 +13,9 @@ import {
   type RequestEnvelope,
 } from "../planner/planner";
 import { isOAuthExcluded, modelIdentitySet } from "../http/oauth-exclusions";
+import { runtimeCredentialIds } from "../credentials/manifest-ids";
 import {
-  createEmptyFilterState,
+  buildFilterStateFromHealth,
   filterCandidates,
   filterOptionsForPolicy,
   policyForDeploymentGroup,
@@ -255,6 +256,7 @@ interface HealthState {
   circuits?: Record<string, CircuitState>;
   healthScores?: Record<string, HealthScoreState>;
   cooldowns?: Record<string, CooldownState>;
+  credentialCooldowns?: Record<string, CooldownState>;
   inflight?: Record<string, InflightState>;
   learnedLimits?: Record<string, LearnedLimitState>;
   keyWindows?: Record<string, WindowCountState>;
@@ -341,7 +343,10 @@ function groupCircuitState(
   return worst;
 }
 
-export async function buildHealthReport(stateDo: HealthProvider): Promise<CompleteHealthReport> {
+export async function buildHealthReport(
+  stateDo: HealthProvider,
+  env?: Record<string, unknown>,
+): Promise<CompleteHealthReport> {
   const now = Date.now();
   const dependencies: HealthDependencies = {
     controlPlaneState: { status: "ok" },
@@ -393,7 +398,7 @@ export async function buildHealthReport(stateDo: HealthProvider): Promise<Comple
     const deployments = MANIFEST.deploymentsByGroup[groupName] ?? [];
     let totalScore = 0;
     let scoreCount = 0;
-    const runtimeAvailability = summarizeRouteGroupAvailability(groupName, deployments, filterState, now);
+    const runtimeAvailability = summarizeRouteGroupAvailability(groupName, deployments, filterState, now, env);
 
     for (const d of deployments) {
       const hs = healthScores?.[d.id];
@@ -434,7 +439,7 @@ export async function buildHealthReport(stateDo: HealthProvider): Promise<Comple
   const requestShapes = buildRequestShapeDefinitions();
   const aliasVisibility = await buildAliasVisibility(
     stateDo, filterState, deploymentDiagnostics, now, health.routeDispatchMemory,
-    MANIFEST.oauthExcludedModels,
+    MANIFEST.oauthExcludedModels, env,
   );
   const workerPressure = buildWorkerPressureSummary(deploymentDiagnostics);
 
@@ -590,6 +595,7 @@ async function buildAliasVisibility(
   now: number,
   routeDispatchMemory: RouteDispatchMemorySnapshot | undefined,
   oauthExclusions?: Record<string, string[]>,
+  env?: Record<string, unknown>,
 ): Promise<Record<string, AliasVisibility>> {
   const aliases = Array.from(new Set([...Object.keys(MANIFEST.aliases), ...Object.keys(MANIFEST.routeGroups)])).sort();
   const aliasesByTarget = buildAliasesByTarget(aliases);
@@ -606,7 +612,7 @@ async function buildAliasVisibility(
       await evaluateAliasShape(
         alias, canonical.canonicalTarget, canonical.isManaged, shape,
         filterState, deploymentDiagnostics, now, stateDo, routeDispatchMemory,
-        oauthExcluded,
+        oauthExcluded, env,
       ),
     ] as const));
     result[alias] = {
@@ -635,6 +641,7 @@ async function evaluateAliasShape(
   stateDo: HealthProvider,
   routeDispatchMemory: RouteDispatchMemorySnapshot | undefined,
   oauthExcluded?: boolean,
+  env?: Record<string, unknown>,
 ): Promise<AliasRequestShapeStatus> {
   const envelope = representativeEnvelope(alias, shape);
   const requestClass = computeRequestClass(envelope);
@@ -665,7 +672,11 @@ async function evaluateAliasShape(
 
   const candidates = selectCandidateGroups(canonicalTarget, envelope);
   for (const candidate of candidates) {
-    const deployments = MANIFEST.deploymentsByGroup[candidate.group] ?? [];
+    const deployments = candidate.rejectionReason
+      ? candidate.deployments
+      : (candidate.deployments.length > 0
+        ? candidate.deployments
+        : (MANIFEST.deploymentsByGroup[candidate.group] ?? []));
     let dispatchableDeploymentCount = 0;
 
     if (candidate.rejectionReason) {
@@ -678,7 +689,7 @@ async function evaluateAliasShape(
         filterState,
         now,
         candidate.policy.budget.scopeMode,
-        filterOptionsForPolicy(candidate.policy),
+        filterOptionsWithCredentialPool(candidate.policy, deployments, env),
       );
       dispatchableDeploymentCount = filtered.passed.length;
       for (const passed of filtered.passed) {
@@ -837,53 +848,44 @@ function buildAliasesByTarget(aliases: string[]): Record<string, string[]> {
 }
 
 function buildFilterState(health: HealthState): FilterState {
-  const state = createEmptyFilterState();
-  for (const [deploymentId, cooldown] of Object.entries(health.cooldowns ?? {})) {
-    if (typeof cooldown.until === "number") state.cooldowns.set(deploymentId, { until: cooldown.until });
+  const learnedLimits = health.learnedLimits
+    ? Object.fromEntries(
+      Object.entries(health.learnedLimits).map(([id, learned]) => [
+        id,
+        {
+          maxParallel: learned.maxParallel,
+          expiresAt: learned.expiresAt ?? undefined,
+        },
+      ]),
+    )
+    : undefined;
+  return buildFilterStateFromHealth({
+    cooldowns: health.cooldowns,
+    credentialCooldowns: health.credentialCooldowns,
+    circuits: health.circuits,
+    inflight: health.inflight,
+    learnedLimits,
+    healthScores: health.healthScores,
+    keyWindows: health.keyWindows,
+    groupWindows: health.groupWindows,
+    tokenWindows: health.tokenWindows,
+  });
+}
+
+function filterOptionsWithCredentialPool(
+  policy: ReturnType<typeof policyForDeploymentGroup>,
+  deployments: Deployment[],
+  env?: Record<string, unknown>,
+) {
+  const credentialIdsByDeployment = new Map<string, string[]>();
+  for (const deployment of deployments) {
+    const ids = runtimeCredentialIds(deployment, env);
+    if (ids.length > 0) credentialIdsByDeployment.set(deployment.id, ids);
   }
-  for (const [deploymentId, circuit] of Object.entries(health.circuits ?? {})) {
-    if (circuit.state === "open" || circuit.state === "half_open" || circuit.state === "closed" || circuit.state === "suspect") {
-      state.circuits.set(deploymentId, {
-        state: circuit.state,
-        failureCount: circuit.failureCount,
-        halfOpenAfter: circuit.halfOpenAfter,
-      });
-    }
-  }
-  for (const [deploymentId, inflight] of Object.entries(health.inflight ?? {})) {
-    if (typeof inflight.count === "number") state.inflight.set(deploymentId, inflight.count);
-  }
-  for (const [deploymentId, learned] of Object.entries(health.learnedLimits ?? {})) {
-    if (typeof learned.maxParallel === "number") {
-      state.learnedLimits.set(deploymentId, { maxParallel: learned.maxParallel, expiresAt: learned.expiresAt ?? undefined });
-    }
-  }
-  for (const [deploymentId, score] of Object.entries(health.healthScores ?? {})) {
-    state.healthScores.set(deploymentId, { consecutiveFailureCount: score.consecutiveFailureCount });
-  }
-  for (const [scope, window] of Object.entries(health.keyWindows ?? {})) {
-    if (typeof window.count === "number" && typeof window.windowStart === "number") {
-      state.keyWindows.set(scope, { windowStart: window.windowStart, count: window.count });
-    }
-  }
-  for (const [group, window] of Object.entries(health.groupWindows ?? {})) {
-    if (typeof window.count === "number" && typeof window.windowStart === "number") {
-      state.groupWindows.set(group, { windowStart: window.windowStart, count: window.count });
-    }
-  }
-  for (const [keyRef, window] of Object.entries(health.tokenWindows ?? {})) {
-    if (
-      typeof window.windowStart === "number" &&
-      (typeof window.promptTokens === "number" || typeof window.completionTokens === "number")
-    ) {
-      state.tokenWindows.set(keyRef, {
-        windowStart: window.windowStart,
-        promptTokens: window.promptTokens ?? 0,
-        completionTokens: window.completionTokens ?? 0,
-      });
-    }
-  }
-  return state;
+  return {
+    ...filterOptionsForPolicy(policy),
+    ...(credentialIdsByDeployment.size > 0 ? { credentialIdsByDeployment } : {}),
+  };
 }
 
 function summarizeRouteGroupAvailability(
@@ -891,6 +893,7 @@ function summarizeRouteGroupAvailability(
   deployments: Deployment[],
   filterState: FilterState,
   now: number,
+  env?: Record<string, unknown>,
 ): { availableDeployments: number; blockedDeployments: number; passedDeploymentIds: Set<string> } {
   const policy = policyForDeploymentGroup(groupName);
   const filtered = filterCandidates(
@@ -898,7 +901,7 @@ function summarizeRouteGroupAvailability(
     filterState,
     now,
     policy.budget.scopeMode,
-    filterOptionsForPolicy(policy),
+    filterOptionsWithCredentialPool(policy, deployments, env),
   );
   return {
     availableDeployments: filtered.passed.length,

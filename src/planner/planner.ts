@@ -4,10 +4,15 @@
 import { MANIFEST } from "../config/manifest";
 import type { RouteDecision } from "../observability/receipt";
 import type {
+  BillingClass,
   Deployment, RouteGroup, Policy, Surface, Operation, FailureClass, ContentClass,
 } from "../config/schema";
 import { hasTypedContentNormalization, normalizeTypedContentParts } from "../nim/repair/content-parts";
-import { classifyPromptComplexity, smartRouteModelForTier } from "./complexity-router";
+import {
+  classifyPromptComplexity,
+  smartRouteModelForTier,
+  type SmartRouteShadow,
+} from "./complexity-router";
 
 const MULTIMODAL_PART_TYPES = new Set(["image_url", "input_image", "image", "audio", "input_audio"]);
 const VISIBLE_TEXT_PART_TYPES = new Set(["text", "input_text", "output_text", "summary_text"]);
@@ -124,6 +129,39 @@ export interface CandidateGroup {
   rejectionReason?: string;
 }
 
+export function inferRouteGroupBillingClass(groupName: string, rg: RouteGroup): BillingClass {
+  if (rg.billingClass) return rg.billingClass;
+  if (groupName === "free" || groupName.startsWith("free-") || groupName.startsWith("nim-")) {
+    return "free";
+  }
+  if (
+    groupName.includes("subscription")
+    || groupName === "smart-route-worker"
+    || groupName.startsWith("zai-")
+  ) {
+    return "subscription";
+  }
+  return "subscription";
+}
+
+function filterDeploymentsForModelPassthrough(
+  rg: RouteGroup,
+  envelope: RequestEnvelope,
+  deployments: Deployment[],
+): { deployments: Deployment[]; rejectionReason?: string } {
+  if (!rg.modelPassthrough) return { deployments };
+  const bodyModel = typeof envelope.body?.model === "string" ? envelope.body.model.trim() : "";
+  const requested = (bodyModel || envelope.originalModel).trim();
+  if (!requested || requested === "free" || requested === "freemium") {
+    return { deployments };
+  }
+  const matched = deployments.filter((d) => d.providerModel === requested);
+  if (matched.length === 0) {
+    return { deployments: [], rejectionReason: "no_matching_free_model" };
+  }
+  return { deployments: matched };
+}
+
 export function selectCandidateGroups(
   canonicalTarget: string,
   envelope: RequestEnvelope,
@@ -131,6 +169,7 @@ export function selectCandidateGroups(
   const mainGroup = MANIFEST.routeGroups[canonicalTarget];
   if (!mainGroup) return [];
 
+  const freeOnlyRoute = canonicalTarget === "free" || canonicalTarget.startsWith("free-");
   const candidates: CandidateGroup[] = [];
   const seen = new Set<string>();
 
@@ -141,33 +180,43 @@ export function selectCandidateGroups(
   if (envelope.hasStrictTools && strictToolGroup) {
     const rg = MANIFEST.routeGroups[strictToolGroup];
     if (rg) {
-      candidates.push(buildCandidate(strictToolGroup, rg, 100, envelope));
+      candidates.push(buildCandidate(strictToolGroup, rg, 100, envelope, { freeOnlyRoute }));
       seen.add(strictToolGroup);
     }
   } else if (envelope.hasTools && toolGroup) {
     const rg = MANIFEST.routeGroups[toolGroup];
     if (rg) {
-      candidates.push(buildCandidate(toolGroup, rg, 100, envelope));
+      candidates.push(buildCandidate(toolGroup, rg, 100, envelope, { freeOnlyRoute }));
       seen.add(toolGroup);
     }
   }
 
   // Add the main group
   if (!seen.has(canonicalTarget)) {
-    candidates.push(buildCandidate(canonicalTarget, mainGroup, 90, envelope));
+    candidates.push(buildCandidate(canonicalTarget, mainGroup, 90, envelope, { freeOnlyRoute }));
     seen.add(canonicalTarget);
   }
 
   // Add full fallback closure in configured order. A one-hop list misses
   // terminal escape paths when the first fallback family is unhealthy.
+  // When the parent is routing-only (e.g. `free`), routeGroup.target is the
+  // first provider hop and is intentionally omitted from fallbacks.
   const fallbackQueue = [...mainGroup.fallbacks];
+  if (
+    mainGroup.target
+    && mainGroup.target !== canonicalTarget
+    && !seen.has(mainGroup.target)
+    && !fallbackQueue.includes(mainGroup.target)
+  ) {
+    fallbackQueue.unshift(mainGroup.target);
+  }
   const maxFallbackDepth = Object.keys(MANIFEST.routeGroups).length;
   while (fallbackQueue.length > 0 && seen.size < maxFallbackDepth) {
     const fallbackName = fallbackQueue.shift()!;
     if (seen.has(fallbackName)) continue;
     const rg = MANIFEST.routeGroups[fallbackName];
     if (!rg) continue;
-    candidates.push(buildCandidate(fallbackName, rg, 70 - seen.size, envelope));
+    candidates.push(buildCandidate(fallbackName, rg, 70 - seen.size, envelope, { freeOnlyRoute }));
     seen.add(fallbackName);
     for (const nestedFallback of rg.fallbacks) {
       if (!seen.has(nestedFallback)) fallbackQueue.push(nestedFallback);
@@ -182,12 +231,17 @@ function buildCandidate(
   rg: RouteGroup,
   baseScore: number,
   envelope: RequestEnvelope,
+  options?: { freeOnlyRoute?: boolean },
 ): CandidateGroup {
   const policy = MANIFEST.policies[groupName] ?? MANIFEST.defaultPolicy;
   const deployments = MANIFEST.deploymentsByGroup[groupName] ?? [];
   const contentClass = detectContentClass(envelope);
   let score = baseScore;
   let rejectionReason: string | undefined;
+
+  if (options?.freeOnlyRoute && inferRouteGroupBillingClass(groupName, rg) === "subscription") {
+    rejectionReason = "subscription_not_allowed_for_free_route";
+  }
 
   // Preflight checks — hidden routes (subscriptions) bypass surface/operation
   // checks since they handle request transformation internally.
@@ -226,13 +280,20 @@ function buildCandidate(
     }
   }
 
+  const passthrough = filterDeploymentsForModelPassthrough(rg, envelope, compatibleDeployments);
+  let filteredDeployments = passthrough.deployments;
+  if (passthrough.rejectionReason) {
+    rejectionReason = rejectionReason ?? passthrough.rejectionReason;
+    filteredDeployments = [];
+  }
+
   if (deployments.length === 0) {
     rejectionReason = rejectionReason ?? "no_deployments";
-  } else if (compatibleDeployments.length === 0) {
+  } else if (filteredDeployments.length === 0) {
     rejectionReason = rejectionReason ?? deploymentRejectionReasons[0] ?? "no_compatible_deployments";
   }
 
-  return { group: groupName, routeGroup: rg, policy, deployments: compatibleDeployments, score, rejectionReason };
+  return { group: groupName, routeGroup: rg, policy, deployments: filteredDeployments, score, rejectionReason };
 }
 
 function detectContentClass(envelope: RequestEnvelope): ContentClass | undefined {
@@ -365,6 +426,7 @@ export interface ExecutionPlan {
   routeDecision: RouteDecision;
   receipt: PlanReceiptDraft;
   isManaged: boolean;
+  smartRouteShadow?: SmartRouteShadow;
 }
 
 export interface RequestTransform {
@@ -389,21 +451,38 @@ export interface PlanReceiptDraft {
   }>;
 }
 
-export function resolveSmartRouteModel(envelope: RequestEnvelope): string {
-  const initial = canonicalize(envelope.originalModel);
-  if (initial.canonicalTarget !== "smart-route-worker") return envelope.originalModel;
-  if (envelope.hasTools || envelope.hasStrictTools || envelope.requiresJsonMode || envelope.hasTypedContent) {
-    return envelope.originalModel;
-  }
+export function resolveSmartRouteWithShadow(envelope: RequestEnvelope): SmartRouteShadow {
   const tier = classifyPromptComplexity(envelope.body.messages ?? envelope.body.input);
-  return smartRouteModelForTier(tier);
+  const initial = canonicalize(envelope.originalModel);
+  if (initial.canonicalTarget !== "smart-route-worker") {
+    return { tier, selectedModel: envelope.originalModel, skippedReason: "not_smart_route" };
+  }
+  if (envelope.hasTools || envelope.hasStrictTools) {
+    return { tier, selectedModel: envelope.originalModel, skippedReason: "tools" };
+  }
+  if (envelope.requiresJsonMode) {
+    return { tier, selectedModel: envelope.originalModel, skippedReason: "json" };
+  }
+  if (envelope.hasTypedContent) {
+    return { tier, selectedModel: envelope.originalModel, skippedReason: "multimodal" };
+  }
+  return { tier, selectedModel: smartRouteModelForTier(tier) };
+}
+
+export function resolveSmartRouteModel(envelope: RequestEnvelope): string {
+  return resolveSmartRouteWithShadow(envelope).selectedModel;
 }
 
 export function planRequest(
   envelope: RequestEnvelope,
   now = Date.now(),
+  options?: { shadowLog?: boolean },
 ): ExecutionPlan | null {
-  const planningModel = resolveSmartRouteModel(envelope);
+  const initialCanon = canonicalize(envelope.originalModel);
+  const smartRouteShadow = options?.shadowLog === true && initialCanon.canonicalTarget === "smart-route-worker"
+    ? resolveSmartRouteWithShadow(envelope)
+    : undefined;
+  const planningModel = smartRouteShadow?.selectedModel ?? resolveSmartRouteModel(envelope);
   const canon = canonicalize(planningModel);
   if (!canon.isManaged) return null;
 
@@ -484,6 +563,7 @@ export function planRequest(
       attempts: [],
     },
     isManaged: true,
+    ...(smartRouteShadow ? { smartRouteShadow } : {}),
   };
 }
 

@@ -77,9 +77,13 @@ describe("planRequest", () => {
   }
 
   it("routes simple smart-route prompts to low-tier subscription", () => {
-    const plan = planRequest(makeEnvelope("smart-route"));
+    const plan = planRequest(makeEnvelope("smart-route"), Date.now(), { shadowLog: true });
     expect(plan).not.toBeNull();
     expect(plan!.selectedGroup).toBe("anthropic-subscription-sonnet-4-6-low");
+    expect(plan!.smartRouteShadow).toEqual({
+      tier: "low",
+      selectedModel: "anthropic-subscription-sonnet-4-6-low",
+    });
   });
 
   it("routes complex smart-route prompts to high-tier subscription", () => {
@@ -101,9 +105,10 @@ describe("planRequest", () => {
         messages: [{ role: "user", content: "use tool" }],
         tools: [{ type: "function", function: { name: "test" } }],
       },
-    }));
+    }), Date.now(), { shadowLog: true });
     expect(plan).not.toBeNull();
     expect(plan!.selectedGroup).toBe("nim-tool-primary");
+    expect(plan!.smartRouteShadow?.skippedReason).toBe("tools");
   });
 
   it("plans nim-primary with NIM fallback chain ending in Z.AI terminal", () => {
@@ -119,10 +124,10 @@ describe("planRequest", () => {
     expect(plan).toBeNull();
   });
 
-  it("skips deployment-less route groups and selects the next viable fallback", () => {
+  it("skips deployment-less route groups and selects routeGroup.target first", () => {
     const plan = planRequest(makeEnvelope("nim-secondary"));
     expect(plan).not.toBeNull();
-    expect(plan!.selectedGroup).toBe("nim-primary");
+    expect(plan!.selectedGroup).toBe("nim-minimax-m2.7");
   });
 
   it("chatgpt subscription routes include profile fallbacks", () => {

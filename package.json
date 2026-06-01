@@ -1,8 +1,12 @@
 {
-  "name": "worker-control-plane",
-  "description": "Cloudflare Worker LLM control plane with NIM mitigation, account rotation, and silent failover",
+  "name": "switchboard",
+  "description": "OpenAI-compatible Cloudflare Worker LLM router with failover, admission control, and response mitigation",
   "version": "0.1.0",
-  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jroth1111/switchboard.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --config wrangler.dev.jsonc",

@@ -156,11 +156,11 @@ describe("failedRequestSummaryFromReceipt", () => {
   it("derives request source from app id before client id", () => {
     const receipt = makeReceipt({
       finalOutcome: "exhausted",
-      appId: "hermes",
-      clientId: "hermes-alice",
+      appId: "demo-app",
+      clientId: "demo-client-alpha",
     });
     const summary = failedRequestSummaryFromReceipt(receipt);
-    expect(summary!.requestSource).toBe("hermes");
+    expect(summary!.requestSource).toBe("demo-app");
   });
 });
 

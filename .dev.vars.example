@@ -44,4 +44,4 @@ ENCRYPTION_KEY=
 CLIENT_KEYS_JSON=
 
 # Optional: SMART_ROUTE_SHADOW_LOG=true, SWITCHBOARD_QUERY_CAPTURE_ENABLED=true
-# Cron schedules, operator token renames, and post-deploy smoke: docs/deploy-cutover.md
+# Cron schedules and post-deploy smoke: docs/deployment.md

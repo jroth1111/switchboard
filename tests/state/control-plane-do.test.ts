@@ -136,11 +136,11 @@ describe("ControlPlaneStateDO with real SQLite", () => {
       requestId,
       timestamp: Date.now(),
       originalModel: "test-model",
-      clientId: "hermes-alice",
-      appId: "hermes",
+      clientId: "demo-client-alpha",
+      appId: "demo-app",
       userHash: "user-hash",
-      policyId: "hermes-basic",
-      policyVersion: "hermes-basic:v1",
+      policyId: "default-policy",
+      policyVersion: "default-policy:v1",
       routeVersion: "route:v1",
       denialReason: "model_not_allowed",
       routeDecision: {
@@ -159,9 +159,9 @@ describe("ControlPlaneStateDO with real SQLite", () => {
     const receipt = await stub.getReceipt(requestId);
     expect(receipt).not.toBeNull();
     expect(receipt!.requestId).toBe(requestId);
-    expect(receipt!.clientId).toBe("hermes-alice");
-    expect(receipt!.appId).toBe("hermes");
-    expect(receipt!.policyVersion).toBe("hermes-basic:v1");
+    expect(receipt!.clientId).toBe("demo-client-alpha");
+    expect(receipt!.appId).toBe("demo-app");
+    expect(receipt!.policyVersion).toBe("default-policy:v1");
     expect(receipt!.denialReason).toBe("model_not_allowed");
     expect(receipt!.routeDecision).toMatchObject({
       selectedReason: "highest scoring viable candidate (90)",
@@ -176,11 +176,11 @@ describe("ControlPlaneStateDO with real SQLite", () => {
     await stub.storeClientRequest({
       requestId,
       timestamp: Date.now(),
-      clientId: "hermes-alice",
-      appId: "hermes",
+      clientId: "demo-client-alpha",
+      appId: "demo-app",
       userHash: "user-hash",
-      policyId: "hermes-basic",
-      policyVersion: "hermes-basic:v1",
+      policyId: "default-policy",
+      policyVersion: "default-policy:v1",
       routeVersion: "route:v1",
       routeDecision: {
         selectedReason: "highest scoring viable candidate (90)",
@@ -194,12 +194,12 @@ describe("ControlPlaneStateDO with real SQLite", () => {
       totalDurationMs: 42,
     });
 
-    const rows = await stub.queryClientRequests({ clientId: "hermes-alice", limit: 10 });
+    const rows = await stub.queryClientRequests({ clientId: "demo-client-alpha", limit: 10 });
     const row = rows.find((item) => item.requestId === requestId);
     expect(row).toBeDefined();
-    expect(row!.appId).toBe("hermes");
-    expect(row!.policyId).toBe("hermes-basic");
-    expect(row!.policyVersion).toBe("hermes-basic:v1");
+    expect(row!.appId).toBe("demo-app");
+    expect(row!.policyId).toBe("default-policy");
+    expect(row!.policyVersion).toBe("default-policy:v1");
     expect(row!.routeDecision).toMatchObject({
       selectedReason: "highest scoring viable candidate (90)",
     });
@@ -253,11 +253,11 @@ describe("ControlPlaneStateDO with real SQLite", () => {
       requestId,
       attemptIndex: 0,
       timestamp: Date.now(),
-      clientId: "hermes-alice",
-      appId: "hermes",
+      clientId: "demo-client-alpha",
+      appId: "demo-app",
       userHash: "user-hash",
-      policyId: "hermes-basic",
-      policyVersion: "hermes-basic:v1",
+      policyId: "default-policy",
+      policyVersion: "default-policy:v1",
       routeVersion: "route:v1",
       canonicalTarget: "smart-route-worker",
       selectedGroup: "smart-route-worker",
@@ -273,12 +273,12 @@ describe("ControlPlaneStateDO with real SQLite", () => {
       usageSource: "test",
     });
 
-    const rows = await stub.queryUsageEvents({ clientId: "hermes-alice", limit: 10 });
+    const rows = await stub.queryUsageEvents({ clientId: "demo-client-alpha", limit: 10 });
     const row = rows.find((item) => item.requestId === requestId);
     expect(row).toBeDefined();
-    expect(row!.appId).toBe("hermes");
-    expect(row!.policyId).toBe("hermes-basic");
-    expect(row!.policyVersion).toBe("hermes-basic:v1");
+    expect(row!.appId).toBe("demo-app");
+    expect(row!.policyId).toBe("default-policy");
+    expect(row!.policyVersion).toBe("default-policy:v1");
     expect(row!.totalTokens).toBe(12);
   });
 
@@ -336,7 +336,7 @@ describe("ControlPlaneStateDO with real SQLite", () => {
       selectedModel: "nim-primary-key-1",
       failureClass: "server_5xx",
       issueCode: "provider_5xx",
-      requestSource: "hermes",
+      requestSource: "demo-app",
     };
 
     await stub.storeFailedRequest({
@@ -350,7 +350,7 @@ describe("ControlPlaneStateDO with real SQLite", () => {
       finalOutcome: "exhausted",
       failureClass: "server_5xx",
       issueCode: "provider_5xx",
-      requestSource: "hermes",
+      requestSource: "demo-app",
       attemptsCount: 1,
       summaryJson: JSON.stringify(summary),
       receiptJson: JSON.stringify({ requestId, body: "<redacted>" }),
@@ -362,7 +362,7 @@ describe("ControlPlaneStateDO with real SQLite", () => {
       selectedModel: "nim-primary-key-1",
       failureClass: "server_5xx",
       issueCode: "provider_5xx",
-      requestSource: "hermes",
+      requestSource: "demo-app",
       since: timestamp - 1,
       until: timestamp + 1,
       limit: 10,
@@ -524,9 +524,9 @@ describe("ControlPlaneStateDO with real SQLite", () => {
       requestId,
       attemptIndex: 0,
       timestamp: hour + 1000,
-      clientId: "hermes-alice",
-      appId: "hermes",
-      policyId: "hermes-basic",
+      clientId: "demo-client-alpha",
+      appId: "demo-app",
+      policyId: "default-policy",
       canonicalTarget: "smart-route-worker",
       selectedGroup: "smart-route-worker",
       deploymentId: "deploy-1",
@@ -543,15 +543,15 @@ describe("ControlPlaneStateDO with real SQLite", () => {
 
     await stub.computeHourlyRollups(hour);
     const rollups = await stub.queryClientRollups({
-      clientId: "hermes-alice",
-      appId: "hermes",
+      clientId: "demo-client-alpha",
+      appId: "demo-app",
       since: hour,
       until: hour,
     });
 
-    const row = rollups.find((item) => item.clientId === "hermes-alice");
+    const row = rollups.find((item) => item.clientId === "demo-client-alpha");
     expect(row).toBeDefined();
-    expect(row!.appId).toBe("hermes");
+    expect(row!.appId).toBe("demo-app");
     expect(row!.requests).toBe(1);
     expect(row!.totalTokens).toBe(7);
   });

@@ -218,11 +218,11 @@ describe("Auth middleware", () => {
     const auth = await authenticateProxyClient(req, {
       CLIENT_KEYS_JSON: JSON.stringify({
         clients: [{
-          id: "hermes-alice",
+          id: "demo-client-alpha",
           token_sha256: "acf6b6f1c492a018d86d7bdb01852131ea7533992c5a0246d24c4ec74b56aff0",
-          appId: "hermes",
+          appId: "demo-app",
           userHash: "user-hash",
-          policyId: "hermes-basic",
+          policyId: "default-policy",
           allowedModels: ["smart-route"],
           rpmLimit: 12,
         }],
@@ -231,15 +231,15 @@ describe("Auth middleware", () => {
 
     expect(auth.ok).toBe(true);
     if (auth.ok) {
-      expect(auth.client.clientId).toBe("hermes-alice");
-      expect(auth.client.appId).toBe("hermes");
+      expect(auth.client.clientId).toBe("demo-client-alpha");
+      expect(auth.client.appId).toBe("demo-app");
       expect(auth.client.policy.allowedModels).toEqual(["smart-route"]);
       expect(auth.client.policy.rpmLimit).toBe(12);
     }
   });
 
   it("applies signed per-user claims on top of a named client key", async () => {
-    const signature = await hmacSha256Hex("claim-secret", "hermes-app:hermes:user-alice");
+    const signature = await hmacSha256Hex("claim-secret", "demo-app:demo-app:user-alice");
     const req = new Request("https://example.com", {
       headers: {
         Authorization: "Bearer client-token",
@@ -251,9 +251,9 @@ describe("Auth middleware", () => {
       CLIENT_USER_CLAIM_SECRET: "claim-secret",
       CLIENT_KEYS_JSON: JSON.stringify({
         clients: [{
-          id: "hermes-app",
+          id: "demo-app",
           token_sha256: "acf6b6f1c492a018d86d7bdb01852131ea7533992c5a0246d24c4ec74b56aff0",
-          appId: "hermes",
+          appId: "demo-app",
           userHash: "static-user",
         }],
       }),
@@ -275,9 +275,9 @@ describe("Auth middleware", () => {
       CLIENT_USER_CLAIM_SECRET: "claim-secret",
       CLIENT_KEYS_JSON: JSON.stringify({
         clients: [{
-          id: "hermes-app",
+          id: "demo-app",
           token_sha256: "acf6b6f1c492a018d86d7bdb01852131ea7533992c5a0246d24c4ec74b56aff0",
-          appId: "hermes",
+          appId: "demo-app",
           userHash: "static-user",
         }],
       }),
@@ -298,9 +298,9 @@ describe("Auth middleware", () => {
       CLIENT_USER_CLAIM_SECRET: "claim-secret",
       CLIENT_KEYS_JSON: JSON.stringify({
         clients: [{
-          id: "hermes-app",
+          id: "demo-app",
           token_sha256: "acf6b6f1c492a018d86d7bdb01852131ea7533992c5a0246d24c4ec74b56aff0",
-          appId: "hermes",
+          appId: "demo-app",
           userHash: "static-user",
         }],
       }),
@@ -353,7 +353,7 @@ describe("Auth middleware", () => {
     const auth = await authenticateProxyClient(req, {
       CLIENT_KEYS_JSON: JSON.stringify({
         clients: [{
-          id: "hermes-alice",
+          id: "demo-client-alpha",
           token_sha256: "acf6b6f1c492a018d86d7bdb01852131ea7533992c5a0246d24c4ec74b56aff0",
           allowedModels: ["smart-route"],
         }],
@@ -376,7 +376,7 @@ describe("Auth middleware", () => {
     const auth = await authenticateProxyClient(req, {
       CLIENT_KEYS_JSON: JSON.stringify({
         clients: [{
-          id: "hermes-alice",
+          id: "demo-client-alpha",
           token_sha256: "acf6b6f1c492a018d86d7bdb01852131ea7533992c5a0246d24c4ec74b56aff0",
           deniedRouteGroups: ["nim-primary"],
         }],
@@ -398,7 +398,7 @@ describe("Auth middleware", () => {
     const auth = await authenticateProxyClient(req, {
       CLIENT_KEYS_JSON: JSON.stringify({
         clients: [{
-          id: "hermes-alice",
+          id: "demo-client-alpha",
           token_sha256: "acf6b6f1c492a018d86d7bdb01852131ea7533992c5a0246d24c4ec74b56aff0",
           allowedModels: ["smart-route"],
         }],
@@ -437,9 +437,9 @@ describe("Auth middleware", () => {
     expect(plan!.fallbackSequence.map((entry) => entry.group)).toContain("nim-deepseek-v4-pro");
 
     const client: ClientIdentity = {
-      clientId: "hermes-alice",
-      policyId: "hermes-basic",
-      policyVersion: "hermes-basic:v1",
+      clientId: "demo-client-alpha",
+      policyId: "default-policy",
+      policyVersion: "default-policy:v1",
       policy: { deniedRouteGroups: ["nim-deepseek-v4-pro"] },
       authSource: "client_keys_json",
     };
@@ -460,9 +460,9 @@ describe("Auth middleware", () => {
     expect(plan).not.toBeNull();
 
     const client: ClientIdentity = {
-      clientId: "hermes-alice",
-      policyId: "hermes-basic",
-      policyVersion: "hermes-basic:v1",
+      clientId: "demo-client-alpha",
+      policyId: "default-policy",
+      policyVersion: "default-policy:v1",
       policy: { allowedModels: ["nim-primary"] },
       authSource: "client_keys_json",
     };
@@ -484,7 +484,7 @@ describe("Auth middleware", () => {
       {
         CLIENT_KEYS_JSON: JSON.stringify({
           clients: [{
-            id: "hermes-alice",
+            id: "demo-client-alpha",
             token_sha256: "acf6b6f1c492a018d86d7bdb01852131ea7533992c5a0246d24c4ec74b56aff0",
             allowedModels: ["smart-route"],
           }],
@@ -529,27 +529,27 @@ describe("Auth middleware", () => {
       env,
       { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as unknown as ExecutionContext,
       {
-        clientId: "hermes-alice",
-        appId: "hermes",
+        clientId: "demo-client-alpha",
+        appId: "demo-app",
         userHash: "user-hash",
-        policyId: "hermes-basic",
-        policyVersion: "hermes-basic:v1",
+        policyId: "default-policy",
+        policyVersion: "default-policy:v1",
         policy: { allowedModels: ["smart-route"] },
         authSource: "client_keys_json",
       },
     );
 
     expect(response.status).toBe(403);
-    expect(response.headers.get("X-Policy-Id")).toBe("hermes-basic");
-    expect(response.headers.get("X-Policy-Version")).toBe("hermes-basic:v1");
+    expect(response.headers.get("X-Policy-Id")).toBe("default-policy");
+    expect(response.headers.get("X-Policy-Version")).toBe("default-policy:v1");
     expect(response.headers.get("X-Route-Version")).toBe("switchboard-static-2026-05-24");
     expect(storeReceipt).toHaveBeenCalledWith(expect.objectContaining({
-      clientId: "hermes-alice",
+      clientId: "demo-client-alpha",
       denialReason: "model_not_allowed",
-      policyVersion: "hermes-basic:v1",
+      policyVersion: "default-policy:v1",
     }));
     expect(storeClientRequest).toHaveBeenCalledWith(expect.objectContaining({
-      clientId: "hermes-alice",
+      clientId: "demo-client-alpha",
       denialReason: "model_not_allowed",
     }));
     expect(storeFailedRequest).toHaveBeenCalledWith(expect.objectContaining({
@@ -590,11 +590,11 @@ describe("Auth middleware", () => {
       env,
       { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as unknown as ExecutionContext,
       {
-        clientId: "hermes-alice",
-        appId: "hermes",
+        clientId: "demo-client-alpha",
+        appId: "demo-app",
         userHash: "user-hash",
-        policyId: "hermes-basic",
-        policyVersion: "hermes-basic:v1",
+        policyId: "default-policy",
+        policyVersion: "default-policy:v1",
         policy: { allowedModels: ["smart-route"], tokenBudgetPerMinute: 100 },
         authSource: "client_keys_json",
       },
@@ -602,7 +602,7 @@ describe("Auth middleware", () => {
 
     expect(response.status).toBe(429);
     expect(admitClientRequest).toHaveBeenCalledWith(expect.objectContaining({
-      clientId: "hermes-alice",
+      clientId: "demo-client-alpha",
       estimatedTokens: 101,
       tokenBudgetPerMinute: 100,
     }));
@@ -651,11 +651,11 @@ describe("Auth middleware", () => {
       env,
       { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as unknown as ExecutionContext,
       {
-        clientId: "hermes-alice",
-        appId: "hermes",
+        clientId: "demo-client-alpha",
+        appId: "demo-app",
         userHash: "user-hash",
-        policyId: "hermes-basic",
-        policyVersion: "hermes-basic:v1",
+        policyId: "default-policy",
+        policyVersion: "default-policy:v1",
         policy: { allowedModels: ["smart-route"], teamId: "eng" },
         authSource: "client_keys_json",
       },
@@ -663,7 +663,7 @@ describe("Auth middleware", () => {
 
     expect(response.status).toBe(429);
     expect(admitClientRequest).toHaveBeenCalledWith(expect.objectContaining({
-      clientId: "hermes-alice",
+      clientId: "demo-client-alpha",
       teamId: "eng",
       teamTokenBudgetPerMinute: 1200,
       estimatedTokens: 1201,
@@ -715,11 +715,11 @@ describe("Auth middleware", () => {
       env,
       { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as unknown as ExecutionContext,
       {
-        clientId: "hermes-alice",
-        appId: "hermes",
+        clientId: "demo-client-alpha",
+        appId: "demo-app",
         userHash: "user-hash",
-        policyId: "hermes-basic",
-        policyVersion: "hermes-basic:v1",
+        policyId: "default-policy",
+        policyVersion: "default-policy:v1",
         policy: { allowedModels: ["smart-route"] },
         authSource: "client_keys_json",
       },
@@ -766,11 +766,11 @@ describe("Auth middleware", () => {
       env,
       { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as unknown as ExecutionContext,
       {
-        clientId: "hermes-alice",
-        appId: "hermes",
+        clientId: "demo-client-alpha",
+        appId: "demo-app",
         userHash: "user-hash",
-        policyId: "hermes-basic",
-        policyVersion: "hermes-basic:v1",
+        policyId: "default-policy",
+        policyVersion: "default-policy:v1",
         policy: { allowedModels: ["smart-route"] },
         authSource: "client_keys_json",
       },
@@ -867,7 +867,7 @@ describe("Worker HTTP surface", () => {
       {
         CLIENT_KEYS_JSON: JSON.stringify({
           clients: [{
-            id: "hermes-alice",
+            id: "demo-client-alpha",
             token_sha256: "acf6b6f1c492a018d86d7bdb01852131ea7533992c5a0246d24c4ec74b56aff0",
             allowedModels: ["smart-route"],
           }],
@@ -1350,9 +1350,9 @@ describe("Admin client requests", () => {
   it("exposes durable route decisions and denial reasons with client filters", async () => {
     const queryClientRequests = vi.fn(async () => [{
       requestId: "req-denied",
-      clientId: "hermes-alice",
-      appId: "hermes",
-      policyId: "hermes-basic",
+      clientId: "demo-client-alpha",
+      appId: "demo-app",
+      policyId: "default-policy",
       denialReason: "model_not_allowed",
       originalModel: "nim-primary",
       canonicalTarget: "denied",
@@ -1372,7 +1372,7 @@ describe("Admin client requests", () => {
     } as unknown as Env;
 
     const response = await handleAdminClientRequests(
-      new Request("https://example.test/admin/client-requests?client_id=hermes-alice&app_id=hermes&since=10&until=20&limit=5"),
+      new Request("https://example.test/admin/client-requests?client_id=demo-client-alpha&app_id=demo-app&since=10&until=20&limit=5"),
       env,
     );
     const body = await response.json() as {
@@ -1382,16 +1382,16 @@ describe("Admin client requests", () => {
 
     expect(response.status).toBe(200);
     expect(queryClientRequests).toHaveBeenCalledWith({
-      clientId: "hermes-alice",
-      appId: "hermes",
+      clientId: "demo-client-alpha",
+      appId: "demo-app",
       since: 10,
       until: 20,
       limit: 5,
     });
     expect(body.total).toBe(1);
     expect(body.requests[0]).toMatchObject({
-      clientId: "hermes-alice",
-      appId: "hermes",
+      clientId: "demo-client-alpha",
+      appId: "demo-app",
       denialReason: "model_not_allowed",
       selectedGroup: "denied",
       routeDecision: {
@@ -1441,14 +1441,14 @@ describe("Admin query events", () => {
     } as unknown as Env;
 
     const response = await handleAdminQueryEvents(
-      new Request("https://example.test/admin/query-events?client_id=hermes-alice&stage=incoming&effective_tier=shape&limit=5"),
+      new Request("https://example.test/admin/query-events?client_id=demo-client-alpha&stage=incoming&effective_tier=shape&limit=5"),
       env,
     );
     const body = await response.json() as { events: unknown[]; total: number };
 
     expect(response.status).toBe(200);
     expect(queryQueryEvents).toHaveBeenCalledWith({
-      clientId: "hermes-alice",
+      clientId: "demo-client-alpha",
       appId: undefined,
       requestId: undefined,
       stage: "incoming",
@@ -1497,7 +1497,7 @@ describe("NIM failed request observability", () => {
       finalOutcome: "exhausted",
       failureClass: "server_5xx",
       issueCode: "provider_5xx",
-      requestSource: "hermes",
+      requestSource: "demo-app",
       attemptsCount: 1,
       summary: {
         requestId: "req-failure-1",
@@ -1529,7 +1529,7 @@ describe("NIM failed request observability", () => {
     try {
       const response = await handleNimFailures(
         new Request(
-          "https://example.test/nim/failures?route=smart-route-worker&selected_group=nim-primary&selected_model=nim-primary-key-1&failure_class=server_5xx&issue_code=provider_5xx&request_source=hermes&since=1h&until=1779598800&limit=25",
+          "https://example.test/nim/failures?route=smart-route-worker&selected_group=nim-primary&selected_model=nim-primary-key-1&failure_class=server_5xx&issue_code=provider_5xx&request_source=demo-app&since=1h&until=1779598800&limit=25",
           { headers: { Authorization: "Bearer health-token" } },
         ),
         env,
@@ -1543,7 +1543,7 @@ describe("NIM failed request observability", () => {
         selectedModel: "nim-primary-key-1",
         failureClass: "server_5xx",
         issueCode: "provider_5xx",
-        requestSource: "hermes",
+        requestSource: "demo-app",
         since: now - 3_600_000,
         until: 1779598800 * 1000,
         limit: 25,

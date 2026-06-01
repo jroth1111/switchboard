@@ -1,3 +1,4 @@
+import type { BillingClass } from "../config/schema";
 import { ratesForUsageCost } from "../config/usage-pricing";
 import type { TokenUsage } from "./token-usage";
 
@@ -5,9 +6,10 @@ export function estimateUsageCostUsd(
   provider: string,
   usage: TokenUsage,
   model?: string,
+  billingClass?: BillingClass,
 ): number | null {
   if (usage.kind === "unknown") return null;
-  const rates = ratesForUsageCost(provider, model);
+  const rates = ratesForUsageCost(provider, model, billingClass);
   if (!rates) return null;
   const prompt = usage.promptTokens ?? 0;
   const completion = usage.completionTokens ?? 0;

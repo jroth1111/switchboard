@@ -48,17 +48,21 @@ if (args.has("--help") || args.has("-h")) {
   console.log(`Usage: CONTROL_PLANE_URL=https://... [SWITCHBOARD_API_KEY=...] [ADMIN_API_KEY=...] pnpm live:smoke
 
 Environment:
-  CONTROL_PLANE_URL or LIVE_BASE_URL   Deployed control-plane Worker URL.
+  CONTROL_PLANE_URL or LIVE_BASE_URL   Deployed control-plane Worker URL (always probes GET /ping).
   LIVE_SMOKE_MODE                      surface | provider | fixture. Default: surface.
   LIVE_SMOKE_MODEL                     Model alias to exercise. Default: nim-primary.
   SWITCHBOARD_API_KEY or PROXY_API_KEY  Enables authenticated model catalog; required for provider/fixture chat probes.
-  ADMIN_API_KEY                         Enables /admin health, receipts, and cooldown cleanup.
-  NIM_HEALTH_TOKEN                     Enables authorized /nim/health when ADMIN_API_KEY is absent.
+  NIM_HEALTH_TOKEN                     Enables GET /nim/health (ADMIN_API_KEY is accepted as fallback).
+  ADMIN_API_KEY                         Enables GET /admin/health, GET /admin/usage?window=1h, receipts, and cooldown cleanup.
   LIVE_SMOKE_REPORT                    Optional JSON report path.
   FIXTURE_WORKER_URL                   Optional fixture worker URL for subscription format probes.
   LIVE_SMOKE_FIXTURE_ACK               Required for LIVE_SMOKE_MODE=fixture; set to
                                        ${FIXTURE_ACK_VALUE} after confirming provider API base
                                        overrides route provider calls to fixtures.
+
+Probes (always): GET /ping.
+With NIM_HEALTH_TOKEN or ADMIN_API_KEY: GET /nim/health (expects status field).
+With ADMIN_API_KEY: GET /admin/usage?window=1h (expects totals.requests; cost_estimate_source=heuristic if present).
 
 Local .dev.vars/.env/.env.local values are loaded automatically when process
 environment values are absent.
@@ -89,7 +93,7 @@ const baseUrl = trimTrailingSlash(requiredEnv("CONTROL_PLANE_URL", "LIVE_BASE_UR
 const model = optionalEnv("LIVE_SMOKE_MODEL") ?? "nim-primary";
 const switchboardApiKey = optionalEnv("SWITCHBOARD_API_KEY", "PROXY_API_KEY");
 const adminApiKey = optionalEnv("ADMIN_API_KEY");
-const healthApiKey = optionalEnv("NIM_HEALTH_TOKEN", "ADMIN_API_KEY");
+const nimHealthToken = optionalEnv("NIM_HEALTH_TOKEN");
 const reportPath = optionalEnv("LIVE_SMOKE_REPORT");
 const fixtureWorkerUrlValue = optionalEnv("FIXTURE_WORKER_URL");
 const fixtureWorkerUrl = fixtureWorkerUrlValue ? trimTrailingSlash(fixtureWorkerUrlValue) : undefined;
@@ -125,17 +129,40 @@ await run("proxy rejects bad auth", "POST", "/v1/chat/completions", {
   assertStatus(resp, 401);
 });
 
-const healthProbeAuth = getHealthProbeAuth();
-if (healthProbeAuth) {
-  await run("authorized health", "GET", healthProbeAuth.path, {
-    headers: bearer(healthProbeAuth.token),
+if (nimHealthToken) {
+  await run("nim health", "GET", "/nim/health", {
+    headers: bearer(nimHealthToken),
   }, async (resp, body) => {
     assertStatus(resp, 200);
     const data = expectJson(body) as Record<string, unknown>;
     if (!data.status) throw new Error("health response missing status");
   });
 } else {
-  skip("authorized health", "GET", "/nim/health", "ADMIN_API_KEY or NIM_HEALTH_TOKEN not set");
+  skip("nim health", "GET", "/nim/health", "NIM_HEALTH_TOKEN not set");
+}
+
+if (adminApiKey) {
+  await run("admin health", "GET", "/admin/health", {
+    headers: bearer(adminApiKey),
+  }, async (resp, body) => {
+    assertStatus(resp, 200);
+    const data = expectJson(body) as Record<string, unknown>;
+    if (!data.status) throw new Error("health response missing status");
+  });
+
+  await run("admin usage", "GET", "/admin/usage?window=1h", {
+    headers: bearer(adminApiKey),
+  }, async (resp, body) => {
+    assertStatus(resp, 200);
+    const data = expectJson(body) as Record<string, unknown>;
+    const totals = data.totals as Record<string, unknown> | undefined;
+    if (!totals || typeof totals.requests !== "number") {
+      throw new Error("usage response missing totals.requests number");
+    }
+    if ("cost_estimate_source" in data && data.cost_estimate_source !== "heuristic") {
+      throw new Error(`expected cost_estimate_source=heuristic if present, got: ${String(data.cost_estimate_source)}`);
+    }
+  });
 }
 
 if (mode !== "surface") {
@@ -162,7 +189,12 @@ if (mode !== "surface") {
         }
       });
     } else {
-      skip("health telemetry recorded after probes", "GET", "/nim/health", "health token not set or health fetch failed");
+      skip(
+        "health telemetry recorded after probes",
+        "GET",
+        telemetryHealthAuth?.path ?? "/nim/health",
+        "NIM_HEALTH_TOKEN or ADMIN_API_KEY not set, or health fetch failed",
+      );
     }
   }
 }
@@ -547,8 +579,12 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 }
 
 function getHealthProbeAuth(): { path: string; token: string } | undefined {
-  if (adminApiKey) return { path: "/admin/health", token: adminApiKey };
-  if (healthApiKey) return { path: "/nim/health", token: healthApiKey };
+  if (nimHealthToken) {
+    return { path: "/nim/health", token: nimHealthToken };
+  }
+  if (adminApiKey) {
+    return { path: "/admin/health", token: adminApiKey };
+  }
   return undefined;
 }
 

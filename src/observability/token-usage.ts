@@ -1,5 +1,6 @@
 // Token usage observability: tri-state usage tracking.
 
+import type { BillingClass } from "../config/schema";
 import { estimateUsageCostUsd } from "./usage-cost";
 
 export type TokenUsage =
@@ -93,6 +94,7 @@ export function usageEventFromTokenUsage(
   usage: TokenUsage,
   provider?: string,
   model?: string,
+  billingClass?: BillingClass,
 ): Pick<UsageEventPayload, "usageKind" | "promptTokens" | "completionTokens" | "totalTokens" | "usageSource" | "estimatedCostUsd"> {
   if (usage.kind === "unknown") {
     return {
@@ -104,7 +106,9 @@ export function usageEventFromTokenUsage(
       estimatedCostUsd: null,
     };
   }
-  const estimatedCostUsd = provider ? estimateUsageCostUsd(provider, usage, model?.trim()) : null;
+  const estimatedCostUsd = provider
+    ? estimateUsageCostUsd(provider, usage, model?.trim(), billingClass)
+    : null;
   return {
     usageKind: usage.kind,
     promptTokens: usage.promptTokens,

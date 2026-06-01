@@ -6,7 +6,7 @@ Switchboard is a [Cloudflare Worker](https://developers.cloudflare.com/workers/)
 
 You get a single base URL and a single API key model for clients, while operators can route traffic across NVIDIA NIM, API-key hosts, and subscription OAuth backends without changing application code for every provider swap.
 
-Deployed Worker name: **`llm-control-plane`** (see [`wrangler.jsonc`](wrangler.jsonc)).
+Deployed Worker name: **`switchboard`** (see [`wrangler.jsonc`](wrangler.jsonc)).
 
 ---
 
@@ -422,7 +422,7 @@ Details: [docs/deployment.md](docs/deployment.md), [.dev.vars.example](.dev.vars
 | `pnpm validate` | Secret permissions + worker types + manifest |
 | `pnpm verify` | Full CI check (tsc, validate, test, bundle size) |
 | `pnpm snapshot` | Update route manifest snapshot |
-| `pnpm deploy` | Deploy `llm-control-plane` to Cloudflare |
+| `pnpm deploy` | Deploy `switchboard` to Cloudflare |
 | `pnpm live:smoke` | Smoke test against a deployed URL |
 
 ---

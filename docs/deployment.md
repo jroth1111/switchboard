@@ -1,6 +1,6 @@
 # Deployment guide
 
-Checklist for deploying the **llm-control-plane** Cloudflare Worker. Operator routes live under `/nim/*`; client authentication and team limits come from `CLIENT_KEYS_JSON`.
+Checklist for deploying the **switchboard** Cloudflare Worker. Operator routes live under `/nim/*`; client authentication and team limits come from `CLIENT_KEYS_JSON`.
 
 ## Pre-deploy verification
 
@@ -14,7 +14,7 @@ Fix any validate **errors** before deploy. Warnings (for example missing model-s
 
 | Item | Value |
 |------|-------|
-| Wrangler `name` | `llm-control-plane` |
+| Wrangler `name` | `switchboard` (staging: `switchboard-dev` via `wrangler.dev.jsonc`) |
 | Config | `wrangler.jsonc` (production), `wrangler.dev.jsonc` (staging) |
 | Deploy | `pnpm deploy` or `pnpm deploy:staging` |
 
@@ -95,3 +95,15 @@ Check `/admin/usage` JSON includes `cost_estimate_source: "heuristic"` and `tota
 ## Rollback
 
 Redeploy the previous Worker version from the Cloudflare dashboard, or revert the git tag and run `pnpm deploy` again. Durable Object state persists across rollbacks unless DO schema migrations changed.
+
+## Renamed from `llm-control-plane`
+
+Wrangler `name` is now **`switchboard`**. A fresh `pnpm deploy` creates (or updates) the Worker at `switchboard.<account>.workers.dev`, not `llm-control-plane.*`.
+
+If you already run the old name in production:
+
+1. Deploy this repo (`pnpm deploy`) to register **`switchboard`** and copy secrets with `wrangler secret put`.
+2. Point clients and `CONTROL_PLANE_URL` at the new `*.workers.dev` host (or attach your custom domain to the new Worker).
+3. Retire the old `llm-control-plane` Worker in the Cloudflare dashboard when traffic has moved.
+
+Durable Object namespaces are per Worker name; state does **not** migrate automatically between `llm-control-plane` and `switchboard`.

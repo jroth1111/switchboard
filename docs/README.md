@@ -3,7 +3,7 @@
 | Guide | Audience | Description |
 |-------|----------|-------------|
 | [local-secrets.md](local-secrets.md) | Operators | Keep API keys and client policy out of git |
-| [deployment.md](deployment.md) | Operators | Deploy `llm-control-plane` to Cloudflare |
+| [deployment.md](deployment.md) | Operators | Deploy `switchboard` to Cloudflare |
 
 Configuration references in the repository:
 

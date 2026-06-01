@@ -1,5 +1,5 @@
 // Main Worker entrypoint.
-// LLM Control Plane — Cloudflare Worker with NIM mitigation, account rotation,
+// Switchboard — Cloudflare Worker LLM router with NIM mitigation, account rotation,
 // silent failover, and health scoring.
 
 import { MANIFEST, ROUTE_MANIFEST_VERSION } from "./config/manifest";

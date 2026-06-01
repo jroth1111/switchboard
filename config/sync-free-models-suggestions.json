@@ -1,0 +1,400 @@
+{
+  "generatedAt": "2026-05-26T08:07:51.517Z",
+  "fingerprint": "d324a5a83225515af87f87ff87d2d6377ce76be0b3c07ce62d76e5e81edc674c",
+  "providersEnabled": {
+    "openrouter": true,
+    "groq": false,
+    "nim": true,
+    "kilo": true,
+    "opencodeZen": true
+  },
+  "nimRouteGroups": [
+    "nim-deepseek-v4-pro",
+    "nim-kimi-k2.5",
+    "nim-minimax-m2.7",
+    "nim-primary",
+    "nim-tool-primary"
+  ],
+  "models": [
+    {
+      "provider": "kilo",
+      "modelId": "baidu/cobuddy:free",
+      "freeSignal": "kilo_gateway",
+      "billingClass": "free",
+      "freeTier": "kilo_gateway",
+      "keylessEligible": true
+    },
+    {
+      "provider": "kilo",
+      "modelId": "deepseek/deepseek-v4-flash:free",
+      "freeSignal": "kilo_gateway",
+      "billingClass": "free",
+      "freeTier": "kilo_gateway",
+      "keylessEligible": false
+    },
+    {
+      "provider": "kilo",
+      "modelId": "google/lyria-3-clip-preview",
+      "freeSignal": "kilo_gateway",
+      "billingClass": "free",
+      "freeTier": "kilo_gateway",
+      "keylessEligible": false
+    },
+    {
+      "provider": "kilo",
+      "modelId": "google/lyria-3-pro-preview",
+      "freeSignal": "kilo_gateway",
+      "billingClass": "free",
+      "freeTier": "kilo_gateway",
+      "keylessEligible": false
+    },
+    {
+      "provider": "kilo",
+      "modelId": "kilo-auto/free",
+      "freeSignal": "kilo_gateway",
+      "billingClass": "free",
+      "freeTier": "kilo_gateway",
+      "keylessEligible": false
+    },
+    {
+      "provider": "kilo",
+      "modelId": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+      "freeSignal": "kilo_gateway",
+      "billingClass": "free",
+      "freeTier": "kilo_gateway",
+      "keylessEligible": true
+    },
+    {
+      "provider": "kilo",
+      "modelId": "nvidia/nemotron-3-super-120b-a12b:free",
+      "freeSignal": "kilo_gateway",
+      "billingClass": "free",
+      "freeTier": "kilo_gateway",
+      "keylessEligible": true
+    },
+    {
+      "provider": "kilo",
+      "modelId": "openrouter/free",
+      "freeSignal": "kilo_gateway",
+      "billingClass": "free",
+      "freeTier": "kilo_gateway",
+      "keylessEligible": true
+    },
+    {
+      "provider": "kilo",
+      "modelId": "openrouter/owl-alpha",
+      "freeSignal": "kilo_gateway",
+      "billingClass": "free",
+      "freeTier": "kilo_gateway",
+      "keylessEligible": true
+    },
+    {
+      "provider": "kilo",
+      "modelId": "poolside/laguna-m.1:free",
+      "freeSignal": "kilo_gateway",
+      "billingClass": "free",
+      "freeTier": "kilo_gateway",
+      "keylessEligible": true
+    },
+    {
+      "provider": "kilo",
+      "modelId": "poolside/laguna-xs.2:free",
+      "freeSignal": "kilo_gateway",
+      "billingClass": "free",
+      "freeTier": "kilo_gateway",
+      "keylessEligible": true
+    },
+    {
+      "provider": "kilo",
+      "modelId": "x-ai/grok-code-fast-1:optimized:free",
+      "freeSignal": "kilo_gateway",
+      "billingClass": "free",
+      "freeTier": "kilo_gateway",
+      "keylessEligible": false
+    },
+    {
+      "provider": "opencode_zen",
+      "modelId": "deepseek-v4-flash-free",
+      "freeSignal": "opencode_zen",
+      "billingClass": "free",
+      "freeTier": "opencode_zen",
+      "keylessEligible": true
+    },
+    {
+      "provider": "opencode_zen",
+      "modelId": "minimax-m2.5-free",
+      "freeSignal": "opencode_zen",
+      "billingClass": "free",
+      "freeTier": "opencode_zen",
+      "keylessEligible": false
+    },
+    {
+      "provider": "opencode_zen",
+      "modelId": "nemotron-3-super-free",
+      "freeSignal": "opencode_zen",
+      "billingClass": "free",
+      "freeTier": "opencode_zen",
+      "keylessEligible": true
+    },
+    {
+      "provider": "opencode_zen",
+      "modelId": "qwen3.6-plus-free",
+      "freeSignal": "opencode_zen",
+      "billingClass": "free",
+      "freeTier": "opencode_zen",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "arcee-ai/trinity-large-thinking:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "baidu/cobuddy:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "deepseek/deepseek-v4-flash:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "google/gemma-4-26b-a4b-it:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "google/gemma-4-31b-it:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "google/lyria-3-clip-preview",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "google/lyria-3-pro-preview",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "liquid/lfm-2.5-1.2b-instruct:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "liquid/lfm-2.5-1.2b-thinking:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "meta-llama/llama-3.2-3b-instruct:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "meta-llama/llama-3.3-70b-instruct:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "minimax/minimax-m2.5:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "nousresearch/hermes-3-llama-3.1-405b:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "nvidia/nemotron-3-nano-30b-a3b:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "nvidia/nemotron-3-super-120b-a12b:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "nvidia/nemotron-nano-12b-v2-vl:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "nvidia/nemotron-nano-9b-v2:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "openai/gpt-oss-120b:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "openai/gpt-oss-20b:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "openrouter/free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "openrouter/owl-alpha",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "poolside/laguna-m.1:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "poolside/laguna-xs.2:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "qwen/qwen3-coder:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "qwen/qwen3-next-80b-a3b-instruct:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    },
+    {
+      "provider": "openrouter",
+      "modelId": "z-ai/glm-4.5-air:free",
+      "freeSignal": "pricing.prompt==0",
+      "billingClass": "free",
+      "freeTier": "catalog_zero",
+      "keylessEligible": false
+    }
+  ],
+  "probed": [
+    {
+      "provider": "openrouter",
+      "url": "https://openrouter.ai/api/v1/models",
+      "freeSignal": "pricing.prompt==0",
+      "authenticated": false
+    },
+    {
+      "provider": "kilo",
+      "url": "https://api.kilo.ai/api/gateway/models",
+      "freeSignal": "kilo_gateway",
+      "authenticated": false
+    },
+    {
+      "provider": "opencode_zen",
+      "url": "https://opencode.ai/zen/v1/models",
+      "freeSignal": "opencode_zen",
+      "authenticated": false
+    }
+  ],
+  "totals": {
+    "all": 44,
+    "byProvider": {
+      "kilo": 12,
+      "opencode_zen": 4,
+      "openrouter": 28
+    }
+  }
+}

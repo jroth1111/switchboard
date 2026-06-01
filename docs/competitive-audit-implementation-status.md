@@ -62,7 +62,7 @@ Historical checklist from the May 2026 competitive audit. Integration work lande
 
 - **OAuth exclusions:** `manifest.oauthExcludedModels` defaults to `{}`; copy patterns from `config/client-keys.example.json`.
 - **Billing:** `estimated_cost_usd` uses heuristic pricing, not invoice-grade.
-- **Production secrets:** Replace CI fixture tokens with real `CHATGPT_AUTH_JSON` / `.dev.vars` for deploy and `pnpm live:smoke`.
+- **Production secrets:** Replace CI fixture tokens with real `CHATGPT_AUTH_JSON` / `../switchboard-local/.dev.vars` for deploy and `pnpm live:smoke`.
 
 ## Verification
 

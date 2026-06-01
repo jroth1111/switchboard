@@ -22,7 +22,7 @@ Fix any validate **errors** before deploy. Warnings (for example missing model-s
 
 ## Required secrets
 
-Set via `wrangler secret put` (production) or `.dev.vars` (local). Do not commit values.
+Set via `wrangler secret put` (production) or `../switchboard-local/.dev.vars` (local; see repo README). Do not commit values.
 
 | Secret | Purpose |
 |--------|---------|

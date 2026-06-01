@@ -11,10 +11,10 @@
   },
   "clients": [
     {
-      "id": "hermes-alice",
-      "appId": "hermes",
+      "id": "demo-client-alpha",
+      "appId": "demo-app",
       "token_sha256": "<sha256-hex-of-bearer-token>",
-      "policyId": "hermes-basic",
+      "policyId": "default-policy",
       "teamId": "engineering",
       "allowedModels": ["smart-route", "nim-primary"],
       "rpmLimit": 60,

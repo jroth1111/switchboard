@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // Validate that local secret files are private without printing secret values.
 
-import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
-import { basename, join } from "node:path";
-
-const DEFAULT_SECRET_FILES = [".dev.vars", ".env", ".env.local"];
-const DEFAULT_SECRET_DIRS = [".secrets"];
+import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { basename } from "node:path";
+import {
+  discoverLocalSecretPaths,
+  repoRootDevVarsPresent,
+  REPO_SECRETS_MIGRATION_HINT,
+} from "./local-secrets-dir.ts";
 const OWNER_ONLY_MASK = 0o077;
 
 interface CheckResult {
@@ -23,13 +25,17 @@ Checks local secret files for owner-only permissions. Missing default files are
 skipped so CI remains usable when local secrets are absent. Values are never
 printed; detected env or JSON keys are shown as <redacted>.
 
-Default paths: ${DEFAULT_SECRET_FILES.join(", ")} and files under ${DEFAULT_SECRET_DIRS.join(", ")}`);
+Default paths: ../switchboard-local/ (or SWITCHBOARD_LOCAL_DIR) plus legacy repo-root secret files`);
   process.exit(0);
 }
 
 const explicitPaths = args.filter((arg) => !arg.startsWith("-"));
-const paths = explicitPaths.length > 0 ? explicitPaths : discoverDefaultSecretPaths();
+const paths = explicitPaths.length > 0 ? explicitPaths : discoverLocalSecretPaths();
 const results = paths.map((path) => checkSecretPath(path, explicitPaths.length > 0));
+
+if (explicitPaths.length === 0 && repoRootDevVarsPresent()) {
+  console.warn(`WARN: ${REPO_SECRETS_MIGRATION_HINT}\n`);
+}
 
 console.log("=== Secret Permission Check ===\n");
 for (const result of results) {
@@ -48,19 +54,6 @@ if (errors > 0) {
 }
 
 console.log("\nSecret permission check PASSED");
-
-function discoverDefaultSecretPaths(): string[] {
-  const paths = [...DEFAULT_SECRET_FILES];
-  for (const dir of DEFAULT_SECRET_DIRS) {
-    if (!existsSync(dir)) continue;
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.isFile() || entry.isSymbolicLink()) {
-        paths.push(join(dir, entry.name));
-      }
-    }
-  }
-  return paths;
-}
 
 function checkSecretPath(path: string, explicit: boolean): CheckResult {
   if (!existsSync(path)) {

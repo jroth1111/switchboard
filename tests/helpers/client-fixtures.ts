@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-/** CI/local-test bearer; production values belong in `.dev.vars` only. */
+/** CI/local-test bearer; production values belong in `../switchboard-local/.dev.vars` only. */
 export const TEST_CLIENT_BEARER = "switchboard-ci-test-bearer";
 export const TEST_OPERATOR_BEARER = "switchboard-ci-operator-bearer";
 

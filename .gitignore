@@ -1,16 +1,42 @@
+# --- Authentication & secrets (real values; CI uses config/fixtures/*.ci.json) ---
 .dev.vars
+.dev.vars.*
+!.dev.vars.example
+
 .env
-.env.local
+.env.*
+!.env.example
+
 .secrets/
-.live-smoke-report.json
+**/.secrets/
+
+# OAuth / API key JSON (not CI fixtures)
+**/chatgpt-auth.json
+!config/fixtures/chatgpt-auth.ci.json
+
+config/client-keys.json
+config/client-keys.*.json
+!config/client-keys.example.json
+!config/fixtures/client-keys.ci.json
+
+# Wrangler / smoke / key material
 .wrangler/
+.live-smoke-report.json
+*.pem
+*.p12
+*.pfx
+*.key
+!**/*.example.key
+
+# Misc credential stores
+.netrc
+.beads-credential-key
 
 # BEGIN local agent runtime artifact ignores
-# Local Beads state
 .beads/
 .claude/
 .autoreview/
-.cursor/goal/
+.cursor/
 
 # Dependency installs and package-manager state
 node_modules/
@@ -80,4 +106,3 @@ log/
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
-.beads-credential-key

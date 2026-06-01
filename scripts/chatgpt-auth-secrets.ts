@@ -1,6 +1,7 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { discoverLocalSecretPaths } from "./local-secrets-dir.ts";
 
 function resolveCiChatGptAuthFixturePath(cwd: string): string | null {
   const candidates = [
@@ -10,8 +11,6 @@ function resolveCiChatGptAuthFixturePath(cwd: string): string | null {
   return candidates.find((path) => existsSync(path)) ?? null;
 }
 
-const DEFAULT_SECRET_FILES = [".dev.vars", ".env", ".env.local"];
-const DEFAULT_SECRET_DIRS = [".secrets"];
 const CHATGPT_SUBSCRIPTION_AUTH_REQUIRED_FIELDS = [
   "access_token",
   "refresh_token",
@@ -34,7 +33,7 @@ export function loadLocalSecretEnv(cwd = process.cwd(), processEnv: NodeJS.Proce
   const loadErrors: string[] = [];
   let localSecretSurfacePresent = false;
 
-  for (const path of discoverDefaultSecretPaths(cwd)) {
+  for (const path of discoverLocalSecretPaths(cwd, processEnv)) {
     if (!existsSync(path)) continue;
     localSecretSurfacePresent = true;
     try {
@@ -126,18 +125,6 @@ function withStaleOAuthWarning(
         + "remove it from local secrets",
     },
   ];
-}
-
-function discoverDefaultSecretPaths(cwd: string): string[] {
-  const paths = DEFAULT_SECRET_FILES.map((path) => join(cwd, path));
-  for (const dirName of DEFAULT_SECRET_DIRS) {
-    const dir = join(cwd, dirName);
-    if (!existsSync(dir)) continue;
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.isFile()) paths.push(join(dir, entry.name));
-    }
-  }
-  return paths;
 }
 
 function parseSecretFile(path: string): Record<string, string> {

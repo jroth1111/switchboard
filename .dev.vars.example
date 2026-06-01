@@ -1,7 +1,11 @@
-# Local Wrangler development variables.
-# Copy to .dev.vars for local runs, fill values locally, and keep the file ignored.
-# Secret values must not be committed or printed. Harden local copies with:
-# chmod 0600 .dev.vars
+# Local development variables (template only — do not put real values in the repo).
+#
+# Copy to ../switchboard-local/.dev.vars (private, outside git):
+#   mkdir -p ../switchboard-local/.secrets && cp .dev.vars.example ../switchboard-local/.dev.vars
+#   chmod 0600 ../switchboard-local/.dev.vars
+#
+# Optional: SWITCHBOARD_LOCAL_DIR to point elsewhere.
+# Wrangler dev still expects .dev.vars in the repo root unless you symlink from switchboard-local.
 
 SWITCHBOARD_API_KEY=
 ADMIN_API_KEY=

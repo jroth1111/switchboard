@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 /**
  * Migrate singular free-provider API key env names to numbered canonical names.
- * - Rewrites .dev.vars: OPENROUTER_API_KEY → OPENROUTER_API_KEY_1 (when _1 unset)
+ * - Rewrites ../switchboard-local/.dev.vars (or --path): OPENROUTER_API_KEY → OPENROUTER_API_KEY_1 (when _1 unset)
  * - Optional --import-from: copy singular/numbered keys from another .dev.vars if missing locally
  *
  * GitHub / Wrangler secrets cannot be read back; this script prints copy commands when --print-ops is set.
  */
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { defaultDevVarsPath } from "./local-secrets-dir.ts";
 
 const PROVIDERS = [
   { singular: "OPENROUTER_API_KEY", numbered: "OPENROUTER_API_KEY_1" },
@@ -113,7 +114,9 @@ function printOps(): void {
 
 function main(): void {
   const args = new Set(process.argv.slice(2));
-  const devVarsPath = resolve(args.has("--path") ? process.argv[process.argv.indexOf("--path") + 1]! : ".dev.vars");
+  const devVarsPath = resolve(
+    args.has("--path") ? process.argv[process.argv.indexOf("--path") + 1]! : defaultDevVarsPath(),
+  );
   const importPath = args.has("--import-from")
     ? resolve(process.argv[process.argv.indexOf("--import-from") + 1]!)
     : undefined;
@@ -126,7 +129,7 @@ function main(): void {
   }
 
   if (!existsSync(devVarsPath)) {
-    console.error(`Missing ${devVarsPath}; copy from .dev.vars.example first.`);
+    console.error(`Missing ${devVarsPath}; copy .dev.vars.example to ../switchboard-local/.dev.vars first.`);
     process.exit(1);
   }
 

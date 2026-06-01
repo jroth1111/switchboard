@@ -144,7 +144,7 @@ flowchart TD
 
 ### Configuration layers
 
-Operators change **code** (manifest), **secrets** (Wrangler / `.dev.vars`), and rely on **runtime state** in Durable Objects.
+Operators change **code** (manifest), **secrets** (Wrangler / [local secrets dir](docs/local-secrets.md)), and rely on **runtime state** in Durable Objects.
 
 ```mermaid
 flowchart LR
@@ -272,14 +272,23 @@ When a deployment resolves **more than one** credential ([`src/credentials/resol
 pnpm install
 ```
 
-### 2. Configure secrets
+### 2. Configure secrets (outside the repo)
+
+Real keys and client policy JSON live in **`../switchboard-local/`** (sibling directory, not committed). See [docs/local-secrets.md](docs/local-secrets.md).
 
 ```bash
-cp .dev.vars.example .dev.vars
-chmod 0600 .dev.vars
+mkdir -p ../switchboard-local/.secrets
+cp .dev.vars.example ../switchboard-local/.dev.vars
+chmod 0600 ../switchboard-local/.dev.vars
 ```
 
-Edit `.dev.vars`. At minimum for a smoke test:
+For `wrangler dev`, symlink or copy `.dev.vars` into the repo root (gitignored):
+
+```bash
+ln -sf ../switchboard-local/.dev.vars .dev.vars
+```
+
+Edit `../switchboard-local/.dev.vars`. At minimum for a smoke test:
 
 | Variable | Purpose |
 |----------|---------|
@@ -300,7 +309,7 @@ Authentication uses **SHA-256 of the bearer token**, not the raw token in config
 echo -n 'my-local-dev-token' | shasum -a 256 | awk '{print $1}'
 ```
 
-Put the hex digest in `CLIENT_KEYS_JSON`. Example (single line for `.dev.vars`):
+Put the hex digest in `CLIENT_KEYS_JSON`. Example (single line in `../switchboard-local/.dev.vars`):
 
 ```json
 {
@@ -316,7 +325,7 @@ Put the hex digest in `CLIENT_KEYS_JSON`. Example (single line for `.dev.vars`):
 
 Full shape with teams and limits: [config/client-keys.example.json](config/client-keys.example.json).
 
-Tests and CI load client keys from `config/fixtures/client-keys.ci.json` (synthetic IDs only). For local API calls, put your real client key JSON in `.dev.vars` as `CLIENT_KEYS_JSON` (see `config/client-keys.example.json`).
+Tests and CI load client keys from `config/fixtures/client-keys.ci.json` (synthetic IDs only). For local API calls, put your real client key JSON in `../switchboard-local/.dev.vars` as `CLIENT_KEYS_JSON` (see `config/client-keys.example.json`).
 
 ### 4. Validate and run
 
@@ -325,7 +334,7 @@ pnpm validate
 pnpm dev
 ```
 
-`pnpm dev` runs the **`llm-control-plane`** worker locally (default URL `http://localhost:8787`). Set `ENCRYPTION_KEY` and `SWITCHBOARD_PROVIDER_FIXTURE=true` in `.dev.vars` for OAuth routes and provider fixtures.
+`pnpm dev` runs the **`llm-control-plane`** worker locally (default URL `http://localhost:8787`). Set `ENCRYPTION_KEY` and `SWITCHBOARD_PROVIDER_FIXTURE=true` in your local `.dev.vars` for OAuth routes and provider fixtures.
 
 ### 5. Call the API
 

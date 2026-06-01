@@ -28,6 +28,68 @@ describe("ControlPlaneStateDO with real SQLite", () => {
     await stub.release(result.reservationId!);
   });
 
+  it("stores credential-scoped cooldowns separately from deployments", async () => {
+    const stub = getDoStub(`cred-cooldown-${Date.now()}`);
+    await stub.setCredentialCooldown("NIM_KEY_1", "rate_limit_overload", Date.now() + 60_000);
+    const active = await stub.getCredentialCooldown("NIM_KEY_1");
+    expect(active).not.toBeNull();
+    expect(active!.reason).toBe("rate_limit_overload");
+    await stub.clearCredentialCooldown("NIM_KEY_1");
+    const cleared = await stub.getCredentialCooldown("NIM_KEY_1");
+    expect(cleared).toBeNull();
+  });
+
+  it("persists sequential_exhaust credential pool order across calls", async () => {
+    const stub = getDoStub(`cred-order-${Date.now()}`);
+    const deploymentId = "nim-primary-key-1";
+    await stub.setCredentialPoolOrder(deploymentId, ["NIM_KEY_2", "NIM_KEY_1"]);
+    const order = await stub.getCredentialPoolOrder(deploymentId);
+    expect(order).toEqual(["NIM_KEY_2", "NIM_KEY_1"]);
+    await stub.setCredentialPoolOrder(deploymentId, ["NIM_KEY_1", "NIM_KEY_2"]);
+    expect(await stub.getCredentialPoolOrder(deploymentId)).toEqual(["NIM_KEY_1", "NIM_KEY_2"]);
+  });
+
+  it("credential cooldown persists on the same DO across stub calls", async () => {
+    const stubName = `cred-persist-${Date.now()}`;
+    const until = Date.now() + 120_000;
+    const stub = getDoStub(stubName);
+    await stub.setCredentialCooldown("NIM_KEY_1", "rate_limit_overload", until);
+
+    const reloaded = getDoStub(stubName);
+    const active = await reloaded.getCredentialCooldown("NIM_KEY_1");
+    expect(active?.reason).toBe("rate_limit_overload");
+    expect(await reloaded.getCredentialCooldown("NIM_KEY_1", until + 1)).toBeNull();
+  });
+
+  it("partitions credential and deployment cooldowns in getHealth", async () => {
+    const stub = getDoStub(`health-partition-${Date.now()}`);
+    const deploymentId = "deploy-health-partition";
+    const until = Date.now() + 60_000;
+    await stub.setCredentialCooldown("NIM_KEY_1", "rate_limit_overload", until);
+    await stub.setCredentialPoolOrder(deploymentId, ["NIM_KEY_1"]);
+    await stub.recordFailure(deploymentId, "server_5xx", 60, 5, 300);
+
+    const health = await stub.getHealth();
+    const credentialCooldowns = health.credentialCooldowns as Record<string, unknown>;
+    const deploymentCooldowns = health.deploymentCooldowns as Record<string, unknown>;
+    const flat = health.cooldowns as Record<string, unknown>;
+
+    expect(Object.keys(credentialCooldowns).some((scope) => scope.startsWith("cred:"))).toBe(true);
+    expect(Object.keys(credentialCooldowns).some((scope) => scope.startsWith("cred-order:"))).toBe(true);
+    expect(deploymentCooldowns[deploymentId]).toBeDefined();
+    expect(flat[deploymentId]).toBeDefined();
+  });
+
+  it("clears deployment cooldown and cred-order scope together", async () => {
+    const stub = getDoStub(`cred-clear-${Date.now()}`);
+    const deploymentId = "deploy-cred-clear";
+    await stub.setCredentialPoolOrder(deploymentId, ["NIM_KEY_1"]);
+    const store = await stub.getCredentialPoolOrder(deploymentId);
+    expect(store).toEqual(["NIM_KEY_1"]);
+    await stub.clearCooldowns(deploymentId);
+    expect(await stub.getCredentialPoolOrder(deploymentId)).toBeNull();
+  });
+
   it("records success and health score appears in getHealth", async () => {
     const stub = getDoStub();
     await stub.recordSuccess("deploy-health-test", 3);
@@ -263,8 +325,8 @@ describe("ControlPlaneStateDO with real SQLite", () => {
   });
 
   it("stores failed requests with searchable filters and optional sanitized receipts", async () => {
-    const stub = getDoStub();
-    const timestamp = Date.UTC(2026, 4, 24, 4, 30, 0);
+    const stub = getDoStub(`failed-req-${Date.now()}`);
+    const timestamp = Date.now();
     const requestId = `req_failed_${Date.now()}`;
     const summary = {
       requestId,

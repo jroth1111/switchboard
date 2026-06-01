@@ -125,9 +125,18 @@ export class SqlStorageAdapter implements StorageAdapter {
   clearCooldowns(deploymentId?: string): void {
     if (deploymentId) {
       this.sql.exec("DELETE FROM cooldowns WHERE scope = ?", deploymentId);
+      this.sql.exec("DELETE FROM cooldowns WHERE scope = ?", `cred-order:${deploymentId}`);
     } else {
       this.sql.exec("DELETE FROM cooldowns");
     }
+  }
+
+  clearCooldownScope(scope: string): void {
+    this.sql.exec("DELETE FROM cooldowns WHERE scope = ?", scope);
+  }
+
+  clearCredentialCooldown(credentialId: string): void {
+    this.sql.exec("DELETE FROM cooldowns WHERE scope = ?", `cred:${credentialId}`);
   }
 
   getCircuit(deploymentId: string): CircuitRow | null {

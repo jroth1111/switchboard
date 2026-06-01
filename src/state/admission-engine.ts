@@ -3,6 +3,7 @@
 // Delegates storage to StorageAdapter (SQL in production, Maps in tests).
 
 import type { StorageAdapter, HealthScoreRow, RecentOutcome } from "./storage-adapter";
+import { keyWindowScope, tokenWindowKey } from "../config/budget-keys";
 import type { FailureClass } from "../config/schema";
 import { RESERVATION_TTL_MS, LEARNED_CONCURRENCY_TTL_MS } from "../config/constants";
 
@@ -86,6 +87,8 @@ export interface AdmissionRequest {
   suspectThresholdFraction?: number;
   suspectMaxParallelDivisor?: number;
   tokenBudgetPerMinute?: number | null;
+  /** When true, per-key RPM is checked at admit but charged at dispatch (multi-key credential rotation). */
+  deferPerKeyRpmCharge?: boolean;
 }
 
 export interface AdmissionResponse {
@@ -95,6 +98,8 @@ export interface AdmissionResponse {
   reservationId?: string;
   inflightAtDispatch?: number;
   effectiveMaxParallel?: number;
+  /** Set when per-key RPM increment was deferred to dispatch (credential rotation). */
+  deferPerKeyRpmCharge?: boolean;
   reason?: string;
   rejected?: Array<{ deploymentId: string; reason: string }>;
 }
@@ -212,10 +217,11 @@ export function admit(
       continue;
     }
 
-    // Check key RPM
-    {
-      const currentRpm = store.getKeyRpm(windowKeyRef, rpmCutoff);
-      if (currentRpm >= candidate.rpm) {
+    const deferKeyCharge = req.deferPerKeyRpmCharge === true && scopeMode === "per_key";
+
+    // Check key RPM (skipped when charge is deferred to the credential actually used at dispatch)
+    if (!deferKeyCharge) {
+      if (!isKeyRpmAvailable(store, candidate.keyRef, candidate.group, scopeMode, candidate.rpm, now)) {
         rejected.push({ deploymentId: candidate.deploymentId, reason: "key_rpm_exhausted" });
         continue;
       }
@@ -230,9 +236,10 @@ export function admit(
       }
     }
 
-    // Check token budget (per-minute token spend across this key)
-    if (req.tokenBudgetPerMinute && req.tokenBudgetPerMinute > 0) {
-      const used = store.getTokenUsage(candidate.keyRef, rpmCutoff);
+    // Check token budget (per-minute token spend across this key/window)
+    if (req.tokenBudgetPerMinute && req.tokenBudgetPerMinute > 0 && !deferKeyCharge) {
+      const tokenKey = tokenWindowKey(candidate.keyRef, candidate.group, scopeMode);
+      const used = store.getTokenUsage(tokenKey, rpmCutoff);
       if (used >= req.tokenBudgetPerMinute) {
         rejected.push({ deploymentId: candidate.deploymentId, reason: "token_budget_exhausted" });
         continue;
@@ -249,7 +256,9 @@ export function admit(
         requestId: req.requestId, createdAt: now, expiresAt: now + RESERVATION_TTL_MS,
       });
       store.setInflight(candidate.deploymentId, inflightAtDispatch, now);
-      store.incrementKeyWindow(windowKeyRef, bucketStart);
+      if (!deferKeyCharge) {
+        store.incrementKeyWindow(windowKeyRef, bucketStart);
+      }
       store.incrementGroupWindow(candidate.group, bucketStart);
     });
 
@@ -260,10 +269,75 @@ export function admit(
       reservationId,
       inflightAtDispatch,
       effectiveMaxParallel: effectiveMax,
+      deferPerKeyRpmCharge: deferKeyCharge,
     };
   }
 
   return { admitted: false, reason: "all_candidates_rejected", rejected };
+}
+
+/** Returns false when per-key RPM is already at the deployment limit for this key. */
+export function isKeyRpmAvailable(
+  store: StorageAdapter,
+  keyRef: string,
+  group: string,
+  scopeMode: "global" | "per_key",
+  rpm: number,
+  now: number = Date.now(),
+): boolean {
+  if (rpm <= 0) return true;
+  const rpmCutoff = now - 60_000;
+  const windowKeyRef = keyWindowScope(keyRef, group, scopeMode);
+  return store.getKeyRpm(windowKeyRef, rpmCutoff) < rpm;
+}
+
+/** Charge per-key RPM for the credential actually used (after rotation). */
+export function chargePerKeyRpm(
+  store: StorageAdapter,
+  keyRef: string,
+  group: string,
+  scopeMode: "global" | "per_key" = "per_key",
+): void {
+  if (scopeMode === "global") return;
+  const now = Date.now();
+  const bucketStart = Math.floor(now / 1000) * 1000;
+  store.incrementKeyWindow(keyWindowScope(keyRef, group, scopeMode), bucketStart);
+}
+
+/** Atomically reserve one per-key RPM slot when defer charge is enabled at dispatch. */
+export function tryChargePerKeyRpm(
+  store: StorageAdapter,
+  keyRef: string,
+  group: string,
+  scopeMode: "global" | "per_key",
+  rpm: number,
+  now: number = Date.now(),
+): boolean {
+  if (scopeMode === "global" || rpm <= 0) return true;
+  const bucketStart = Math.floor(now / 1000) * 1000;
+  const windowKeyRef = keyWindowScope(keyRef, group, scopeMode);
+  const rpmCutoff = now - 60_000;
+  return store.transaction(() => {
+    if (store.getKeyRpm(windowKeyRef, rpmCutoff) >= rpm) return false;
+    store.incrementKeyWindow(windowKeyRef, bucketStart);
+    return true;
+  });
+}
+
+/** Returns false when per-key token budget is already exhausted for this key. */
+export function isPerKeyTokenBudgetAvailable(
+  store: StorageAdapter,
+  keyRef: string,
+  group: string,
+  scopeMode: "global" | "per_key",
+  tokenBudgetPerMinute: number,
+  now: number = Date.now(),
+): boolean {
+  if (scopeMode === "global" || tokenBudgetPerMinute <= 0) return true;
+  const rpmCutoff = now - 60_000;
+  const tokenKey = tokenWindowKey(keyRef, group, scopeMode);
+  const used = store.getTokenUsage(tokenKey, rpmCutoff);
+  return used < tokenBudgetPerMinute;
 }
 
 // ─── Release ──────────────────────────────────────────────────────
@@ -767,10 +841,6 @@ function recentFailureClassStreak(recentOutcomes: RecentOutcome[] | undefined, f
     count++;
   }
   return count;
-}
-
-function keyWindowScope(keyRef: string, group: string, scopeMode: "global" | "per_key"): string {
-  return scopeMode === "global" ? `${group}:global` : `${group}:${keyRef}`;
 }
 
 function appendRecentOutcome(existing: RecentOutcome[] | undefined, outcome: RecentOutcome): RecentOutcome[] {

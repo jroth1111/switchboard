@@ -27,6 +27,7 @@ export interface StorageAdapter {
   getCooldown(deploymentId: string, now: number): boolean;
   setCooldown(deploymentId: string, reason: string, until: number, detailsJson?: string): void;
   clearCooldowns(deploymentId?: string): void;
+  clearCredentialCooldown?(credentialId: string): void;
 
   // Circuits
   getCircuit(deploymentId: string): CircuitRow | null;
@@ -195,8 +196,16 @@ export class InMemoryStorageAdapter implements StorageAdapter {
   }
 
   clearCooldowns(deploymentId?: string): void {
-    if (deploymentId) this.cooldowns.delete(deploymentId);
-    else this.cooldowns.clear();
+    if (deploymentId) {
+      this.cooldowns.delete(deploymentId);
+      this.cooldowns.delete(`cred-order:${deploymentId}`);
+    } else {
+      this.cooldowns.clear();
+    }
+  }
+
+  clearCredentialCooldown(credentialId: string): void {
+    this.cooldowns.delete(`cred:${credentialId}`);
   }
 
   getCircuit(deploymentId: string): CircuitRow | null {

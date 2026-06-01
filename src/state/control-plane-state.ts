@@ -7,6 +7,12 @@ import type { FailureClass } from "../config/schema";
 import type { AdmissionRequest, AdmissionResponse } from "./admission-engine";
 import * as engine from "./admission-engine";
 import { SqlStorageAdapter } from "./sql-adapter";
+import {
+  CREDENTIAL_COOLDOWN_SCOPE_PREFIX,
+  CREDENTIAL_POOL_ORDER_SCOPE_PREFIX,
+  credentialCooldownScope,
+  credentialPoolOrderScope,
+} from "../credentials/types";
 import { safeJsonParse } from "../utils/result";
 import { clientRateLimitBucket as clientRateBucket } from "../security/rate-limit";
 
@@ -142,6 +148,21 @@ const SCHEMA = `
 
   CREATE INDEX IF NOT EXISTS idx_client_requests_client_time ON client_request_events(client_id, timestamp);
   CREATE INDEX IF NOT EXISTS idx_client_requests_app_time ON client_request_events(app_id, timestamp);
+
+  CREATE TABLE IF NOT EXISTS query_event_captures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id TEXT NOT NULL,
+    timestamp INTEGER NOT NULL,
+    stage TEXT NOT NULL,
+    client_id TEXT,
+    app_id TEXT,
+    visibility_tier TEXT NOT NULL,
+    effective_tier TEXT NOT NULL,
+    event_json TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_query_events_request_time ON query_event_captures(request_id, timestamp);
+  CREATE INDEX IF NOT EXISTS idx_query_events_client_time ON query_event_captures(client_id, timestamp);
 
   CREATE TABLE IF NOT EXISTS client_rate_windows (
     client_id TEXT NOT NULL,
@@ -379,6 +400,47 @@ export class ControlPlaneStateDO extends DurableObject {
     this.store!.transaction(() => this.markReservationConfirmed(reservationId));
   }
 
+  async chargePerKeyRpm(
+    keyRef: string,
+    group: string,
+    scopeMode: "global" | "per_key" = "per_key",
+  ): Promise<void> {
+    this.ensureSchema();
+    engine.chargePerKeyRpm(this.store!, keyRef, group, scopeMode);
+  }
+
+  async tryChargePerKeyRpm(
+    keyRef: string,
+    group: string,
+    scopeMode: "global" | "per_key",
+    rpm: number,
+  ): Promise<boolean> {
+    this.ensureSchema();
+    return engine.tryChargePerKeyRpm(this.store!, keyRef, group, scopeMode, rpm);
+  }
+
+  async isPerKeyTokenBudgetAvailable(
+    keyRef: string,
+    group: string,
+    scopeMode: "global" | "per_key",
+    tokenBudgetPerMinute: number,
+  ): Promise<boolean> {
+    this.ensureSchema();
+    return engine.isPerKeyTokenBudgetAvailable(
+      this.store!, keyRef, group, scopeMode, tokenBudgetPerMinute,
+    );
+  }
+
+  async isKeyRpmAvailable(
+    keyRef: string,
+    group: string,
+    scopeMode: "global" | "per_key",
+    rpm: number,
+  ): Promise<boolean> {
+    this.ensureSchema();
+    return engine.isKeyRpmAvailable(this.store!, keyRef, group, scopeMode, rpm);
+  }
+
   async release(reservationId: string): Promise<void> {
     this.ensureSchema();
     engine.release(this.store!, reservationId);
@@ -450,14 +512,32 @@ export class ControlPlaneStateDO extends DurableObject {
         dispatchedAt: row.dispatched_at as number,
       };
     }
-    return {
-      healthScores: Object.fromEntries(scoreRows.map(({ deploymentId, score }) => [deploymentId, mapHealthScoreRow(score)])),
-      circuits: Object.fromEntries(circuits.map((row) => [row.deployment_id as string, mapCircuitRow(row)])),
-      cooldowns: Object.fromEntries(cooldowns.map((row) => [row.scope as string, {
+    const deploymentCooldowns: Record<string, unknown> = {};
+    const credentialCooldowns: Record<string, unknown> = {};
+    const flatCooldowns: Record<string, unknown> = {};
+    for (const row of cooldowns) {
+      const scope = row.scope as string;
+      const entry = {
         reason: row.reason,
         until: row.until,
         details: safeJsonParse(row.details_json as string | null),
-      }])),
+      };
+      flatCooldowns[scope] = entry;
+      if (
+        scope.startsWith(CREDENTIAL_COOLDOWN_SCOPE_PREFIX)
+        || scope.startsWith(CREDENTIAL_POOL_ORDER_SCOPE_PREFIX)
+      ) {
+        credentialCooldowns[scope] = entry;
+      } else {
+        deploymentCooldowns[scope] = entry;
+      }
+    }
+    return {
+      healthScores: Object.fromEntries(scoreRows.map(({ deploymentId, score }) => [deploymentId, mapHealthScoreRow(score)])),
+      circuits: Object.fromEntries(circuits.map((row) => [row.deployment_id as string, mapCircuitRow(row)])),
+      cooldowns: flatCooldowns,
+      deploymentCooldowns,
+      credentialCooldowns,
       inflight: Object.fromEntries(inflight.map((row) => [row.deployment_id as string, {
         count: row.count,
         updatedAt: row.updated_at,
@@ -511,11 +591,94 @@ export class ControlPlaneStateDO extends DurableObject {
     return { group: rows[0].group_name, dispatchedAt: rows[0].dispatched_at };
   }
 
+  // ─── Credential-scoped cooldowns (OAuth / API keys) ─────────────
+
+  async getCredentialCooldown(
+    credentialId: string,
+    now: number = Date.now(),
+  ): Promise<{ until: number; reason: string; requiresRelogin?: boolean } | null> {
+    this.ensureSchema();
+    const scope = credentialCooldownScope(credentialId);
+    const rows = this.ctx.storage.sql.exec(
+      "SELECT until, reason, details_json FROM cooldowns WHERE scope = ? AND until > ?",
+      scope,
+      now,
+    ).toArray();
+    if (rows.length === 0) return null;
+    const details = safeJsonParse(rows[0].details_json as string | null) as Record<string, unknown> | null;
+    return {
+      until: rows[0].until as number,
+      reason: rows[0].reason as string,
+      requiresRelogin: details?.requiresRelogin === true,
+    };
+  }
+
+  async setCredentialCooldown(
+    credentialId: string,
+    failureClass: FailureClass,
+    untilMs: number,
+    details?: { requiresRelogin?: boolean; statusCode?: number },
+  ): Promise<void> {
+    this.ensureSchema();
+    const scope = credentialCooldownScope(credentialId);
+    this.store!.setCooldown(
+      scope,
+      failureClass,
+      untilMs,
+      details ? JSON.stringify(details) : undefined,
+    );
+  }
+
+  async clearCredentialCooldown(credentialId: string): Promise<void> {
+    this.ensureSchema();
+    this.store!.clearCredentialCooldown(credentialId);
+  }
+
+  async getCredentialPoolOrder(
+    deploymentId: string,
+    now: number = Date.now(),
+  ): Promise<string[] | null> {
+    this.ensureSchema();
+    const scope = credentialPoolOrderScope(deploymentId);
+    const rows = this.ctx.storage.sql.exec(
+      "SELECT details_json FROM cooldowns WHERE scope = ? AND until > ?",
+      scope,
+      now,
+    ).toArray();
+    if (rows.length === 0) return null;
+    const details = safeJsonParse(rows[0].details_json as string | null) as { order?: unknown } | null;
+    if (!Array.isArray(details?.order)) return null;
+    const order = details.order.filter((id): id is string => typeof id === "string");
+    return order.length > 0 ? order : null;
+  }
+
+  async setCredentialPoolOrder(deploymentId: string, order: string[]): Promise<void> {
+    this.ensureSchema();
+    const scope = credentialPoolOrderScope(deploymentId);
+    this.store!.setCooldown(
+      scope,
+      "pool_order",
+      Date.now() + 365 * 24 * 60 * 60 * 1000,
+      JSON.stringify({ order }),
+    );
+  }
+
   // ─── Clear cooldowns (admin) ──────────────────────────────────
 
   async clearCooldowns(deploymentId?: string): Promise<void> {
     this.ensureSchema();
     this.store!.clearCooldowns(deploymentId);
+  }
+
+  async clearCredentialCooldownsForDeployment(
+    deploymentId: string,
+    credentialIds: string[],
+  ): Promise<void> {
+    this.ensureSchema();
+    this.store!.clearCooldowns(deploymentId);
+    for (const credentialId of credentialIds) {
+      this.store!.clearCredentialCooldown(credentialId);
+    }
   }
 
   // ─── Token usage recording ────────────────────────────────────
@@ -584,6 +747,73 @@ export class ControlPlaneStateDO extends DurableObject {
       event.finalOutcome, event.stream ? 1 : 0, event.totalDurationMs ?? null,
     );
     this.ctx.storage.sql.exec("DELETE FROM client_request_events WHERE timestamp < ?", Date.now() - 30 * 86400000);
+  }
+
+  async storeQueryEvent(event: {
+    requestId: string;
+    timestamp: number;
+    stage: string;
+    clientId?: string;
+    appId?: string;
+    visibilityTier: string;
+    effectiveTier: string;
+    eventJson: string;
+  }, maxPerRequest: number): Promise<void> {
+    this.ensureSchema();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO query_event_captures
+         (request_id, timestamp, stage, client_id, app_id, visibility_tier, effective_tier, event_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      event.requestId,
+      event.timestamp,
+      event.stage,
+      event.clientId ?? null,
+      event.appId ?? null,
+      event.visibilityTier,
+      event.effectiveTier,
+      event.eventJson,
+    );
+    const cap = Math.max(1, Math.trunc(maxPerRequest));
+    const rows = this.ctx.storage.sql.exec(
+      "SELECT id FROM query_event_captures WHERE request_id = ? ORDER BY timestamp ASC",
+      event.requestId,
+    ).toArray();
+    const excess = rows.length - cap;
+    if (excess > 0) {
+      for (let i = 0; i < excess; i++) {
+        this.ctx.storage.sql.exec("DELETE FROM query_event_captures WHERE id = ?", rows[i]!.id);
+      }
+    }
+    this.ctx.storage.sql.exec("DELETE FROM query_event_captures WHERE timestamp < ?", Date.now() - 7 * 86400000);
+  }
+
+  async queryQueryEvents(filters: {
+    requestId?: string;
+    clientId?: string;
+    appId?: string;
+    stage?: string;
+    effectiveTier?: string;
+    since?: number;
+    until?: number;
+    limit?: number;
+  }): Promise<Record<string, unknown>[]> {
+    this.ensureSchema();
+    const limit = clampLimit(filters.limit, 100, 1000);
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (filters.requestId) { conditions.push("request_id = ?"); params.push(filters.requestId); }
+    if (filters.clientId) { conditions.push("client_id = ?"); params.push(filters.clientId); }
+    if (filters.appId) { conditions.push("app_id = ?"); params.push(filters.appId); }
+    if (filters.stage) { conditions.push("stage = ?"); params.push(filters.stage); }
+    if (filters.effectiveTier) { conditions.push("effective_tier = ?"); params.push(filters.effectiveTier); }
+    if (filters.since) { conditions.push("timestamp >= ?"); params.push(filters.since); }
+    if (filters.until) { conditions.push("timestamp <= ?"); params.push(filters.until); }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    return this.ctx.storage.sql.exec(
+      `SELECT * FROM query_event_captures ${where} ORDER BY timestamp DESC LIMIT ?`,
+      ...params,
+      limit,
+    ).toArray().map(mapQueryEventRow);
   }
 
   async admitClientRequest(req: {
@@ -1107,6 +1337,19 @@ function mapReceiptRow(row: Record<string, unknown>): Record<string, unknown> {
     fallbackGroups: safeJsonParse(row.fallback_groups as string),
     attempts: safeJsonParse(row.attempts_json as string), finalOutcome: row.final_outcome,
     stream: row.stream === 1, totalDurationMs: (row.total_duration_ms as number | null) ?? undefined,
+  };
+}
+
+function mapQueryEventRow(row: Record<string, unknown>): Record<string, unknown> {
+  return {
+    requestId: row.request_id,
+    timestamp: row.timestamp,
+    stage: row.stage,
+    clientId: row.client_id ?? undefined,
+    appId: row.app_id ?? undefined,
+    visibilityTier: row.visibility_tier,
+    effectiveTier: row.effective_tier,
+    event: safeJsonParse(row.event_json as string),
   };
 }
 

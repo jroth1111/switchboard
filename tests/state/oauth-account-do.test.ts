@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:test";
 import type { DurableObjectStub } from "cloudflare:workers";
 import type { OAuthAccountDO } from "../../src/state/oauth-account";
+import { getChatGPTAuthMaterial } from "../../src/providers/chatgpt-subscription-storage";
 
 function getOAuthStub(name: string): DurableObjectStub<OAuthAccountDO> {
   const id = env.OAUTH_ACCOUNT.idFromName(name);
@@ -146,5 +147,26 @@ describe("OAuthAccountDO token storage", () => {
       hasRefreshToken: false,
       expired: true,
     }));
+  });
+});
+
+describe("ChatGPT subscription OAuth storage", () => {
+  it("lazy-seeds structured auth JSON from env into the DO", async () => {
+    const stub = getOAuthStub(`chatgpt-seed-${Date.now()}`);
+    const authJson = JSON.stringify({
+      access_token: "access-from-env",
+      refresh_token: "refresh-from-env",
+      id_token: "id-from-env",
+      account_id: "acct-env",
+    });
+    const env = { CHATGPT_AUTH_JSON: authJson };
+
+    const material = await getChatGPTAuthMaterial(stub, "CHATGPT_AUTH_JSON", env);
+    expect(material).toContain("access-from-env");
+
+    const stored = await stub.getToken("CHATGPT_AUTH_JSON");
+    expect(stored?.accessToken).toContain("access-from-env");
+    const metadata = await stub.getMetadata("CHATGPT_AUTH_JSON");
+    expect(metadata?.provider).toBe("chatgpt_subscription");
   });
 });

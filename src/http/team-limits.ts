@@ -14,6 +14,53 @@ export interface ClientAdmissionLimits {
   teamTokenBudgetPerMinute: number | null;
 }
 
+export function parseSegmentAliases(raw: string | undefined): Map<string, string> {
+  const aliases = new Map<string, string>();
+  if (!raw?.trim()) return aliases;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return aliases;
+  }
+  const rawAliases = (parsed as { segmentAliases?: unknown }).segmentAliases;
+  if (!rawAliases || typeof rawAliases !== "object" || Array.isArray(rawAliases)) return aliases;
+  for (const [alias, teamId] of Object.entries(rawAliases as Record<string, unknown>)) {
+    const normalizedAlias = alias.trim();
+    const normalizedTeamId = typeof teamId === "string" ? teamId.trim() : "";
+    if (normalizedAlias && normalizedTeamId) {
+      aliases.set(normalizedAlias, normalizedTeamId);
+    }
+  }
+  return aliases;
+}
+
+export function validateSegmentAliases(
+  raw: string | undefined,
+  teams: Map<string, TeamLimits>,
+): Array<{ code: string; message: string }> {
+  const issues: Array<{ code: string; message: string }> = [];
+  for (const [alias, teamId] of parseSegmentAliases(raw)) {
+    if (!teams.has(teamId)) {
+      issues.push({
+        code: "client_keys_segment_alias_orphan",
+        message: `segmentAliases.${alias} maps to unknown team "${teamId}"`,
+      });
+    }
+  }
+  return issues;
+}
+
+export function resolveRateLimitTeamSegment(
+  rawSegment: string | undefined,
+  teams: Map<string, TeamLimits>,
+  aliases: Map<string, string>,
+): string | undefined {
+  if (!rawSegment?.trim()) return undefined;
+  const resolvedId = aliases.get(rawSegment.trim()) ?? rawSegment.trim();
+  return teams.has(resolvedId) ? resolvedId : undefined;
+}
+
 export function parseTeamLimits(raw: string | undefined): Map<string, TeamLimits> {
   const teams = new Map<string, TeamLimits>();
   if (!raw?.trim()) return teams;

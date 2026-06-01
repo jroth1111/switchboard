@@ -21,13 +21,46 @@ import {
   handleNimFailures,
   handleAdminCanaryTrigger,
   handleAdminCanaryResults,
+  handleAdminQueryEvents,
 } from "./http/handler";
 import { authenticateProxyClient, visibleModelsForClient, type ClientIdentity } from "./http/client-policy";
+import { checkRateLimit, extractClientIp, isStrictUnknownClientIp } from "./security/rate-limit";
 import { runCanaryProbes, reapAllLeases, type CanaryHealthSnapshot, type CanaryHistoryRow } from "./probes/canary";
 
 export { ControlPlaneStateDO, OAuthAccountDO };
 
 const CONTROL_PLANE_STATE_NAME = "control-plane";
+
+function ipRateLimitEnabled(env: Env): boolean {
+  const flag = (env as { SWITCHBOARD_IP_RATE_LIMIT_ENABLED?: string }).SWITCHBOARD_IP_RATE_LIMIT_ENABLED;
+  return flag !== "false" && flag !== "0";
+}
+
+function ipRateLimitResponse(
+  request: Request,
+  env: Env,
+  bucket: "models" | "inference" = "inference",
+): Response | null {
+  if (!ipRateLimitEnabled(env)) return null;
+  const ip = extractClientIp(request);
+  if (isStrictUnknownClientIp(ip)) return null;
+  const result = checkRateLimit(`ip:${ip}:${bucket}`);
+  if (result.allowed) return null;
+  const retryAfterSec = Math.max(1, Math.ceil((result.resetAt - Date.now()) / 1000));
+  return new Response(JSON.stringify({
+    error: {
+      message: "IP rate limit exceeded",
+      type: "rate_limit",
+      code: "ip_rate_limit_exceeded",
+    },
+  }), {
+    status: 429,
+    headers: {
+      "Content-Type": "application/json",
+      "Retry-After": String(retryAfterSec),
+    },
+  });
+}
 
 // Validate manifest at module load time — catches misconfigurations early.
 const manifestIssues = validateManifest(MANIFEST);
@@ -44,6 +77,10 @@ const CORS_HEADERS = {
     "Content-Type",
     "X-Switchboard-User-Hash",
     "X-Switchboard-User-Signature",
+    "X-Switchboard-RateLimit-Segment",
+    "Helicone-RateLimit-Policy",
+    "Helicone-Property-Tenant",
+    "Helicone-User-Id",
   ].join(", "),
   "Access-Control-Expose-Headers": [
     "X-Request-Id",
@@ -98,6 +135,8 @@ export default {
         response = await handleAdminReceipts(request, env);
       } else if (path === "/admin/client-requests" && request.method === "GET") {
         response = await handleAdminClientRequests(request, env);
+      } else if (path === "/admin/query-events" && request.method === "GET") {
+        response = await handleAdminQueryEvents(request, env);
       } else if (path === "/admin/cooldowns/clear" && request.method === "POST") {
         response = await handleAdminClearCooldowns(request, env);
       } else if (path === "/admin/usage" && request.method === "GET") {
@@ -113,19 +152,27 @@ export default {
         });
       }
     } else if ((path === "/models" || path === "/v1/models") && request.method === "GET") {
-      const auth = await authenticateProxyClient(request, env);
-      if (!auth.ok) {
-        response = new Response(JSON.stringify({ error: auth.error }), {
-          status: auth.status,
-          headers: { "Content-Type": "application/json" },
-        });
+      const limited = ipRateLimitResponse(request, env, "models");
+      if (limited) {
+        response = limited;
       } else {
-        response = handleModelsList(auth.client);
+        const auth = await authenticateProxyClient(request, env);
+        if (!auth.ok) {
+          response = new Response(JSON.stringify({ error: auth.error }), {
+            status: auth.status,
+            headers: { "Content-Type": "application/json" },
+          });
+        } else {
+          response = handleModelsList(auth.client);
+        }
       }
     } else if (
       request.method === "POST" &&
       (path === "/chat/completions" || path === "/v1/chat/completions")
     ) {
+      const limited = ipRateLimitResponse(request, env);
+      if (limited) return withCors(limited);
+
       const auth = await authenticateProxyClient(request, env);
       if (!auth.ok) {
         return withCors(new Response(JSON.stringify({ error: auth.error }), {
@@ -136,6 +183,9 @@ export default {
 
       response = await handleChatCompletions(request, env, ctx, auth.client);
     } else if (request.method === "POST" && path === "/v1/responses") {
+      const limited = ipRateLimitResponse(request, env);
+      if (limited) return withCors(limited);
+
       const auth = await authenticateProxyClient(request, env);
       if (!auth.ok) {
         return withCors(new Response(JSON.stringify({ error: auth.error }), {

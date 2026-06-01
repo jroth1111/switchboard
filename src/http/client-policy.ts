@@ -1,4 +1,5 @@
 import { MANIFEST } from "../config/manifest";
+import type { Deployment, FreeTier } from "../config/schema";
 import { canonicalize, type ExecutionPlan } from "../planner/planner";
 import { getBearerToken, timingSafeEqual } from "./auth";
 import {
@@ -15,7 +16,7 @@ export interface ClientPolicy {
   allowedModels?: string[];
   deniedModels?: string[];
   deniedRouteGroups?: string[];
-  /** VibeProxy-style provider -> model ids or "*" to hide subscription-backed routes. */
+  /** Provider -> model ids or "*" to hide subscription-backed routes from /v1/models. */
   oauthExcludedModels?: Record<string, string[]>;
   allowHiddenRoutes?: boolean;
   rpmLimit?: number;
@@ -139,18 +140,31 @@ export function applyClientPolicyToPlan(plan: ExecutionPlan, client: ClientIdent
 export function visibleModelsForClient(client: ClientIdentity): Array<{
   id: string; object: "model"; created: number; owned_by: string;
   label: string; category: string; capabilities: string[];
+  billing_class: string;
+  free_tier?: string;
+  metadata: { billing_class: string; free_tier?: string };
 }> {
   return Object.entries(MANIFEST.aliases)
     .filter(([alias]) => authorizeModelForClient(alias, client).allowed)
-    .map(([alias, target]) => ({
-      id: alias,
-      object: "model" as const,
-      created: 0,
-      owned_by: "control-plane",
-      label: modelLabel(alias, target),
-      category: modelCategory(alias, target),
-      capabilities: modelCapabilities(target),
-    }));
+    .map(([alias, target]) => {
+      const freeTier = modelFreeTier(alias, target);
+      const billingClass = modelBillingClass(target);
+      return {
+        id: alias,
+        object: "model" as const,
+        created: 0,
+        owned_by: "control-plane",
+        label: modelLabel(alias, target),
+        category: modelCategory(alias, target),
+        capabilities: modelCapabilities(target),
+        billing_class: billingClass,
+        metadata: {
+          billing_class: billingClass,
+          ...(freeTier ? { free_tier: freeTier } : {}),
+        },
+        ...(freeTier ? { free_tier: freeTier } : {}),
+      };
+    });
 }
 
 function parseClientKeys(raw: string | undefined): ParsedClientConfig[] {
@@ -295,6 +309,45 @@ function modelCategory(alias: string, target: string): string {
   if (lower.includes("reason") || lower.includes("high") || lower.includes("max")) return "reasoning";
   if (lower.includes("nim") || lower.includes("minimax")) return "low-latency";
   return "general";
+}
+
+function deploymentsForRouteTarget(target: string): Deployment[] {
+  const direct = MANIFEST.deploymentsByGroup[target];
+  if (direct && direct.length > 0) return direct;
+  const group = MANIFEST.routeGroups[target];
+  if (!group) return direct ?? [];
+  const seen = new Set<string>();
+  const out: Deployment[] = [];
+  for (const name of [target, ...(group.fallbacks ?? [])]) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const batch = MANIFEST.deploymentsByGroup[name];
+    if (batch?.length) out.push(...batch);
+  }
+  return out;
+}
+
+function modelFreeTier(alias: string, target: string): FreeTier | undefined {
+  if (modelBillingClass(target) !== "free") return undefined;
+  const deployments = deploymentsForRouteTarget(target);
+  if (deployments.length === 0) return undefined;
+  const byAlias = deployments.find((d) => d.providerModel === alias || d.model === alias);
+  if (byAlias?.freeTier) return byAlias.freeTier;
+  const tiers = deployments.map((d) => d.freeTier).filter((tier): tier is FreeTier => Boolean(tier));
+  if (tiers.length === 0) return undefined;
+  const unique = new Set(tiers);
+  if (unique.size === 1) return tiers[0];
+  return undefined;
+}
+
+function modelBillingClass(target: string): string {
+  const rg = MANIFEST.routeGroups[target];
+  if (rg?.billingClass) return rg.billingClass;
+  if (target === "free" || target.startsWith("free-") || target.startsWith("nim-")) return "free";
+  if (target.includes("subscription") || target === "smart-route-worker" || target.startsWith("zai-")) {
+    return "subscription";
+  }
+  return "subscription";
 }
 
 function modelCapabilities(target: string): string[] {

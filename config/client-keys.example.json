@@ -1,4 +1,7 @@
 {
+  "segmentAliases": {
+    "acme-corp": "engineering"
+  },
   "teams": {
     "engineering": {
       "rpmLimit": 500,

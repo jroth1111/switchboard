@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import worker from "../../src/index";
+import { checkRateLimit } from "../../src/security/rate-limit";
+import { TEST_CLIENT_BEARER, testClientKeysJson } from "../helpers/client-fixtures";
 import {
   verifyProxyAuth,
   verifyAdminAuth,
   handleAdminUsage,
   handleAdminClientRequests,
+  handleAdminQueryEvents,
   handleAdminCanaryResults,
   handleChatCompletions,
   handleNimFailures,
@@ -29,6 +32,7 @@ import {
   type RequestEnvelope,
 } from "../../src/planner/planner";
 import { MANIFEST } from "../../src/config/manifest";
+import { ROUTING_ONLY_ROUTE_GROUPS } from "../../src/config/validate-manifest";
 import type { ControlPlaneStateDO } from "../../src/state/control-plane-state";
 
 function makeEnvelope(overrides: Partial<RequestEnvelope> = {}): RequestEnvelope {
@@ -89,7 +93,22 @@ function createRouteTestEnv() {
     storeUsageEvent: vi.fn(async () => {}),
     storeReceipt,
     storeClientRequest,
+    storeQueryEvent: vi.fn(async () => {}),
     storeFailedRequest: vi.fn(async () => {}),
+  };
+  const chatgptAuthJson = JSON.stringify({
+    access_token: "chatgpt-token",
+    refresh_token: "chatgpt-refresh-token",
+    id_token: "chatgpt-id-token",
+  });
+  const chatgptOAuthAccessor = {
+    getToken: vi.fn(async () => ({
+      accessToken: chatgptAuthJson,
+      expiresAt: Date.now() + 3600000,
+    })),
+    setToken: vi.fn(),
+    acquireRefreshLock: vi.fn(),
+    releaseRefreshLock: vi.fn(),
   };
   const env = {
     CHATGPT_AUTH_JSON: JSON.stringify({
@@ -109,6 +128,10 @@ function createRouteTestEnv() {
     CONTROL_PLANE_STATE: {
       idFromName: vi.fn(() => "control-plane-id"),
       get: vi.fn(() => stateDo),
+    },
+    OAUTH_ACCOUNT: {
+      idFromName: vi.fn(() => "oauth-id"),
+      get: vi.fn(() => chatgptOAuthAccessor),
     },
   } as unknown as Env;
   return { env, stateDo, storeReceipt, storeClientRequest };
@@ -657,6 +680,107 @@ describe("Auth middleware", () => {
     }));
   });
 
+  it("ignores rate limit segment when it does not match a configured team", async () => {
+    const admitClientRequest = vi.fn(async () => ({
+      admitted: false,
+      reservationId: "client-reservation-1",
+      reason: "client_rpm_exceeded",
+    }));
+    const storeReceipt = vi.fn(async () => {});
+    const storeClientRequest = vi.fn(async () => {});
+    const storeFailedRequest = vi.fn(async () => {});
+    const stateDo = { admitClientRequest, storeReceipt, storeClientRequest, storeFailedRequest };
+    const env = {
+      CLIENT_KEYS_JSON: JSON.stringify({
+        teams: { engineering: { rpmLimit: 100 } },
+        clients: [],
+      }),
+      CONTROL_PLANE_STATE: {
+        idFromName: vi.fn(() => "control-plane"),
+        get: vi.fn(() => stateDo),
+      },
+    } as unknown as Env;
+    await handleChatCompletions(
+      new Request("https://example.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Switchboard-RateLimit-Segment": "unknown-tenant",
+        },
+        body: JSON.stringify({
+          model: "smart-route",
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      env,
+      { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as unknown as ExecutionContext,
+      {
+        clientId: "hermes-alice",
+        appId: "hermes",
+        userHash: "user-hash",
+        policyId: "hermes-basic",
+        policyVersion: "hermes-basic:v1",
+        policy: { allowedModels: ["smart-route"] },
+        authSource: "client_keys_json",
+      },
+    );
+
+    expect(admitClientRequest).toHaveBeenCalledWith(expect.objectContaining({
+      rateLimitSegment: undefined,
+    }));
+  });
+
+  it("applies rate limit segment when alias maps to a configured team", async () => {
+    const admitClientRequest = vi.fn(async () => ({
+      admitted: false,
+      reservationId: "client-reservation-1",
+      reason: "client_rpm_exceeded",
+    }));
+    const storeReceipt = vi.fn(async () => {});
+    const storeClientRequest = vi.fn(async () => {});
+    const storeFailedRequest = vi.fn(async () => {});
+    const stateDo = { admitClientRequest, storeReceipt, storeClientRequest, storeFailedRequest };
+    const env = {
+      CLIENT_KEYS_JSON: JSON.stringify({
+        segmentAliases: { "acme-corp": "engineering" },
+        teams: { engineering: { rpmLimit: 100 } },
+        clients: [],
+      }),
+      CONTROL_PLANE_STATE: {
+        idFromName: vi.fn(() => "control-plane"),
+        get: vi.fn(() => stateDo),
+      },
+    } as unknown as Env;
+    await handleChatCompletions(
+      new Request("https://example.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Switchboard-RateLimit-Segment": "acme-corp",
+        },
+        body: JSON.stringify({
+          model: "smart-route",
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      }),
+      env,
+      { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as unknown as ExecutionContext,
+      {
+        clientId: "hermes-alice",
+        appId: "hermes",
+        userHash: "user-hash",
+        policyId: "hermes-basic",
+        policyVersion: "hermes-basic:v1",
+        policy: { allowedModels: ["smart-route"] },
+        authSource: "client_keys_json",
+      },
+    );
+
+    expect(admitClientRequest).toHaveBeenCalledWith(expect.objectContaining({
+      rateLimitSegment: "engineering",
+    }));
+  });
+
   it("keeps hidden routes unavailable unless policy explicitly allows them", async () => {
     const req = new Request("https://example.com", {
       headers: { Authorization: "Bearer client-token" },
@@ -711,6 +835,28 @@ describe("Worker HTTP surface", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("Access-Control-Allow-Headers")).toContain("X-Switchboard-User-Hash");
     expect(response.headers.get("Access-Control-Allow-Headers")).toContain("X-Switchboard-User-Signature");
+  });
+
+  it("returns 429 when isolate-local IP rate limit is exhausted on proxy routes", async () => {
+    const ip = "203.0.113.77";
+    for (let i = 0; i < 121; i++) {
+      checkRateLimit(`ip:${ip}:models`, { windowMs: 60_000, maxRequests: 120 });
+    }
+
+    const response = await worker.fetch(
+      new Request("https://example.com/v1/models", {
+        headers: {
+          Authorization: `Bearer ${TEST_CLIENT_BEARER}`,
+          "CF-Connecting-IP": ip,
+        },
+      }),
+      { CLIENT_KEYS_JSON: testClientKeysJson() } as Env,
+      routeContext(),
+    );
+
+    expect(response.status).toBe(429);
+    const body = await response.json() as { error: { code?: string } };
+    expect(body.error.code).toBe("ip_rate_limit_exceeded");
   });
 
   it("exposes policy and route headers to browser clients", async () => {
@@ -1139,6 +1285,7 @@ describe("Admin usage", () => {
       expect(body.rollupSince).toBe(Date.UTC(2026, 4, 24, 3, 0, 0));
       expect((body.totals as Record<string, number>).requests).toBe(2);
       expect((body.totals as Record<string, number>).estimatedCostUsd).toBeCloseTo(0.05);
+      expect(body.cost_estimate_source).toBe("heuristic");
     } finally {
       vi.useRealTimers();
     }
@@ -1279,6 +1426,38 @@ describe("Admin client requests", () => {
       until: undefined,
       limit: 100,
     });
+  });
+});
+
+describe("Admin query events", () => {
+  it("queries stored query events with filters", async () => {
+    const queryQueryEvents = vi.fn(async () => [{ requestId: "req-1", stage: "incoming" }]);
+    const stateDo = { queryQueryEvents };
+    const env = {
+      CONTROL_PLANE_STATE: {
+        idFromName: vi.fn(() => "control-plane-id"),
+        get: vi.fn(() => stateDo),
+      },
+    } as unknown as Env;
+
+    const response = await handleAdminQueryEvents(
+      new Request("https://example.test/admin/query-events?client_id=hermes-alice&stage=incoming&effective_tier=shape&limit=5"),
+      env,
+    );
+    const body = await response.json() as { events: unknown[]; total: number };
+
+    expect(response.status).toBe(200);
+    expect(queryQueryEvents).toHaveBeenCalledWith({
+      clientId: "hermes-alice",
+      appId: undefined,
+      requestId: undefined,
+      stage: "incoming",
+      effectiveTier: "shape",
+      since: undefined,
+      until: undefined,
+      limit: 5,
+    });
+    expect(body.total).toBe(1);
   });
 });
 
@@ -1611,7 +1790,7 @@ describe("Manifest integrity", () => {
   it("all primary alias target groups have deployments", () => {
     // Check that groups which are direct alias targets have deployments,
     // excluding groups that are known to be routing-only (no direct deployments)
-    const routingOnlyGroups = new Set(["nim-secondary"]);
+    const routingOnlyGroups = ROUTING_ONLY_ROUTE_GROUPS;
 
     for (const [alias, target] of Object.entries(MANIFEST.aliases)) {
       const rg = MANIFEST.routeGroups[target];

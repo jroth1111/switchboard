@@ -148,6 +148,93 @@ describe("Client IP extraction", () => {
     expect(extractRateLimitSegment(req)).toBe("team-alpha");
   });
 
+  it("caps rate limit segment at 128 characters", () => {
+    const long = "a".repeat(200);
+    const req = new Request("https://example.com", {
+      headers: { "X-Switchboard-RateLimit-Segment": long },
+    });
+    expect(extractRateLimitSegment(req)).toBe("a".repeat(128));
+  });
+
+  it("prefers Switchboard segment over Helicone policy headers", () => {
+    const req = new Request("https://example.com", {
+      headers: {
+        "X-Switchboard-RateLimit-Segment": "direct-segment",
+        "Helicone-RateLimit-Policy": "s=tenant",
+        "Helicone-Property-Tenant": "policy-tenant",
+      },
+    });
+    expect(extractRateLimitSegment(req)).toBe("direct-segment");
+  });
+
+  it("extracts segment from Helicone policy s=tenant", () => {
+    const req = new Request("https://example.com", {
+      headers: {
+        "Helicone-RateLimit-Policy": "quota=100;w=60;s=tenant",
+        "Helicone-Property-Tenant": "acme-corp",
+      },
+    });
+    expect(extractRateLimitSegment(req)).toBe("acme-corp");
+  });
+
+  it("extracts segment from Helicone policy s=user", () => {
+    const req = new Request("https://example.com", {
+      headers: {
+        "Helicone-RateLimit-Policy": "s=user",
+        "Helicone-User-Id": "user-42",
+      },
+    });
+    expect(extractRateLimitSegment(req)).toBe("user-42");
+  });
+
+  it("extracts segment from Helicone policy with custom scope via TitleCase property header", () => {
+    const req = new Request("https://example.com", {
+      headers: {
+        "Helicone-RateLimit-Policy": "s=workspace",
+        "Helicone-Property-Workspace": "ws-9",
+      },
+    });
+    expect(extractRateLimitSegment(req)).toBe("ws-9");
+  });
+
+  it("falls back to raw Helicone property header for custom scope", () => {
+    const req = new Request("https://example.com", {
+      headers: {
+        "Helicone-RateLimit-Policy": "s=workspace",
+        "Helicone-Property-workspace": "ws-raw",
+      },
+    });
+    expect(extractRateLimitSegment(req)).toBe("ws-raw");
+  });
+
+  it("prefers Helicone policy segment over direct property headers", () => {
+    const req = new Request("https://example.com", {
+      headers: {
+        "Helicone-RateLimit-Policy": "s=user",
+        "Helicone-User-Id": "policy-user",
+        "Helicone-Property-Tenant": "fallback-tenant",
+      },
+    });
+    expect(extractRateLimitSegment(req)).toBe("policy-user");
+  });
+
+  it("does not fall back when policy scope header is missing", () => {
+    const req = new Request("https://example.com", {
+      headers: {
+        "Helicone-RateLimit-Policy": "s=user",
+        "Helicone-Property-Tenant": "fallback-tenant",
+      },
+    });
+    expect(extractRateLimitSegment(req)).toBeUndefined();
+  });
+
+  it("falls back to Helicone property headers without policy", () => {
+    const req = new Request("https://example.com", {
+      headers: { "Helicone-Property-Tenant": "tenant-direct" },
+    });
+    expect(extractRateLimitSegment(req)).toBe("tenant-direct");
+  });
+
   it("builds composite client rate bucket", () => {
     expect(clientRateLimitBucket("abc", "tenant-1")).toBe("abc|tenant-1");
     expect(clientRateLimitBucket(undefined, "tenant-1")).toBe("tenant-1");

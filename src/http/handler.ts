@@ -8,7 +8,7 @@ import { failureClassToOpenAIError } from "../providers/openai-error-shape";
 import { executeAttemptLoop } from "../attempts/attempt-loop";
 import { validateResponsesContract } from "../providers/chatgpt-responses";
 import { sanitizeClientMetadata, signMetadata } from "../security/internal-metadata";
-import { recordReceipt, sanitizeReceipt, type RouteReceipt } from "../observability/receipt";
+import { recordReceipt, sanitizeReceipt, type ReceiptAttempt, type RouteReceipt } from "../observability/receipt";
 import { readJsonBodyWithLimit, validateBodySize, validateChatRequest, validateContentType, validateResponsesRequest } from "./validation";
 import { verifyAdminAuth } from "./auth";
 export { verifyProxyAuth, verifyAdminAuth } from "./auth";
@@ -27,8 +27,19 @@ import {
   type ClientIdentity,
 } from "./client-policy";
 import { extractRequestMetadata } from "../observability/request-metadata";
+import {
+  buildQueryEvent,
+  isQueryCaptureEnabled,
+  parseQueryCaptureMaxEvents,
+  resolveQueryCaptureConfig,
+  sanitizeQueryEventBody,
+  type QueryEventStage,
+} from "../observability/query-events";
 import { parseOAuthAccountList } from "../providers/oauth-account-pool";
+import { buildChatGPTOAuthAccessor } from "../providers/chatgpt-subscription-storage";
+import { resolvedCredentialIds } from "../credentials/manifest-ids";
 import { extractRateLimitSegment } from "../security/rate-limit";
+import { parseSegmentAliases, resolveRateLimitTeamSegment } from "./team-limits";
 
 const CONTROL_PLANE_STATE_NAME = "control-plane";
 const HOUR_MS = 3600000;
@@ -261,7 +272,14 @@ async function handlePreparedModelRequest(params: {
 
   // Plan from static manifest and durable state effects only. Process-local
   // recovery memory is not authoritative in Workers.
-  let plan = planRequest(envelope);
+  const shadowLog = env.SMART_ROUTE_SHADOW_LOG === "true";
+  let plan = planRequest(envelope, Date.now(), { shadowLog });
+  if (plan?.smartRouteShadow) {
+    logInfo("smart_route_shadow", {
+      requestId,
+      ...plan.smartRouteShadow,
+    });
+  }
   if (!plan) {
     return errorResponse({
       message: surface === "responses" ? `Model does not support /v1/responses: ${model}` : `Unknown model: ${model}`,
@@ -271,7 +289,9 @@ async function handlePreparedModelRequest(params: {
   }
   plan = applyClientPolicyToPlan(plan, client);
 
-  // Apply transforms (strip unsupported params, clamp tokens, strip reasoning, etc.)
+  const stateId = env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME);
+  const stateDo = env.CONTROL_PLANE_STATE.get(stateId);
+  const incomingBody = envelope.body;
   envelope.body = applyTransforms(envelope.body, plan.transforms);
 
   // Sign internal metadata for response integrity
@@ -288,14 +308,11 @@ async function handlePreparedModelRequest(params: {
     routeVersion: ROUTE_MANIFEST_VERSION,
   };
   const metaSignature = signingKey ? await signMetadata(metaPayload, signingKey) : undefined;
-
-  // Get state DO (shard by selected group for balance)
-  const stateId = env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME);
-  const stateDo = env.CONTROL_PLANE_STATE.get(stateId);
   const subscriptionCtx = buildSubscriptionContext(env);
   const teams = parseTeamLimits(env.CLIENT_KEYS_JSON);
+  const aliases = parseSegmentAliases(env.CLIENT_KEYS_JSON);
   const rawSegment = extractRateLimitSegment(request);
-  const rateLimitSegment = (rawSegment && teams.has(rawSegment)) ? rawSegment : undefined;
+  const rateLimitSegment = resolveRateLimitTeamSegment(rawSegment, teams, aliases);
   const admissionLimits = resolveClientAdmissionLimits(client.policy, teams);
   const clientAdmission = await (stateDo as unknown as ControlPlaneStateDO).admitClientRequest({
     requestId,
@@ -344,6 +361,27 @@ async function handlePreparedModelRequest(params: {
     }, 429, requestId, client);
   }
 
+  const queryCaptureBase = {
+    env,
+    stateDo: stateDo as unknown as ControlPlaneStateDO,
+    requestId,
+    surface,
+    originalModel: envelope.originalModel,
+    client,
+    requestMetadata,
+    plan,
+  };
+  ctx.waitUntil(scheduleQueryEventCapture({
+    ...queryCaptureBase,
+    stage: "incoming",
+    body: incomingBody,
+  }).catch((err) => logWarn("query_event_capture_failed", { requestId, error: String(err) })));
+  ctx.waitUntil(scheduleQueryEventCapture({
+    ...queryCaptureBase,
+    stage: "post_transform",
+    body: envelope.body,
+  }).catch((err) => logWarn("query_event_capture_failed", { requestId, error: String(err) })));
+
   let admissionReleased = false;
   const releaseAdmission = () => {
     if (admissionReleased) return;
@@ -385,6 +423,7 @@ async function handlePreparedModelRequest(params: {
           ? "client_error"
           : "exhausted";
 
+  const billingProps = billingPropertiesForReceipt(plan.selectedGroup, result.attempts);
   const receipt: RouteReceipt = {
     requestId: envelope.requestId,
     timestamp: Date.now(),
@@ -404,6 +443,10 @@ async function handlePreparedModelRequest(params: {
     stream: envelope.stream,
     totalDurationMs: result.attempts.reduce((sum, a) => sum + a.durationMs, 0),
     ...requestMetadata,
+    properties: {
+      ...requestMetadata.properties,
+      ...billingProps,
+    },
   };
 
   recordReceipt(receipt);
@@ -457,6 +500,57 @@ async function handlePreparedModelRequest(params: {
     result.failureMessage ?? "all attempts exhausted",
   );
   return errorResponse(exhausted, 502, requestId, client);
+}
+
+async function scheduleQueryEventCapture(params: {
+  env: Env;
+  stateDo: ControlPlaneStateDO;
+  requestId: string;
+  stage: QueryEventStage;
+  surface: Surface;
+  body: unknown;
+  originalModel: string;
+  client: ClientIdentity;
+  requestMetadata: ReturnType<typeof extractRequestMetadata>;
+  plan: { canonicalTarget: string; selectedGroup: string };
+}): Promise<void> {
+  if (!isQueryCaptureEnabled(params.env)) return;
+  const config = resolveQueryCaptureConfig(
+    params.env,
+    params.client.policy.allowHiddenRoutes === true,
+  );
+  const payload = await buildQueryEvent({
+    requestId: params.requestId,
+    stage: params.stage,
+    surface: params.surface,
+    body: params.body,
+    config,
+    clientId: params.client.clientId,
+    appId: params.client.appId,
+    userHash: params.client.userHash,
+    policyId: params.client.policyId,
+    policyVersion: params.client.policyVersion,
+    routeVersion: ROUTE_MANIFEST_VERSION,
+    sessionId: params.requestMetadata.sessionId,
+    traceId: params.requestMetadata.traceId,
+    properties: params.requestMetadata.properties,
+    originalModel: params.originalModel,
+    canonicalTarget: params.plan.canonicalTarget,
+    selectedGroup: params.plan.selectedGroup,
+  });
+  const sanitized = sanitizeQueryEventBody(payload.event);
+  const max = parseQueryCaptureMaxEvents(params.env);
+  const store = params.stateDo.storeQueryEvent?.({
+    requestId: payload.requestId,
+    timestamp: payload.timestamp,
+    stage: payload.stage,
+    clientId: payload.clientId,
+    appId: payload.appId,
+    visibilityTier: payload.visibilityTier,
+    effectiveTier: payload.effectiveTier,
+    eventJson: JSON.stringify(sanitized),
+  }, max);
+  if (store) await store;
 }
 
 function waitUntilLogged(ctx: ExecutionContext, promise: Promise<unknown>, event: string): void {
@@ -594,7 +688,7 @@ export async function handleAdminHealth(
 
   const stateId = env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME);
   const stateDo = env.CONTROL_PLANE_STATE.get(stateId);
-  const report = await buildHealthReport(stateDo);
+  const report = await buildHealthReport(stateDo, env as unknown as Record<string, unknown>);
   return jsonResponse(report);
 }
 
@@ -615,6 +709,36 @@ export async function handleAdminReceipts(
   }
   const recent = await receiptDo.getRecentReceipts();
   return jsonResponse(recent.map((r) => sanitizeReceipt(r)));
+}
+
+export async function handleAdminQueryEvents(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  const url = new URL(request.url);
+  const clientId = url.searchParams.get("client_id") ?? undefined;
+  const appId = url.searchParams.get("app_id") ?? undefined;
+  const requestId = url.searchParams.get("request_id") ?? undefined;
+  const stage = url.searchParams.get("stage") ?? undefined;
+  const effectiveTier = url.searchParams.get("effective_tier") ?? undefined;
+  const sinceParam = optionalFiniteQueryNumber(url.searchParams.get("since"));
+  const untilParam = optionalFiniteQueryNumber(url.searchParams.get("until"));
+  const limit = boundedQueryLimit(url.searchParams.get("limit"), 100, 1000);
+
+  const stateDo = env.CONTROL_PLANE_STATE.get(
+    env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME),
+  ) as unknown as ControlPlaneStateDO;
+  const events = await stateDo.queryQueryEvents({
+    clientId,
+    appId,
+    requestId,
+    stage,
+    effectiveTier,
+    since: sinceParam,
+    until: untilParam,
+    limit,
+  });
+  return jsonResponse({ events, total: events.length });
 }
 
 export async function handleAdminClientRequests(
@@ -651,18 +775,44 @@ export async function handleAdminClearCooldowns(
 ): Promise<Response> {
   const url = new URL(request.url);
   const deploymentId = url.searchParams.get("deployment_id") ?? undefined;
+  const credentialId = url.searchParams.get("credential_id") ?? undefined;
+  const includeCredentials = url.searchParams.get("include_credentials") === "true";
+
+  const stateId = env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME);
+  const stateDo = env.CONTROL_PLANE_STATE.get(stateId) as unknown as ControlPlaneStateDO;
+
+  if (credentialId) {
+    await stateDo.clearCredentialCooldown(credentialId);
+    return jsonResponse({ ok: true, cleared: { credentialId } });
+  }
+
+  if (includeCredentials && !deploymentId) {
+    return jsonResponse(
+      { error: "deployment_id is required when include_credentials=true" },
+      400,
+    );
+  }
 
   if (deploymentId) {
     const allDeployments = Object.values(MANIFEST.deploymentsByGroup).flat();
-    if (!allDeployments.some((d) => d.id === deploymentId)) {
+    const deployment = allDeployments.find((d) => d.id === deploymentId);
+    if (!deployment) {
       return jsonResponse({ error: "unknown deployment_id" }, 400);
     }
+    if (includeCredentials) {
+      const credentialIds = await resolvedCredentialIds(
+        deployment,
+        env as unknown as Record<string, unknown>,
+      );
+      await stateDo.clearCredentialCooldownsForDeployment(deploymentId, credentialIds);
+    } else {
+      await stateDo.clearCooldowns(deploymentId);
+    }
+    return jsonResponse({ ok: true, cleared: { deploymentId, includeCredentials } });
   }
 
-  const stateId = env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME);
-  const stateDo = env.CONTROL_PLANE_STATE.get(stateId);
-  await stateDo.clearCooldowns(deploymentId);
-  return jsonResponse({ ok: true });
+  await stateDo.clearCooldowns();
+  return jsonResponse({ ok: true, cleared: "all" });
 }
 
 export async function handleAdminCanaryTrigger(
@@ -821,6 +971,7 @@ export async function handleAdminUsage(
     until,
     totals,
     byGroup: rollups,
+    cost_estimate_source: "heuristic",
   });
 }
 
@@ -863,7 +1014,7 @@ export async function handleNimHealth(
 
   const stateId = env.CONTROL_PLANE_STATE.idFromName(CONTROL_PLANE_STATE_NAME);
   const stateDo = env.CONTROL_PLANE_STATE.get(stateId);
-  const report = await buildHealthReport(stateDo);
+  const report = await buildHealthReport(stateDo, env as unknown as Record<string, unknown>);
   return jsonResponse(report);
 }
 
@@ -1113,22 +1264,43 @@ function healthAuthToken(env: Env): string | undefined {
 }
 
 function buildSubscriptionContext(env: Env) {
+  const ctx: {
+    anthropicOAuth?: {
+      accessor: OAuthAccountAccessor;
+      clientId: string;
+      clientSecret?: string;
+      tokenUrl?: string;
+      accountIds?: string[];
+    };
+    chatgptOAuth?: ReturnType<typeof buildChatGPTOAuthAccessor>;
+  } = {};
+
   const anthropicClientId = env.ANTHROPIC_CLIENT_ID;
-  if (!anthropicClientId) return undefined;
-  const oauthDo = env.OAUTH_ACCOUNT.get(
-    env.OAUTH_ACCOUNT.idFromName("anthropic-subscription"),
-  ) as unknown as OAuthAccountAccessor;
-  const tokenUrl = (env as { ANTHROPIC_OAUTH_TOKEN_URL?: string }).ANTHROPIC_OAUTH_TOKEN_URL;
-  const accountIds = parseOAuthAccountList((env as { ANTHROPIC_OAUTH_ACCOUNTS?: string }).ANTHROPIC_OAUTH_ACCOUNTS);
-  return {
-    anthropicOAuth: {
+  if (anthropicClientId) {
+    const oauthDo = env.OAUTH_ACCOUNT.get(
+      env.OAUTH_ACCOUNT.idFromName("anthropic-subscription"),
+    ) as unknown as OAuthAccountAccessor;
+    const tokenUrl = (env as { ANTHROPIC_OAUTH_TOKEN_URL?: string }).ANTHROPIC_OAUTH_TOKEN_URL;
+    const accountIds = parseOAuthAccountList((env as { ANTHROPIC_OAUTH_ACCOUNTS?: string }).ANTHROPIC_OAUTH_ACCOUNTS);
+    ctx.anthropicOAuth = {
       accessor: oauthDo,
       clientId: anthropicClientId,
       clientSecret: env.ANTHROPIC_CLIENT_SECRET,
       ...(tokenUrl ? { tokenUrl } : {}),
       ...(accountIds.length ? { accountIds } : {}),
-    },
-  };
+    };
+  }
+
+  const hasChatGPTEnv = Boolean(
+    (env as { CHATGPT_AUTH_JSON?: string }).CHATGPT_AUTH_JSON?.trim()
+    || (env as { CHATGPT_AUTH_FILE?: string }).CHATGPT_AUTH_FILE?.trim()
+    || (env as { CHATGPT_AUTH_ACCOUNTS?: string }).CHATGPT_AUTH_ACCOUNTS?.trim(),
+  );
+  if (hasChatGPTEnv && (env as { OAUTH_ACCOUNT?: unknown }).OAUTH_ACCOUNT) {
+    ctx.chatgptOAuth = buildChatGPTOAuthAccessor(env as unknown as Record<string, unknown>);
+  }
+
+  return Object.keys(ctx).length > 0 ? ctx : undefined;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────
@@ -1219,6 +1391,21 @@ function errorResponse(
     status,
     headers,
   });
+}
+
+function billingPropertiesForReceipt(
+  selectedGroup: string,
+  attempts: ReceiptAttempt[],
+): Record<string, string> {
+  const props: Record<string, string> = {};
+  const group = MANIFEST.routeGroups[selectedGroup];
+  if (group?.billingClass) props.billing_class = group.billingClass;
+  const lastWithDeployment = [...attempts].reverse().find((a) => a.deploymentId);
+  if (!lastWithDeployment?.deploymentId) return props;
+  const deployment = MANIFEST.deployments.find((d) => d.id === lastWithDeployment.deploymentId);
+  if (deployment?.billingClass) props.billing_class = deployment.billingClass;
+  if (deployment?.freeTier) props.free_tier = deployment.freeTier;
+  return props;
 }
 
 function estimateClientTokenCost(body: Record<string, unknown>, tokenBudgetPerMinute?: number): number {

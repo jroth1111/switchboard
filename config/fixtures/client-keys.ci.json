@@ -1,0 +1,27 @@
+{
+  "teams": {
+    "engineering": {
+      "rpmLimit": 500,
+      "maxConcurrency": 20,
+      "tokenBudgetPerMinute": 500000
+    }
+  },
+  "clients": [
+    {
+      "id": "test-client-alice",
+      "appId": "test-app",
+      "token_sha256": "2b2cc61070d6934cb2261c43727f11574349a7b5aeface8b5991d672537c3366",
+      "policyId": "test-basic",
+      "teamId": "engineering",
+      "allowedModels": ["smart-route", "nim-primary", "free", "freemium"],
+      "rpmLimit": 60,
+      "maxConcurrency": 4,
+      "tokenBudgetPerMinute": 120000
+    },
+    {
+      "id": "test-operator",
+      "token_sha256": "d855a946c56191b07e7a4b4d63204fea2f9e77cb069070cd7d50ccf770319c07",
+      "allowHiddenRoutes": true
+    }
+  ]
+}

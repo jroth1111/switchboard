@@ -8,7 +8,11 @@ import { RATE_LIMIT_MAX_ENTRIES, RATE_LIMIT_PRUNE_INTERVAL_MS, RATE_LIMIT_WINDOW
 
 const windows = new Map<string, { count: number; expiresAt: number }>();
 let lastPrune = 0;
-const UNKNOWN_CLIENT_IP = "unknown:strict";
+export const UNKNOWN_CLIENT_IP = "unknown:strict";
+
+export function isStrictUnknownClientIp(ip: string): boolean {
+  return ip === UNKNOWN_CLIENT_IP;
+}
 const MAX_IP_LITERAL_LENGTH = 45;
 
 export interface RateLimitConfig {
@@ -89,13 +93,53 @@ export function checkRateLimit(
   };
 }
 
+const RATE_LIMIT_SEGMENT_MAX_LENGTH = 128;
+
+function capRateLimitSegment(value: string): string {
+  return value.slice(0, RATE_LIMIT_SEGMENT_MAX_LENGTH);
+}
+
+function parseHeliconeRateLimitPolicyScope(policy: string): string | undefined {
+  for (const part of policy.split(";")) {
+    const trimmed = part.trim();
+    if (!trimmed.toLowerCase().startsWith("s=")) continue;
+    const scope = trimmed.slice(2).trim();
+    if (scope) return scope;
+  }
+  return undefined;
+}
+
+function heliconePropertyHeaderForScope(scope: string): string[] {
+  if (scope === "user") return ["Helicone-User-Id"];
+  if (scope === "tenant") return ["Helicone-Property-Tenant"];
+  const titleCase = scope.charAt(0).toUpperCase() + scope.slice(1);
+  return [`Helicone-Property-${titleCase}`, `Helicone-Property-${scope}`];
+}
+
+function extractHeliconePolicySegment(request: Request): string | undefined {
+  const policy = request.headers.get("Helicone-RateLimit-Policy")?.trim();
+  if (!policy) return undefined;
+  const scope = parseHeliconeRateLimitPolicyScope(policy);
+  if (!scope) return undefined;
+  for (const headerName of heliconePropertyHeaderForScope(scope)) {
+    const value = request.headers.get(headerName)?.trim();
+    if (value) return capRateLimitSegment(value);
+  }
+  return undefined;
+}
+
 /** Optional tenant/segment for per-client sub-buckets (Helicone-style property headers). */
 export function extractRateLimitSegment(request: Request): string | undefined {
   const direct = request.headers.get("X-Switchboard-RateLimit-Segment")?.trim();
-  if (direct) return direct.slice(0, 128);
+  if (direct) return capRateLimitSegment(direct);
+  const policy = request.headers.get("Helicone-RateLimit-Policy")?.trim();
+  const policyScope = policy ? parseHeliconeRateLimitPolicyScope(policy) : undefined;
+  const policySegment = extractHeliconePolicySegment(request);
+  if (policySegment) return policySegment;
+  if (policyScope) return undefined;
   const helicone = request.headers.get("Helicone-Property-Tenant")?.trim()
     ?? request.headers.get("Helicone-User-Id")?.trim();
-  if (helicone) return helicone.slice(0, 128);
+  if (helicone) return capRateLimitSegment(helicone);
   return undefined;
 }
 

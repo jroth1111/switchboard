@@ -94,7 +94,7 @@ flowchart TB
     Worker["Worker\nsrc/index.ts"]
     Handler["HTTP layer\nsrc/http/"]
     Planner["Route planner\nsrc/planner/"]
-    Loop["Attempt loop\nsrc/attempts/"]
+    AttemptLoop["Attempt loop\nsrc/attempts/"]
     Mitigate["Response mitigation\nsrc/mitigation/"]
     Adapters["Provider adapters\nsrc/providers/"]
   end
@@ -107,9 +107,9 @@ flowchart TB
   Client["Clients"] --> Worker
   Worker --> Handler
   Handler --> Planner
-  Handler --> Loop
-  Loop --> Adapters
-  Loop --> Mitigate
+  Handler --> AttemptLoop
+  AttemptLoop --> Adapters
+  AttemptLoop --> Mitigate
   Handler --> CP
   Adapters --> OAuth
   Adapters --> Upstream["Upstream LLM APIs"]
@@ -171,18 +171,14 @@ sequenceDiagram
   App->>SB: chat completion + Bearer token
   SB->>SB: optional IP rate limit
   SB->>SB: verify client key (SHA-256 hash)
-  SB->>Plan: resolve model → execution plan
+  SB->>Plan: resolve model to execution plan
   SB->>DO: admit client (RPM / concurrency / token budget)
-  loop each deployment in plan
-    SB->>DO: check health / deployment limits
-    SB->>Prov: call upstream (maybe rotate API keys)
-    alt success after mitigation
-      SB->>DO: record usage + receipt
-      SB-->>App: OpenAI JSON + X-Request-Id
-    else retryable failure
-      SB->>SB: next deployment or fallback profile
-    end
-  end
+  SB->>DO: check health and deployment limits
+  SB->>Prov: call upstream (rotate API keys if configured)
+  Prov-->>SB: response
+  Note over SB: On failure, try next deployment<br/>or fallback profile; on success, mitigate
+  SB->>DO: record usage and receipt
+  SB-->>App: OpenAI JSON + X-Request-Id
 ```
 
 1. **Authenticate** the bearer token against `CLIENT_KEYS_JSON` (only a hash of the token is stored).

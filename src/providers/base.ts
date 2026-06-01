@@ -40,8 +40,10 @@ export function buildProviderRequest(
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    "Authorization": `Bearer ${apiKey}`,
   };
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
+  }
 
   // Set model name and deployment-level overrides
   const requestBody: Record<string, unknown> = {
@@ -170,6 +172,8 @@ export interface StreamingProviderResult {
   response: Response;
   status: number;
   headers: Headers;
+  /** Populated for HTTP error responses so credential rotation can classify failures. */
+  body?: string;
 }
 
 export async function executeStreamingProviderRequest(
@@ -199,10 +203,20 @@ export async function executeStreamingProviderRequest(
       signal: controller.signal,
     });
 
+    let body: string | undefined;
+    if (!response.ok) {
+      try {
+        body = await response.text();
+      } catch {
+        body = "";
+      }
+    }
+
     return {
       response,
       status: response.status,
       headers: response.headers,
+      ...(body !== undefined ? { body } : {}),
     };
   } catch (err) {
     if (timedOut && isAbortError(err)) {

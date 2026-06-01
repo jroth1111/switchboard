@@ -646,6 +646,183 @@ describe("ChatGPT Responses auth resolution in the attempt loop", () => {
   });
 });
 
+describe("credential pool exhaustion", () => {
+  it("does not record deployment failure when all credentials are exhausted", async () => {
+    const deployment = makeDeployment({
+      id: "nim-rotate",
+      group: "nim-primary",
+      provider: "nvidia_nim",
+      keyRef: "NIM_KEY_1",
+      credentialPool: ["NIM_KEY_2"],
+      providerModel: "z-ai/glm-5.1",
+      model: "glm-5.1",
+    });
+    const policy = structuredClone(MANIFEST.policies["nim-primary"]);
+    const envelope: RequestEnvelope = {
+      requestId: "req-cred-exhaust",
+      originalModel: "nim-primary",
+      body: { model: "nim-primary", messages: [{ role: "user", content: "hi" }] },
+      stream: false,
+      hasTools: false,
+      hasStrictTools: false,
+      isMultiTool: false,
+      hasTypedContent: false,
+      requiresJsonMode: false,
+      requiresReasoning: true,
+    };
+    const plan = planRequest(envelope);
+    expect(plan).not.toBeNull();
+    const state = {
+      admit: vi.fn(async () => ({
+        admitted: true,
+        deploymentId: deployment.id,
+        keyRef: deployment.keyRef,
+        reservationId: "res-cred",
+        inflightAtDispatch: 0,
+        effectiveMaxParallel: 2,
+        deferPerKeyRpmCharge: true,
+      })),
+      confirm: vi.fn(async () => {}),
+      recordSuccess: vi.fn(async () => {}),
+      recordFailure: vi.fn(async () => {}),
+      recordTokenUsage: vi.fn(async () => {}),
+      chargePerKeyRpm: vi.fn(async () => {}),
+      isPerKeyTokenBudgetAvailable: vi.fn(async () => true),
+      release: vi.fn(async () => {}),
+      getHealth: vi.fn(async () => ({ healthScores: {}, circuits: {} })),
+      getCredentialCooldown: vi.fn(async () => null),
+      setCredentialCooldown: vi.fn(async () => {}),
+      clearCredentialCooldown: vi.fn(async () => {}),
+      getCredentialPoolOrder: vi.fn(async () => null),
+      setCredentialPoolOrder: vi.fn(async () => {}),
+      recordRouteDispatch: vi.fn(async () => {}),
+      storeUsageEvent: vi.fn(async () => {}),
+    };
+    const fetchMock = vi.fn(async () => new Response("rate limited", {
+      status: 429,
+      headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const result = await executeAttemptLoop(
+        envelope,
+        { ...plan!, selectedDeployments: [deployment], selectedPolicy: policy },
+        state as unknown as Parameters<typeof executeAttemptLoop>[2],
+        { NIM_KEY_1: "secret-1", NIM_KEY_2: "secret-2" },
+        AbortSignal.timeout(5_000),
+      );
+
+      expect(result.success).toBe(false);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(state.recordFailure).not.toHaveBeenCalled();
+      expect(result.attempts.some((a) => a.action === "exhausted")).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("streaming credential rotation", () => {
+  it("rotates to the second NIM key after a streaming 429", async () => {
+    const deployment = makeDeployment({
+      id: "nim-stream-rotate",
+      group: "nim-primary",
+      provider: "nvidia_nim",
+      keyRef: "NIM_KEY_1",
+      credentialPool: ["NIM_KEY_2"],
+      providerModel: "z-ai/glm-5.1",
+      model: "glm-5.1",
+    });
+    const policy = structuredClone(MANIFEST.policies["nim-primary"]);
+    const envelope: RequestEnvelope = {
+      requestId: "req-stream-rotate",
+      originalModel: "nim-primary",
+      body: { model: "nim-primary", messages: [{ role: "user", content: "hi" }], stream: true },
+      stream: true,
+      hasTools: false,
+      hasStrictTools: false,
+      isMultiTool: false,
+      hasTypedContent: false,
+      requiresJsonMode: false,
+      requiresReasoning: true,
+    };
+    const plan = planRequest(envelope);
+    const state = {
+      admit: vi.fn(async () => ({
+        admitted: true,
+        deploymentId: deployment.id,
+        keyRef: deployment.keyRef,
+        reservationId: "res-stream",
+        inflightAtDispatch: 0,
+        effectiveMaxParallel: 2,
+        deferPerKeyRpmCharge: true,
+      })),
+      confirm: vi.fn(async () => {}),
+      recordSuccess: vi.fn(async () => {}),
+      recordFailure: vi.fn(async () => {}),
+      recordTokenUsage: vi.fn(async () => {}),
+      chargePerKeyRpm: vi.fn(async () => {}),
+      isPerKeyTokenBudgetAvailable: vi.fn(async () => true),
+      release: vi.fn(async () => {}),
+      getHealth: vi.fn(async () => ({ healthScores: {}, circuits: {} })),
+      getCredentialCooldown: vi.fn(async () => null),
+      setCredentialCooldown: vi.fn(async () => {}),
+      clearCredentialCooldown: vi.fn(async () => {}),
+      getCredentialPoolOrder: vi.fn(async () => null),
+      setCredentialPoolOrder: vi.fn(async () => {}),
+      recordRouteDispatch: vi.fn(async () => {}),
+      storeUsageEvent: vi.fn(async () => {}),
+    };
+    const encoder = new TextEncoder();
+    const fetchMock = vi.fn((_: RequestInfo | URL, init?: RequestInit) => {
+      const auth = (init?.headers as Record<string, string>)?.Authorization ?? "";
+      if (auth === "Bearer secret-1") {
+        return Promise.resolve(new Response("rate limited", { status: 429 }));
+      }
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (let i = 0; i < 5; i++) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+              id: "chunk",
+              object: "chat.completion.chunk",
+              model: "z-ai/glm-5.1",
+              choices: [{ index: 0, delta: { content: `t${i} ` }, finish_reason: null }],
+            })}\n\n`));
+          }
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      });
+      return Promise.resolve(new Response(stream, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const result = await executeAttemptLoop(
+        envelope,
+        { ...plan!, selectedDeployments: [deployment], selectedPolicy: policy },
+        state as unknown as Parameters<typeof executeAttemptLoop>[2],
+        { NIM_KEY_1: "secret-1", NIM_KEY_2: "secret-2" },
+        AbortSignal.timeout(5_000),
+      );
+
+      expect(result.success).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const auths = fetchMock.mock.calls.map((call) => (
+        (call[1]?.headers as Record<string, string>)?.Authorization
+      ));
+      expect(auths[0]).toBe("Bearer secret-1");
+      expect(auths[1]).toBe("Bearer secret-2");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 // ─── Transform application ────────────────────────────────────────
 
 describe("Request transform application", () => {

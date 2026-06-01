@@ -15,6 +15,8 @@ import type { ProviderAdapter } from "../providers/adapter";
 import type { OAuthAccountAccessor } from "../providers/anthropic-subscription";
 import { chatgptAuthMaterialCandidates } from "../providers/chatgpt-auth-pool";
 import { isChatGPTSubscriptionAuthJsonText, resolveChatGPTSubscriptionAuth } from "../providers/chatgpt-responses";
+import type { SubscriptionContext } from "./subscription-context";
+export type { SubscriptionContext } from "./subscription-context";
 import { evaluateResponse, type ResponseEvaluationConfig } from "../nim/evaluate/response";
 import { classifyRateLimit } from "../nim/classify/rate-limit";
 import { wrapSubscriptionStream, type SubscriptionStreamFormat } from "../streaming/format-converter";
@@ -26,6 +28,20 @@ import { logInfo, logWarn } from "../observability/logging";
 import { applyDeploymentRuntimeOverrides } from "../config/runtime-overrides";
 import { applyPolicyCooldown } from "../config/policy-cooldown";
 import { promoteProfileFallbacks } from "./fallback-sequence";
+import { hasAvailableCredential } from "../credentials/availability";
+import { resolveCredentialPool } from "../credentials/resolve-pool";
+import { inferApiKeyProviderId, resolveApiKeySecret } from "../credentials/discover-api-keys";
+import { credentialHealthFromState } from "../credentials/health";
+import { tokenWindowKey } from "../config/budget-keys";
+import {
+  buildCredentialContext,
+  executeNonStreamingWithCredentials,
+  executeStreamingWithCredentials,
+  resolveCredentialRotationContext,
+  useCredentialRotation,
+} from "./credential-attempt";
+import type { CredentialSlot } from "../credentials/types";
+import type { StreamingProviderResult } from "../providers/base";
 import {
   buildFilterStateFromHealth,
   filterCandidates,
@@ -61,17 +77,6 @@ export interface AttemptRecord {
   tokenUsage?: TokenUsage;
 }
 
-export interface SubscriptionContext {
-  anthropicOAuth?: {
-    accessor: OAuthAccountAccessor;
-    clientId: string;
-    clientSecret?: string;
-    tokenUrl?: string;
-    /** Extra OAuth account ids (env ANTHROPIC_OAUTH_ACCOUNTS), round-robin per request. */
-    accountIds?: string[];
-  };
-}
-
 type AttemptSequenceEntry = { group: string; policy: Policy; deployments: Deployment[] };
 
 interface DurableHealthSnapshot {
@@ -105,11 +110,35 @@ type AttemptStateAccessor = {
   recordSuccess(deploymentId: string, circuitSuccessThreshold?: number, durationMs?: number, latencyConfig?: { emaAlpha?: number; penaltyFactor?: number; warmupSamples?: number }, options?: { firstByteLatencyMs?: number; inflightAtDispatch?: number }): Promise<void>;
   recordFailure(deploymentId: string, failureClass: FailureClass, cooldownSeconds: number, circuitThreshold: number, circuitDurationSeconds: number, suspectThresholdFraction?: number, options?: { inflightAtDispatch?: number; maxParallelAtDispatch?: number; semanticSeverity?: "low" | "medium" | "high"; transportCooldownThreshold?: number }): Promise<void>;
   recordTokenUsage?(keyRef: string, promptTokens: number, completionTokens: number): Promise<void>;
+  chargePerKeyRpm?(keyRef: string, group: string, scopeMode?: "global" | "per_key"): Promise<void>;
+  tryChargePerKeyRpm?(
+    keyRef: string,
+    group: string,
+    scopeMode: "global" | "per_key",
+    rpm: number,
+  ): Promise<boolean>;
+  isPerKeyTokenBudgetAvailable?(
+    keyRef: string,
+    group: string,
+    scopeMode: "global" | "per_key",
+    tokenBudgetPerMinute: number,
+  ): Promise<boolean>;
+  isKeyRpmAvailable?(
+    keyRef: string,
+    group: string,
+    scopeMode: "global" | "per_key",
+    rpm: number,
+  ): Promise<boolean>;
   release(reservationId: string): Promise<void>;
   getHealth?(): Promise<DurableHealthSnapshot>;
   getRecentRouteDispatch?(canonicalTarget: string, requestClass: string, maxAgeSeconds: number): Promise<{ group?: string; dispatchedAt?: number } | null>;
   recordRouteDispatch?(canonicalTarget: string, requestClass: string, groupName: string): Promise<void>;
   storeUsageEvent?(event: UsageEventPayload): Promise<void>;
+  getCredentialCooldown?(credentialId: string, now?: number): Promise<{ until: number; reason: string; requiresRelogin?: boolean } | null>;
+  setCredentialCooldown?(credentialId: string, failureClass: FailureClass, untilMs: number, details?: { requiresRelogin?: boolean }): Promise<void>;
+  clearCredentialCooldown?(credentialId: string): Promise<void>;
+  getCredentialPoolOrder?(deploymentId: string): Promise<string[] | null>;
+  setCredentialPoolOrder?(deploymentId: string, order: string[]): Promise<void>;
 };
 
 // ─── Main loop ─────────────────────────────────────────────────────
@@ -185,7 +214,75 @@ export async function executeAttemptLoop(
       const routable = filterDeploymentsForAttempt(deployments, durableHealth, policy);
       if (routable.length === 0) break;
 
-      const shuffled = shuffleArray([...routable]);
+      const credentialHealth = credentialHealthFromState(stateDo);
+      const withCredentials: Deployment[] = [];
+      for (const candidate of routable) {
+        const deploymentCandidate = applyDeploymentRuntimeOverrides(candidate, env);
+        if (await hasAvailableCredential(
+          deploymentCandidate,
+          env,
+          policy,
+          envelope.requestId,
+          credentialHealth,
+          subscriptionCtx,
+        )) {
+          withCredentials.push(candidate);
+        }
+      }
+      if (withCredentials.length === 0) {
+        const exhaustedDeployment = applyDeploymentRuntimeOverrides(routable[0]!, env);
+        let failureClass: FailureClass = "auth_failure";
+        let failureMessage = "No credentials available in rotation pool";
+        for (const candidate of routable) {
+          const deploymentCandidate = applyDeploymentRuntimeOverrides(candidate, env);
+          const pool = await resolveCredentialPool(
+            deploymentCandidate,
+            env,
+            envelope.requestId,
+            subscriptionCtx,
+          );
+          if (pool.length === 0) continue;
+          const available = await hasAvailableCredential(
+            deploymentCandidate,
+            env,
+            policy,
+            envelope.requestId,
+            credentialHealth,
+            subscriptionCtx,
+          );
+          if (!available) {
+            failureClass = "rate_limit_quota_window";
+            failureMessage = "All credentials in rotation pool are on cooldown";
+          }
+          break;
+        }
+        attempts.push({
+          group: exhaustedDeployment.group,
+          deploymentId: exhaustedDeployment.id,
+          model: exhaustedDeployment.providerModel,
+          failureClass,
+          failureMessage,
+          durationMs: 0,
+          action: "exhausted",
+          attemptIndex,
+          statusCode: 503,
+          retryable: policy.retry.retryableFailureClasses.includes(failureClass),
+        });
+        emitUnknownUsage(stateDo, {
+          requestId: envelope.requestId, attemptIndex, canonicalTarget: plan.canonicalTarget,
+          clientId: envelope.clientId, appId: envelope.appId,
+          userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
+          policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
+          selectedGroup: exhaustedDeployment.group, deploymentId: exhaustedDeployment.id,
+          provider: exhaustedDeployment.provider, model: exhaustedDeployment.providerModel,
+          stream: envelope.stream, finalOutcome: "credential_pool_exhausted",
+          usageSource: exhaustedDeployment.provider,
+        });
+        attemptIndex++;
+        break;
+      }
+
+      const shuffled = shuffleArray([...withCredentials]);
       const admissionCandidates = shuffled.map((d) => ({
         deploymentId: d.id, keyRef: d.keyRef, rpm: d.rpm,
         maxParallel: d.maxParallelRequests, group: d.group,
@@ -205,6 +302,9 @@ export async function executeAttemptLoop(
         suspectThresholdFraction: policy.health.suspectThresholdFraction,
         suspectMaxParallelDivisor: policy.health.suspectMaxParallelDivisor,
         tokenBudgetPerMinute: policy.budget.tokenBudgetPerMinute,
+        deferPerKeyRpmCharge: await anyCandidateDefersPerKeyRpm(
+          withCredentials, env, policy, envelope.requestId, stateDo, subscriptionCtx,
+        ),
       });
 
       if (!admission.admitted) break;
@@ -227,21 +327,89 @@ export async function executeAttemptLoop(
       const adapter = getAdapter(deployment.provider, deployment.mode);
 
       try {
-        const apiKey = resolveKey(env, admission.keyRef!, deployment, envelope.requestId);
-        const providerReq = await adapter.buildRequest({
-          deployment, body: envelope.body, apiKey,
-          requestId: envelope.requestId, subscriptionCtx,
-        });
-
         await stateDo.confirm?.(admission.reservationId!);
 
         if (envelope.stream) {
-          const result = await handleStreamingAttempt(
-            envelope, plan, providerReq, policy, admission, deployment,
-            group, stateDo, abortSignal, attemptStart, attempts, attemptIndex, adapter,
-            attemptTimeoutMs, deploymentHealth,
+          const rotationCtx = await resolveCredentialRotationContext(
+            deployment, env, policy, envelope.requestId, subscriptionCtx,
           );
-          if (result !== null) { releaseInFinally = false; return result; }
+          const credHealth = credentialHealthFromState(stateDo);
+          const baseCtx = buildCredentialContext({
+            deployment, body: envelope.body, requestId: envelope.requestId, subscriptionCtx,
+          });
+          const useRotation = useCredentialRotation(rotationCtx.pool, rotationCtx.settings) && credHealth;
+          let keylessAfterRotationExhaust = false;
+          if (useRotation) {
+            const rotated = await executeStreamingWithCredentials({
+              pool: rotationCtx.pool,
+              settings: rotationCtx.settings,
+              requestId: envelope.requestId,
+              deployment,
+              env,
+              health: credHealth,
+              adapter,
+              baseCtx,
+              beforeExecute: makeBeforeExecuteCharge(stateDo, admission, group, policy, deployment.rpm),
+              execute: (req) => executeStreamingProviderRequest(req, {
+                signal: abortSignal, timeoutMs: attemptTimeoutMs, streaming: true,
+              }),
+              classifyFailure: (status, body) => classifyAdapterFailure(adapter, status, body),
+            });
+            if (rotated.ok) {
+              const result = await handleStreamingAttempt(
+                envelope, plan, policy, admission, deployment,
+                group, stateDo, abortSignal, attemptStart, attempts, attemptIndex, adapter,
+                attemptTimeoutMs, deploymentHealth,
+                { prefetchedStream: rotated.result, activeKeyRef: rotated.keyRef },
+              );
+              if (result !== null) { releaseInFinally = false; return result; }
+            } else if (deployment.credentialOptional) {
+              keylessAfterRotationExhaust = true;
+            } else {
+              handleCredentialPoolExhausted(
+                rotated.lastClassification, Date.now() - attemptStart,
+                envelope, plan, policy, admission, deployment, group,
+                stateDo, attempts, attemptIndex, true,
+              );
+              const lastAttempt = attempts[attempts.length - 1];
+              if (lastAttempt?.retryable && transportRetriesLeft > 0) {
+                transportRetriesLeft--;
+                continue;
+              }
+              break;
+            }
+          }
+          if (!useRotation || keylessAfterRotationExhaust) {
+            if (!(await assertPerKeyBudgetAtDispatch(
+              stateDo, admission, admission.keyRef!, group, policy, deployment.rpm,
+            ))) {
+              handleCredentialPoolExhausted(
+                {
+                  failureClass: "rate_limit_quota_window",
+                  cooldownSeconds: 0,
+                  affectsHealth: false,
+                  affectsAccount: false,
+                  details: "per_key_token_budget_exhausted",
+                },
+                Date.now() - attemptStart,
+                envelope, plan, policy, admission, deployment, group,
+                stateDo, attempts, attemptIndex, true,
+              );
+              break;
+            }
+            const apiKey = await resolveKey(env, admission.keyRef!, deployment, envelope.requestId, subscriptionCtx);
+            const providerReq = await adapter.buildRequest({
+              deployment, body: envelope.body, apiKey,
+              requestId: envelope.requestId, subscriptionCtx,
+            });
+            const result = await handleStreamingAttempt(
+              envelope, plan, policy, admission, deployment,
+              group, stateDo, abortSignal, attemptStart, attempts, attemptIndex, adapter,
+              attemptTimeoutMs, deploymentHealth,
+              { providerReq, activeKeyRef: admission.keyRef },
+            );
+            if (result !== null) { releaseInFinally = false; return result; }
+          }
           const lastStreamAttempt = attempts[attempts.length - 1];
           if (lastStreamAttempt?.failureClass) {
             attemptSequence = promoteProfileFallbacks(
@@ -251,11 +419,90 @@ export async function executeAttemptLoop(
           break;
         }
 
-        const result = await handleNonStreamingAttempt(
-          envelope, plan, providerReq, policy, admission, deployment,
-          group, stateDo, abortSignal, attemptStart, attempts, attemptIndex, adapter, attemptTimeoutMs,
+        const rotationCtx = await resolveCredentialRotationContext(
+          deployment, env, policy, envelope.requestId, subscriptionCtx,
         );
-        if (result !== null) return result;
+        const credHealth = credentialHealthFromState(stateDo);
+        const baseCtx = buildCredentialContext({
+          deployment, body: envelope.body, requestId: envelope.requestId, subscriptionCtx,
+        });
+
+        const useRotation = useCredentialRotation(rotationCtx.pool, rotationCtx.settings) && credHealth;
+        let keylessAfterRotationExhaust = false;
+        if (useRotation) {
+          const rotated = await executeNonStreamingWithCredentials({
+            pool: rotationCtx.pool,
+            settings: rotationCtx.settings,
+            requestId: envelope.requestId,
+            deployment,
+            env,
+            health: credHealth,
+            adapter,
+            baseCtx,
+            beforeExecute: makeBeforeExecuteCharge(stateDo, admission, group, policy, deployment.rpm),
+            execute: (req) => executeProviderRequest(req, {
+              signal: abortSignal, timeoutMs: attemptTimeoutMs,
+            }),
+            classifyFailure: (status, body) => classifyAdapterFailure(adapter, status, body),
+          });
+          if (rotated.ok) {
+            const result = await handleNonStreamingAttempt(
+              envelope, plan, policy, admission, deployment,
+              group, stateDo, abortSignal, attemptStart, attempts, attemptIndex, adapter, attemptTimeoutMs,
+              { prefetchedResponse: rotated.result, activeKeyRef: rotated.keyRef },
+            );
+            if (result !== null) return result;
+          } else if (deployment.credentialOptional) {
+            keylessAfterRotationExhaust = true;
+          } else {
+            handleCredentialPoolExhausted(
+              rotated.lastClassification, Date.now() - attemptStart,
+              envelope, plan, policy, admission, deployment, group,
+              stateDo, attempts, attemptIndex, false,
+            );
+            const lastAttempt = attempts[attempts.length - 1];
+            if (lastAttempt?.retryable && transportRetriesLeft > 0) {
+              transportRetriesLeft--;
+              continue;
+            }
+            if (lastAttempt?.failureClass) {
+              attemptSequence = promoteProfileFallbacks(
+                attemptSequence, modelIndex + 1, lastAttempt.failureClass, plan.selectedGroup,
+              );
+            }
+            break;
+          }
+        }
+        if (!useRotation || keylessAfterRotationExhaust) {
+          if (!(await assertPerKeyBudgetAtDispatch(
+            stateDo, admission, admission.keyRef!, group, policy, deployment.rpm,
+          ))) {
+            handleCredentialPoolExhausted(
+              {
+                failureClass: "rate_limit_quota_window",
+                cooldownSeconds: 0,
+                affectsHealth: false,
+                affectsAccount: false,
+                details: "per_key_token_budget_exhausted",
+              },
+              Date.now() - attemptStart,
+              envelope, plan, policy, admission, deployment, group,
+              stateDo, attempts, attemptIndex, false,
+            );
+            break;
+          }
+          const apiKey = await resolveKey(env, admission.keyRef!, deployment, envelope.requestId, subscriptionCtx);
+          const providerReq = await adapter.buildRequest({
+            deployment, body: envelope.body, apiKey,
+            requestId: envelope.requestId, subscriptionCtx,
+          });
+          const result = await handleNonStreamingAttempt(
+            envelope, plan, policy, admission, deployment,
+            group, stateDo, abortSignal, attemptStart, attempts, attemptIndex, adapter, attemptTimeoutMs,
+            { providerReq, activeKeyRef: admission.keyRef },
+          );
+          if (result !== null) return result;
+        }
 
         const lastAttempt = attempts[attempts.length - 1];
         if (lastAttempt?.retryable) {
@@ -323,7 +570,7 @@ async function executeHedgedNonStreamingAttempt(
   subscriptionCtx?: SubscriptionContext,
 ): Promise<{ result: AttemptResult | null; attemptsUsed: number } | null> {
   const lanes = await admitHedgeLanes(
-    envelope, entry, durableHealth, stateDo, env, baseAttemptIndex, totalDeadline,
+    envelope, entry, durableHealth, stateDo, env, baseAttemptIndex, totalDeadline, subscriptionCtx,
   );
   if (lanes.length < 2) {
     for (const lane of lanes) await stateDo.release(lane.admission.reservationId!);
@@ -333,24 +580,16 @@ async function executeHedgedNonStreamingAttempt(
   const hedgeDelayMs = entry.policy.retry.hedge?.hedgeDelayMs ?? 0;
   const controllers = new Map<number, AbortController>();
   const pending = new Map<number, Promise<HedgeLaneOutcome>>();
-  let winnerFound = false;
 
   const launchLane = (lane: HedgeLane) => {
     const controller = linkedAbortController(abortSignal);
     controllers.set(lane.attemptIndex, controller);
-    // Cleanup: only remove from controllers map. Do NOT abort the lane's controller
-    // here — for streaming winners that abort would terminate the upstream connection
-    // while the user is still reading the response. Loser controllers are aborted
-    // explicitly in the race loop below.
     const p = runHedgeLane(
-      envelope, plan, lane, stateDo, attempts, controller.signal, subscriptionCtx,
+      envelope, plan, lane, stateDo, env, attempts, controller.signal, subscriptionCtx,
     ).finally(() => {
       controllers.delete(lane.attemptIndex);
     });
     pending.set(lane.attemptIndex, p);
-    p.then((outcome) => {
-      if (outcome.kind === "success" || outcome.kind === "client") winnerFound = true;
-    }).catch((e) => logWarn("fire_forget_failed", { error: String(e) }));
   };
 
   // Launch lanes with optional stagger: after hedgeDelayMs, if a winner is already found
@@ -360,7 +599,18 @@ async function executeHedgedNonStreamingAttempt(
     if (i > 0 && hedgeDelayMs > 0 && !abortSignal.aborted) {
       await sleep(hedgeDelayMs, abortSignal);
     }
-    if (abortSignal.aborted || winnerFound) {
+    if (i > 0 && hedgeDelayMs > 0 && pending.size > 0) {
+      const earlyWin = await hedgeAnyLaneSucceeded(pending);
+      if (earlyWin) {
+        // Release only reservations for lanes not yet launched (index >= i).
+        // The winning lane is always in pending (index < i) and keeps its reservation.
+        for (let j = i; j < lanes.length; j++) {
+          await stateDo.release(lanes[j].admission.reservationId!);
+        }
+        break;
+      }
+    }
+    if (abortSignal.aborted) {
       for (let j = i; j < lanes.length; j++) {
         await stateDo.release(lanes[j].admission.reservationId!);
       }
@@ -414,9 +664,25 @@ async function admitHedgeLanes(
   env: Record<string, unknown>,
   baseAttemptIndex: number,
   totalDeadline: number,
+  subscriptionCtx?: SubscriptionContext,
 ): Promise<HedgeLane[]> {
   const maxCandidates = Math.max(2, entry.policy.retry.hedge?.maxCandidates ?? 2);
-  const remaining = filterDeploymentsForAttempt([...entry.deployments], durableHealth, entry.policy);
+  const routable = filterDeploymentsForAttempt([...entry.deployments], durableHealth, entry.policy);
+  const credentialHealth = credentialHealthFromState(stateDo);
+  const remaining: Deployment[] = [];
+  for (const candidate of routable) {
+    const deploymentCandidate = applyDeploymentRuntimeOverrides(candidate, env);
+    if (await hasAvailableCredential(
+      deploymentCandidate,
+      env,
+      entry.policy,
+      envelope.requestId,
+      credentialHealth,
+      subscriptionCtx,
+    )) {
+      remaining.push(candidate);
+    }
+  }
   const lanes: HedgeLane[] = [];
 
   while (lanes.length < maxCandidates && remaining.length > 0) {
@@ -437,6 +703,9 @@ async function admitHedgeLanes(
       suspectThresholdFraction: entry.policy.health.suspectThresholdFraction,
       suspectMaxParallelDivisor: entry.policy.health.suspectMaxParallelDivisor,
       tokenBudgetPerMinute: entry.policy.budget.tokenBudgetPerMinute,
+      deferPerKeyRpmCharge: await anyCandidateDefersPerKeyRpm(
+        remaining, env, entry.policy, envelope.requestId, stateDo, subscriptionCtx,
+      ),
     });
     if (!admission.admitted || !admission.deploymentId) break;
 
@@ -466,7 +735,7 @@ async function admitHedgeLanes(
       policy: entry.policy,
       admission,
       deployment,
-      apiKey: resolveKey(env, admission.keyRef!, deployment, envelope.requestId),
+      apiKey: await resolveKey(env, admission.keyRef!, deployment, envelope.requestId, subscriptionCtx),
       attemptIndex: baseAttemptIndex + lanes.length,
       attemptTimeoutMs,
       deploymentHealth,
@@ -481,6 +750,7 @@ async function runHedgeLane(
   plan: ExecutionPlan,
   lane: HedgeLane,
   stateDo: AttemptStateAccessor,
+  env: Record<string, unknown>,
   attempts: AttemptRecord[],
   signal: AbortSignal,
   subscriptionCtx?: SubscriptionContext,
@@ -488,23 +758,178 @@ async function runHedgeLane(
   let releaseInFinally = true;
   const adapter = getAdapter(lane.deployment.provider, lane.deployment.mode);
   const attemptStart = Date.now();
+  let dispatchKeyRef = lane.admission.keyRef ?? lane.deployment.keyRef;
   try {
-    const providerReq: ProviderRequest = await adapter.buildRequest({
-      deployment: lane.deployment, body: envelope.body, apiKey: lane.apiKey,
-      requestId: envelope.requestId, subscriptionCtx,
-    });
     await stateDo.confirm?.(lane.admission.reservationId!);
-    const result = envelope.stream
-      ? await handleStreamingAttempt(
-          envelope, plan, providerReq, lane.policy, lane.admission, lane.deployment,
+    let result: AttemptResult | null = null;
+
+    if (!envelope.stream) {
+      const rotationCtx = await resolveCredentialRotationContext(
+        lane.deployment, env, lane.policy, envelope.requestId, subscriptionCtx,
+      );
+      const credHealth = credentialHealthFromState(stateDo);
+      const baseCtx = buildCredentialContext({
+        deployment: lane.deployment,
+        body: envelope.body,
+        requestId: envelope.requestId,
+        subscriptionCtx,
+      });
+      const useRotation = useCredentialRotation(rotationCtx.pool, rotationCtx.settings) && credHealth;
+      let keylessAfterRotationExhaust = false;
+      if (useRotation) {
+        const rotated = await executeNonStreamingWithCredentials({
+          pool: rotationCtx.pool,
+          settings: rotationCtx.settings,
+          requestId: envelope.requestId,
+          deployment: lane.deployment,
+          env,
+          health: credHealth,
+          adapter,
+          baseCtx,
+          beforeExecute: makeBeforeExecuteCharge(
+            stateDo, lane.admission, lane.group, lane.policy, lane.deployment.rpm,
+          ),
+          execute: (req) => executeProviderRequest(req, {
+            signal, timeoutMs: lane.attemptTimeoutMs,
+          }),
+          classifyFailure: (status, body) => classifyAdapterFailure(adapter, status, body),
+        });
+        if (rotated.ok) {
+          dispatchKeyRef = rotated.keyRef;
+          result = await handleNonStreamingAttempt(
+            envelope, plan, lane.policy, lane.admission, lane.deployment, lane.group,
+            stateDo, signal, attemptStart, attempts, lane.attemptIndex, adapter, lane.attemptTimeoutMs,
+            { prefetchedResponse: rotated.result, activeKeyRef: rotated.keyRef },
+          );
+        } else if (lane.deployment.credentialOptional) {
+          keylessAfterRotationExhaust = true;
+        } else {
+          handleCredentialPoolExhausted(
+            rotated.lastClassification, Date.now() - attemptStart,
+            envelope, plan, lane.policy, lane.admission, lane.deployment, lane.group,
+            stateDo, attempts, lane.attemptIndex, false,
+          );
+          return { kind: "failure", lane };
+        }
+      }
+      if (!useRotation || keylessAfterRotationExhaust) {
+        if (keylessAfterRotationExhaust) {
+          lane.apiKey = await resolveKey(
+            env, lane.admission.keyRef!, lane.deployment, envelope.requestId, subscriptionCtx,
+          );
+        }
+        if (!(await assertPerKeyBudgetAtDispatch(
+          stateDo, lane.admission, dispatchKeyRef, lane.group, lane.policy, lane.deployment.rpm,
+        ))) {
+          handleCredentialPoolExhausted(
+            {
+              failureClass: "rate_limit_quota_window",
+              cooldownSeconds: 0,
+              affectsHealth: false,
+              affectsAccount: false,
+              details: "per_key_token_budget_exhausted",
+            },
+            Date.now() - attemptStart,
+            envelope, plan, lane.policy, lane.admission, lane.deployment, lane.group,
+            stateDo, attempts, lane.attemptIndex, false,
+          );
+          return { kind: "failure", lane };
+        }
+        const providerReq: ProviderRequest = await adapter.buildRequest({
+          deployment: lane.deployment, body: envelope.body, apiKey: lane.apiKey,
+          requestId: envelope.requestId, subscriptionCtx,
+        });
+        result = await handleNonStreamingAttempt(
+          envelope, plan, lane.policy, lane.admission, lane.deployment, lane.group,
+          stateDo, signal, attemptStart, attempts, lane.attemptIndex, adapter, lane.attemptTimeoutMs,
+          { providerReq, activeKeyRef: lane.admission.keyRef },
+        );
+      }
+    } else {
+      const rotationCtx = await resolveCredentialRotationContext(
+        lane.deployment, env, lane.policy, envelope.requestId, subscriptionCtx,
+      );
+      const credHealth = credentialHealthFromState(stateDo);
+      const baseCtx = buildCredentialContext({
+        deployment: lane.deployment,
+        body: envelope.body,
+        requestId: envelope.requestId,
+        subscriptionCtx,
+      });
+      const useRotation = useCredentialRotation(rotationCtx.pool, rotationCtx.settings) && credHealth;
+      let keylessAfterRotationExhaust = false;
+      if (useRotation) {
+        const rotated = await executeStreamingWithCredentials({
+          pool: rotationCtx.pool,
+          settings: rotationCtx.settings,
+          requestId: envelope.requestId,
+          deployment: lane.deployment,
+          env,
+          health: credHealth,
+          adapter,
+          baseCtx,
+          beforeExecute: makeBeforeExecuteCharge(
+            stateDo, lane.admission, lane.group, lane.policy, lane.deployment.rpm,
+          ),
+          execute: (req) => executeStreamingProviderRequest(req, {
+            signal, timeoutMs: lane.attemptTimeoutMs, streaming: true,
+          }),
+          classifyFailure: (status, body) => classifyAdapterFailure(adapter, status, body),
+        });
+        if (rotated.ok) {
+          dispatchKeyRef = rotated.keyRef;
+          result = await handleStreamingAttempt(
+            envelope, plan, lane.policy, lane.admission, lane.deployment,
+            lane.group, stateDo, signal, attemptStart, attempts, lane.attemptIndex,
+            adapter, lane.attemptTimeoutMs, lane.deploymentHealth,
+            { prefetchedStream: rotated.result, activeKeyRef: rotated.keyRef },
+          );
+        } else if (lane.deployment.credentialOptional) {
+          keylessAfterRotationExhaust = true;
+        } else {
+          handleCredentialPoolExhausted(
+            rotated.lastClassification, Date.now() - attemptStart,
+            envelope, plan, lane.policy, lane.admission, lane.deployment, lane.group,
+            stateDo, attempts, lane.attemptIndex, true,
+          );
+          return { kind: "failure", lane };
+        }
+      }
+      if (!useRotation || keylessAfterRotationExhaust) {
+        if (keylessAfterRotationExhaust) {
+          lane.apiKey = await resolveKey(
+            env, lane.admission.keyRef!, lane.deployment, envelope.requestId, subscriptionCtx,
+          );
+        }
+        if (!(await assertPerKeyBudgetAtDispatch(
+          stateDo, lane.admission, dispatchKeyRef, lane.group, lane.policy, lane.deployment.rpm,
+        ))) {
+          handleCredentialPoolExhausted(
+            {
+              failureClass: "rate_limit_quota_window",
+              cooldownSeconds: 0,
+              affectsHealth: false,
+              affectsAccount: false,
+              details: "per_key_token_budget_exhausted",
+            },
+            Date.now() - attemptStart,
+            envelope, plan, lane.policy, lane.admission, lane.deployment, lane.group,
+            stateDo, attempts, lane.attemptIndex, true,
+          );
+          return { kind: "failure", lane };
+        }
+        const providerReq: ProviderRequest = await adapter.buildRequest({
+          deployment: lane.deployment, body: envelope.body, apiKey: lane.apiKey,
+          requestId: envelope.requestId, subscriptionCtx,
+        });
+        result = await handleStreamingAttempt(
+          envelope, plan, lane.policy, lane.admission, lane.deployment,
           lane.group, stateDo, signal, attemptStart, attempts, lane.attemptIndex,
           adapter, lane.attemptTimeoutMs, lane.deploymentHealth,
-        )
-      : await handleNonStreamingAttempt(
-          envelope, plan, providerReq, lane.policy, lane.admission, lane.deployment,
-          lane.group, stateDo, signal, attemptStart, attempts, lane.attemptIndex,
-          adapter, lane.attemptTimeoutMs,
+          { providerReq, activeKeyRef: lane.admission.keyRef },
         );
+      }
+    }
     if (result) {
       releaseInFinally = false;
       return { kind: result.success ? "success" : "client", result, lane };
@@ -575,10 +1000,25 @@ function linkedAbortController(parent: AbortSignal): AbortController {
 
 // ─── Non-streaming attempt handler ────────────────────────────────
 
+interface NonStreamingAttemptFetch {
+  providerReq?: ProviderRequest;
+  prefetchedResponse?: { status: number; headers: Record<string, string>; body: string; json: Record<string, unknown> | null };
+  activeKeyRef?: string;
+}
+
+function classifyAdapterFailure(
+  adapter: ProviderAdapter,
+  status: number,
+  body: string,
+): ProviderFailureClassification | null {
+  const result = adapter.classifyFailure(status, body);
+  if (result.failureClass === "unknown_failure") return null;
+  return result;
+}
+
 async function handleNonStreamingAttempt(
   envelope: RequestEnvelope,
   plan: ExecutionPlan,
-  providerReq: { url: string; method: string; headers: Record<string, string>; body: string },
   policy: Policy,
   admission: AdmissionResponse,
   deployment: Deployment,
@@ -590,8 +1030,10 @@ async function handleNonStreamingAttempt(
   currentAttemptIndex: number,
   adapter: ProviderAdapter,
   attemptTimeoutMs: number,
+  fetch: NonStreamingAttemptFetch = {},
 ): Promise<AttemptResult | null> {
-  const providerResp = await executeProviderRequest(providerReq, {
+  const usageKeyRef = fetch.activeKeyRef ?? admission.keyRef;
+  const providerResp = fetch.prefetchedResponse ?? await executeProviderRequest(fetch.providerReq!, {
     signal: abortSignal, timeoutMs: attemptTimeoutMs,
   });
   const durationMs = Date.now() - attemptStart;
@@ -686,9 +1128,9 @@ async function handleNonStreamingAttempt(
     const usage = (responseBody as Record<string, unknown>).usage as Record<string, number> | undefined;
     const tokenUsage = normalizeProviderUsage(usage, deployment.provider);
 
-    if (tokenUsage.kind !== "unknown" && admission.keyRef) {
+    if (tokenUsage.kind !== "unknown" && usageKeyRef) {
       stateDo.recordTokenUsage?.(
-        admission.keyRef,
+        tokenWindowKey(usageKeyRef, group, policy.budget.scopeMode),
         tokenUsage.promptTokens,
         tokenUsage.completionTokens,
       ).catch((e) => logWarn("fire_forget_failed", { error: String(e) }));
@@ -709,7 +1151,7 @@ async function handleNonStreamingAttempt(
       canonicalTarget: plan.canonicalTarget, selectedGroup: group,
       deploymentId: admission.deploymentId!, provider: deployment.provider,
       model: deployment.providerModel, stream: false, finalOutcome: evaluation.action,
-      ...usageEventFromTokenUsage(tokenUsage, deployment.provider, deployment.providerModel),
+      ...usageEventFromTokenUsage(tokenUsage, deployment.provider, deployment.providerModel, deployment.billingClass),
     });
 
     return { success: true, response: resp, attempts };
@@ -736,7 +1178,7 @@ async function handleNonStreamingAttempt(
       canonicalTarget: plan.canonicalTarget, selectedGroup: group,
       deploymentId: admission.deploymentId!, provider: deployment.provider,
       model: deployment.providerModel, stream: false, finalOutcome: "fail_client",
-      ...usageEventFromTokenUsage(clientUsage, deployment.provider, deployment.providerModel),
+      ...usageEventFromTokenUsage(clientUsage, deployment.provider, deployment.providerModel, deployment.billingClass),
     });
     const errResp = new Response(
       openAIErrorJson(evaluation.failureClass, evaluation.failureMessage ?? "request failed", envelope.requestId),
@@ -776,17 +1218,22 @@ async function handleNonStreamingAttempt(
     canonicalTarget: plan.canonicalTarget, selectedGroup: group,
     deploymentId: admission.deploymentId!, provider: deployment.provider,
     model: deployment.providerModel, stream: false, finalOutcome: evaluation.action,
-    ...usageEventFromTokenUsage(retryUsage, deployment.provider, deployment.providerModel),
+    ...usageEventFromTokenUsage(retryUsage, deployment.provider, deployment.providerModel, deployment.billingClass),
   });
   return null;
 }
 
 // ─── Streaming attempt handler ────────────────────────────────────
 
+interface StreamingAttemptFetch {
+  providerReq?: ProviderRequest;
+  prefetchedStream?: StreamingProviderResult;
+  activeKeyRef?: string;
+}
+
 async function handleStreamingAttempt(
   envelope: RequestEnvelope,
   plan: ExecutionPlan,
-  providerReq: { url: string; method: string; headers: Record<string, string>; body: string },
   policy: Policy,
   admission: AdmissionResponse,
   deployment: Deployment,
@@ -799,16 +1246,19 @@ async function handleStreamingAttempt(
   adapter: ProviderAdapter,
   attemptTimeoutMs: number,
   deploymentHealth?: Partial<HealthSnapshot>,
+  fetch: StreamingAttemptFetch = {},
 ): Promise<AttemptResult | null> {
+  const usageKeyRef = fetch.activeKeyRef ?? admission.keyRef;
   try {
-    const streamResult = await executeStreamingProviderRequest(providerReq, {
+    const streamResult = fetch.prefetchedStream ?? await executeStreamingProviderRequest(fetch.providerReq!, {
       signal: abortSignal,
       timeoutMs: attemptTimeoutMs,
       streaming: true,
     });
 
     if (streamResult.status >= 400) {
-      const errorBody = await streamResult.response.text();
+      const errorBody = streamResult.body
+        ?? await streamResult.response.text().catch(() => "");
       const respHeaders = headersToRecord(streamResult.headers);
       return handleProviderHttpError(
         { status: streamResult.status, body: errorBody, headers: respHeaders, json: null },
@@ -905,9 +1355,9 @@ async function handleStreamingAttempt(
         stateDo.recordRouteDispatch?.(plan.canonicalTarget, dispatchRequestClass(envelope), group).catch((e) => logWarn("fire_forget_failed", { error: String(e) }));
       }
       const streamUsage = streamDone.usage ?? { kind: "unknown" as const, source: "streaming" };
-      if (streamUsage.kind !== "unknown" && admission.keyRef) {
+      if (streamUsage.kind !== "unknown" && usageKeyRef) {
         stateDo.recordTokenUsage?.(
-          admission.keyRef,
+          tokenWindowKey(usageKeyRef, group, policy.budget.scopeMode),
           streamUsage.promptTokens,
           streamUsage.completionTokens,
         ).catch((e) => logWarn("fire_forget_failed", { error: String(e) }));
@@ -923,7 +1373,7 @@ async function handleStreamingAttempt(
         deploymentId: admission.deploymentId!, provider: deployment.provider,
         model: deployment.providerModel, stream: true,
         finalOutcome: streamDone.wasAborted ? "stream_abort" : "success",
-        ...usageEventFromTokenUsage(streamUsage, deployment.provider, deployment.providerModel),
+        ...usageEventFromTokenUsage(streamUsage, deployment.provider, deployment.providerModel, deployment.billingClass),
       }).catch((e) => logWarn("fire_forget_failed", { error: String(e) }));
     }).finally(() => {
       clearTimeout(releaseDeadlineTimer);
@@ -963,6 +1413,186 @@ async function handleStreamingAttempt(
     });
     return null;
   }
+}
+
+// ─── Credential pool exhaustion (no deployment health penalty) ───
+
+function handleCredentialPoolExhausted(
+  lastClassification: ProviderFailureClassification | undefined,
+  durationMs: number,
+  envelope: RequestEnvelope,
+  plan: ExecutionPlan,
+  policy: Policy,
+  admission: AdmissionResponse,
+  deployment: Deployment,
+  group: string,
+  stateDo: AttemptStateAccessor,
+  attempts: AttemptRecord[],
+  currentAttemptIndex: number,
+  isStream: boolean,
+): null {
+  const failureClass = lastClassification?.failureClass ?? "rate_limit_overload";
+  const isRetryable = policy.retry.retryableFailureClasses.includes(failureClass);
+  attempts.push({
+    group, deploymentId: admission.deploymentId!, model: deployment.providerModel,
+    failureClass, failureMessage: "All credentials in rotation pool exhausted",
+    durationMs, inflightAtDispatch: admission.inflightAtDispatch,
+    action: "exhausted", attemptIndex: currentAttemptIndex,
+    statusCode: 503, retryable: isRetryable,
+  });
+  emitUnknownUsage(stateDo, {
+    requestId: envelope.requestId, attemptIndex: currentAttemptIndex, canonicalTarget: plan.canonicalTarget,
+    clientId: envelope.clientId, appId: envelope.appId,
+    userHash: envelope.userHash, teamId: envelope.teamId, policyId: envelope.policyId,
+    policyVersion: envelope.policyVersion, routeVersion: envelope.routeVersion,
+    selectedGroup: group, deploymentId: admission.deploymentId!, provider: deployment.provider,
+    model: deployment.providerModel, stream: isStream, finalOutcome: "credential_pool_exhausted",
+    usageSource: deployment.provider,
+  });
+  return null;
+}
+
+function keyRefForCredentialSlot(slot: CredentialSlot): string {
+  switch (slot.kind) {
+    case "api_key":
+      return slot.keyRef;
+    case "anthropic_oauth":
+      return slot.accountId;
+    case "chatgpt_oauth":
+      return slot.label;
+  }
+}
+
+async function credentialRotationWillRun(
+  deployment: Deployment,
+  env: Record<string, unknown>,
+  policy: Policy,
+  requestId: string,
+  stateDo: AttemptStateAccessor,
+  subscriptionCtx?: SubscriptionContext,
+): Promise<boolean> {
+  const rotationCtx = await resolveCredentialRotationContext(
+    deployment, env, policy, requestId, subscriptionCtx,
+  );
+  return useCredentialRotation(rotationCtx.pool, rotationCtx.settings)
+    && credentialHealthFromState(stateDo) !== undefined;
+}
+
+async function anyCandidateDefersPerKeyRpm(
+  deployments: Deployment[],
+  env: Record<string, unknown>,
+  policy: Policy,
+  requestId: string,
+  stateDo: AttemptStateAccessor,
+  subscriptionCtx?: SubscriptionContext,
+): Promise<boolean> {
+  if (policy.budget.scopeMode === "global") return false;
+  for (const d of deployments) {
+    if (await credentialRotationWillRun(
+      applyDeploymentRuntimeOverrides(d, env), env, policy, requestId, stateDo, subscriptionCtx,
+    )) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function chargePerKeyRpmIfDeferred(
+  stateDo: AttemptStateAccessor,
+  admission: AdmissionResponse,
+  keyRef: string,
+  group: string,
+  policy: Policy,
+): Promise<void> {
+  if (!admission.deferPerKeyRpmCharge) return;
+  await stateDo.chargePerKeyRpm?.(keyRef, group, policy.budget.scopeMode);
+}
+
+async function isPerKeyBudgetAvailableAtDispatch(
+  stateDo: AttemptStateAccessor,
+  admission: AdmissionResponse,
+  keyRef: string,
+  group: string,
+  policy: Policy,
+  rpm: number,
+): Promise<boolean> {
+  if (!admission.deferPerKeyRpmCharge) return true;
+  const tokenBudget = policy.budget.tokenBudgetPerMinute;
+  if (
+    tokenBudget && tokenBudget > 0
+    && policy.budget.scopeMode === "per_key"
+    && stateDo.isPerKeyTokenBudgetAvailable
+  ) {
+    const available = await stateDo.isPerKeyTokenBudgetAvailable(
+      keyRef, group, policy.budget.scopeMode, tokenBudget,
+    );
+    if (!available) return false;
+  }
+  if (
+    rpm > 0
+    && policy.budget.scopeMode === "per_key"
+    && stateDo.isKeyRpmAvailable
+  ) {
+    return stateDo.isKeyRpmAvailable(keyRef, group, policy.budget.scopeMode, rpm);
+  }
+  return true;
+}
+
+async function assertPerKeyBudgetAtDispatch(
+  stateDo: AttemptStateAccessor,
+  admission: AdmissionResponse,
+  keyRef: string,
+  group: string,
+  policy: Policy,
+  rpm: number,
+): Promise<boolean> {
+  if (!(await isPerKeyBudgetAvailableAtDispatch(
+    stateDo, admission, keyRef, group, policy, rpm,
+  ))) {
+    return false;
+  }
+  if (!admission.deferPerKeyRpmCharge) return true;
+  if (rpm > 0 && policy.budget.scopeMode === "per_key" && stateDo.tryChargePerKeyRpm) {
+    return stateDo.tryChargePerKeyRpm(keyRef, group, policy.budget.scopeMode, rpm);
+  }
+  await chargePerKeyRpmIfDeferred(stateDo, admission, keyRef, group, policy);
+  return true;
+}
+
+function makeBeforeExecuteCharge(
+  stateDo: AttemptStateAccessor,
+  admission: AdmissionResponse,
+  group: string,
+  policy: Policy,
+  rpm: number,
+): (slot: CredentialSlot) => Promise<boolean | void> {
+  const chargedKeys = new Set<string>();
+  return async (slot) => {
+    const keyRef = keyRefForCredentialSlot(slot);
+    if (chargedKeys.has(keyRef)) return true;
+    const ok = await assertPerKeyBudgetAtDispatch(stateDo, admission, keyRef, group, policy, rpm);
+    if (ok) chargedKeys.add(keyRef);
+    return ok;
+  };
+}
+
+async function hedgeAnyLaneSucceeded(
+  pending: Map<number, Promise<HedgeLaneOutcome>>,
+): Promise<HedgeLaneOutcome | null> {
+  const remaining = new Map(pending);
+  while (remaining.size > 0) {
+    const raced = await Promise.race(
+      [...remaining.entries()].map(async ([lane, promise]) => {
+        const outcome = await promise;
+        return { lane, outcome };
+      }),
+    );
+    if (raced.outcome.kind === "success" || raced.outcome.kind === "client") {
+      return raced.outcome;
+    }
+    remaining.delete(raced.lane);
+  }
+  return null;
 }
 
 // ─── Shared HTTP error handling ───────────────────────────────────
@@ -1269,23 +1899,58 @@ function filterDeploymentsForAttempt(
   return result.passed.map((entry) => entry.deployment);
 }
 
-function resolveKey(
+async function resolveKey(
   env: Record<string, unknown>,
   keyRef: string,
   deployment?: Deployment,
   requestId?: string,
-): string {
-  if (deployment?.provider === "chatgpt" && deployment.mode === "responses") {
-    return resolveChatGPTSubscriptionAuthMaterial(env, requestId, deployment);
+  subscriptionCtx?: SubscriptionContext,
+): Promise<string> {
+  const providerId = deployment ? inferApiKeyProviderId(deployment) : undefined;
+  const pooledSecret = providerId && keyRef
+    ? resolveApiKeySecret(env, keyRef, providerId)
+    : "";
+
+  if (deployment?.credentialOptional) {
+    const trimmed = keyRef?.trim();
+    if (!trimmed) return "";
+    const fromEnv = typeof env[trimmed] === "string" ? (env[trimmed] as string).trim() : "";
+    return pooledSecret || fromEnv;
   }
+  if (deployment?.provider === "chatgpt" && deployment.mode === "responses") {
+    return resolveChatGPTSubscriptionAuthMaterial(env, requestId, deployment, subscriptionCtx);
+  }
+  if (pooledSecret) return pooledSecret;
   return (env[keyRef] as string) ?? "";
 }
 
-function resolveChatGPTSubscriptionAuthMaterial(
+async function resolveChatGPTSubscriptionAuthMaterial(
   env: Record<string, unknown>,
   requestId?: string,
   deployment?: Deployment,
-): string {
+  subscriptionCtx?: SubscriptionContext,
+): Promise<string> {
+  if (subscriptionCtx?.chatgptOAuth) {
+    const accountIds = [
+      deployment?.keyRef?.trim(),
+      ...(deployment?.accountIds ?? []),
+      "CHATGPT_AUTH_JSON",
+      "CHATGPT_AUTH_FILE",
+    ].filter((id): id is string => Boolean(id?.trim()));
+    const seen = new Set<string>();
+    for (const accountId of accountIds) {
+      if (seen.has(accountId)) continue;
+      seen.add(accountId);
+      const material = await subscriptionCtx.chatgptOAuth.getAuthMaterial(accountId);
+      if (material) {
+        try {
+          return requireStructuredChatGPTAuthMaterial(material, accountId);
+        } catch (e) {
+          if (!(e instanceof SubscriptionTokenError)) throw e;
+        }
+      }
+    }
+  }
   const fileContent = envString(env, "CHATGPT_AUTH_FILE");
   const sources: Array<{ material: string; credentialName: string; nonJsonMessage?: string }> = [];
   const primary = envString(env, "CHATGPT_AUTH_JSON");

@@ -242,6 +242,33 @@ describe("hedged non-streaming execution", () => {
     }
   });
 
+  it("does not launch staggered lane when first lane wins during hedgeDelayMs", async () => {
+    const fast = makeDeployment("fast", "fast-model");
+    const slow = makeDeployment("slow", "slow-model");
+    const policy = makePolicy(true, 150);
+    const envelope = makeEnvelope();
+    const plan = makePlan(policy, [fast, slow]);
+    const state = makeState({ circuits: { [fast.id]: { state: "suspect" } }, healthScores: {} });
+    const fetchMock = stubFetchByModel({ "fast-model": 10, "slow-model": 500 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const result = await executeAttemptLoop(
+        envelope,
+        plan,
+        state as unknown as Parameters<typeof executeAttemptLoop>[2],
+        { FAST_KEY: "fast-key", SLOW_KEY: "slow-key" },
+        AbortSignal.timeout(5_000),
+      ) as AttemptResult;
+
+      expect(result.success).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(state.release).toHaveBeenCalledWith("res-2");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("skips lane 2 when lane 1 wins before hedgeDelayMs elapses", async () => {
     const fast = makeDeployment("fast", "fast-model");
     const slow = makeDeployment("slow", "slow-model");

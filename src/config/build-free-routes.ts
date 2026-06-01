@@ -9,6 +9,9 @@ import {
   type ModelHit,
 } from "../ops/sync-free-models";
 
+/** OpenRouter attribution header (real repo URL for OpenRouter rankings). */
+export const OPENROUTER_HTTP_REFERER = "https://github.com/jroth1111/switchboard";
+
 export function slugModelId(modelId: string): string {
   return modelId
     .replace(/[^a-zA-Z0-9]+/g, "-")
@@ -114,7 +117,7 @@ export function buildFreeDeployments(
         keyRef: primaryKeyRefForProvider("openrouter"),
         apiBase: "https://openrouter.ai/api/v1",
         freeTier: "catalog_zero",
-        extraBody: { "HTTP-Referer": "https://github.com/switchboard", "X-Title": "switchboard" },
+        extraBody: { "HTTP-Referer": OPENROUTER_HTTP_REFERER, "X-Title": "switchboard" },
       }));
       aliases[hit.modelId] = "free";
     }

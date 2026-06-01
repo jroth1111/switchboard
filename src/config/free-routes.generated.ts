@@ -475,7 +475,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -508,7 +508,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -541,7 +541,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -574,7 +574,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -607,7 +607,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -640,7 +640,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -673,7 +673,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -706,7 +706,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -739,7 +739,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -772,7 +772,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -805,7 +805,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -838,7 +838,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -871,7 +871,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -904,7 +904,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -937,7 +937,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -970,7 +970,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -1003,7 +1003,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -1036,7 +1036,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -1069,7 +1069,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -1102,7 +1102,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -1135,7 +1135,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -1168,7 +1168,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -1201,7 +1201,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -1234,7 +1234,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -1267,7 +1267,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   },
@@ -1300,7 +1300,7 @@ export const FREE_ROUTE_DEPLOYMENTS: Deployment[] = [
     "apiBase": "https://openrouter.ai/api/v1",
     "freeTier": "catalog_zero",
     "extraBody": {
-      "HTTP-Referer": "https://github.com/switchboard",
+      "HTTP-Referer": "https://github.com/jroth1111/switchboard",
       "X-Title": "switchboard"
     }
   }

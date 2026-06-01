@@ -10,7 +10,17 @@ NIM_HEALTH_TOKEN=
 # Provider credentials and subscription account material.
 ZAI_KEY_1=
 NIM_KEY_1=
+# Free multiplex (optional — Kilo/OpenCode Zen allow keyless models when catalog probe succeeds)
+# Production-style numbered keys (canonical; one secret per rotatable identity):
+OPENROUTER_API_KEY_1=
+OPENROUTER_API_KEY_2=
+GROQ_API_KEY_1=
+KILO_API_KEY_1=
+OPENCODE_API_KEY_1=
+# Local-only bootstrap (optional; comma-separated — expands to per-key slots at resolve time):
+# OPENROUTER_API_KEYS=sk-a,sk-b
 # Flat JSON object with access_token, refresh_token, and id_token.
+# Bootstrap only: first read lazy-seeds into OAuthAccountDO (chatgpt-subscription) as runtime source of truth.
 CHATGPT_AUTH_JSON='{"access_token":"","refresh_token":"","id_token":""}'
 ANTHROPIC_OAUTH_ACCOUNT=
 ANTHROPIC_CLIENT_ID=
@@ -24,4 +34,10 @@ ANTHROPIC_OAUTH_ACCOUNTS=
 ENCRYPTION_KEY=
 
 # Per-client policy + team limits (see config/client-keys.example.json).
+# segmentAliases maps external segment header values to team ids in teams{}.
+# Callers may send X-Switchboard-RateLimit-Segment (Helicone tenant/user headers also accepted).
+# oauthExcludedModels per client hides subscription-backed routes by provider/model id.
 CLIENT_KEYS_JSON=
+
+# Optional: SMART_ROUTE_SHADOW_LOG=true, SWITCHBOARD_QUERY_CAPTURE_ENABLED=true
+# Cron schedules, operator token renames, and post-deploy smoke: docs/deploy-cutover.md

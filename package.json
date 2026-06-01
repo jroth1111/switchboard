@@ -15,10 +15,13 @@
     "test": "vitest run",
     "test:watch": "vitest watch",
     "tsc": "tsc --noEmit",
-    "validate": "node scripts/check-secret-permissions.ts && node scripts/worker-types.ts check && node scripts/validate-manifest.ts",
-    "snapshot": "node scripts/write-manifest-snapshot.ts",
+    "validate": "node scripts/check-secret-permissions.ts && node scripts/worker-types.ts check && tsx scripts/validate-manifest.ts",
+    "snapshot": "tsx scripts/write-manifest-snapshot.ts",
     "sync-free-models": "tsx scripts/sync-free-models.ts",
+    "generate-free-routes": "tsx scripts/generate-free-routes.ts",
+    "migrate:api-keys": "tsx scripts/migrate-numbered-api-keys.ts",
     "bundle-size": "node scripts/bundle-size.ts",
+    "verify": "pnpm tsc && pnpm validate && pnpm test && pnpm bundle-size",
     "failures": "node scripts/failures.ts"
   },
   "devDependencies": {

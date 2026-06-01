@@ -1,0 +1,47 @@
+name: Sync free models
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - name: Probe catalogs and regenerate free routes
+        env:
+          OPENROUTER_API_KEY_1: ${{ secrets.OPENROUTER_API_KEY_1 }}
+          GROQ_API_KEY_1: ${{ secrets.GROQ_API_KEY_1 }}
+          KILO_API_KEY_1: ${{ secrets.KILO_API_KEY_1 }}
+          OPENCODE_API_KEY_1: ${{ secrets.OPENCODE_API_KEY_1 }}
+          NIM_KEY_1: ${{ secrets.NIM_KEY_1 }}
+        run: pnpm sync-free-models
+      - name: Refresh route manifest snapshot
+        run: pnpm snapshot
+      - name: Verify generated artifacts
+        run: pnpm verify
+      - name: Open PR when artifacts drift
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore: sync free model catalog"
+          title: "chore: sync free model catalog"
+          body: |
+            Automated weekly refresh of `config/sync-free-models-suggestions.json`,
+            `src/config/free-routes.generated.ts`, and `config/route-manifest.snapshot.json`
+            from live provider catalogs.
+          branch: chore/sync-free-models
+          delete-branch: true

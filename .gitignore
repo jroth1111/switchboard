@@ -9,6 +9,8 @@
 # Local Beads state
 .beads/
 .claude/
+.autoreview/
+.cursor/goal/
 
 # Dependency installs and package-manager state
 node_modules/

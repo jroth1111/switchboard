@@ -4,7 +4,7 @@
     "lib": ["es2022", "webworker"],
     "module": "es2022",
     "moduleResolution": "Bundler",
-    "types": ["@cloudflare/vitest-pool-workers"],
+    "types": ["@cloudflare/vitest-pool-workers", "node"],
     "resolveJsonModule": true,
     "allowJs": true,
     "noEmit": true,

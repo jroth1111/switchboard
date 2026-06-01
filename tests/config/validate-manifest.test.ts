@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { validateManifest, type ValidationIssue } from "../../src/config/validate-manifest";
+import { validateManifest, validateFreeRouteNimFallbacks, validateFreeRoutesFingerprint, validateFreeRoutesProvidersEnabled, type ValidationIssue } from "../../src/config/validate-manifest";
+import { validateUsagePricingCoverage } from "../../src/config/usage-pricing";
 import { MANIFEST, POLICY_PROFILES, composePolicy } from "../../src/config/manifest";
 import type { RouteManifest, RouteGroup, Deployment, Policy } from "../../src/config/schema";
 
@@ -120,6 +121,10 @@ function makeManifest(overrides: Partial<RouteManifest> = {}): RouteManifest {
 
 function errors(issues: ValidationIssue[]): ValidationIssue[] {
   return issues.filter((i) => i.kind === "error");
+}
+
+function warnings(issues: ValidationIssue[]): ValidationIssue[] {
+  return issues.filter((i) => i.kind === "warning");
 }
 
 // ─── Actual MANIFEST validation ──────────────────────────────────
@@ -481,5 +486,85 @@ describe("policy profile composition", () => {
     manifest.oauthExcludedModels = { unknown_provider: ["model-a"] };
     const issues = validateManifest(manifest);
     expect(issues.some((i) => i.code === "oauth_excluded_provider_unknown")).toBe(true);
+  });
+});
+
+// ─── Usage pricing coverage ──────────────────────────────────────
+
+describe("usage pricing coverage", () => {
+  it("has no missing-model warnings on the production manifest", () => {
+    const issues = validateUsagePricingCoverage(MANIFEST);
+    expect(warnings(issues)).toEqual([]);
+  });
+
+  it("warns when a deployment provider has no heuristic rates", () => {
+    const m = makeManifest({
+      deployments: [{
+        ...DEFAULT_DEPLOYMENT,
+        id: "unpriced-deploy",
+        provider: "unknown_provider" as Deployment["provider"],
+      }],
+    });
+    const issues = validateUsagePricingCoverage(m);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.code).toBe("usage_pricing_missing_model");
+    expect(issues[0]?.kind).toBe("warning");
+    expect(issues[0]?.message).toContain("unknown_provider");
+  });
+
+  it("deduplicates warnings for the same provider/model pair", () => {
+    const unpriced = {
+      ...DEFAULT_DEPLOYMENT,
+      provider: "unknown_provider" as Deployment["provider"],
+    };
+    const m = makeManifest({
+      deployments: [
+        { ...unpriced, id: "unpriced-a" },
+        { ...unpriced, id: "unpriced-b", keyRef: "KEY_2" },
+      ],
+    });
+    const issues = validateUsagePricingCoverage(m);
+    expect(issues.filter((i) => i.code === "usage_pricing_missing_model")).toHaveLength(1);
+  });
+
+  it("does not warn when provider defaults cover the model", () => {
+    const issues = validateUsagePricingCoverage(makeManifest());
+    expect(issues).toEqual([]);
+  });
+});
+
+describe("free route validation helpers", () => {
+  it("errors when nim fallbacks are present but providersEnabled.nim is false", () => {
+    const issues: ValidationIssue[] = [];
+    validateFreeRouteNimFallbacks(MANIFEST, issues);
+    expect(issues.some((i) => i.code === "free_route_nim_without_keys")).toBe(false);
+  });
+
+  it("detects fingerprint mismatch", () => {
+    const issues = validateFreeRoutesFingerprint("abc", "def");
+    expect(issues.some((i) => i.code === "free_routes_fingerprint_mismatch")).toBe(true);
+  });
+
+  it("detects providersEnabled mismatch", () => {
+    const issues = validateFreeRoutesProvidersEnabled(
+      { openrouter: true, groq: false, nim: false, kilo: true, opencodeZen: true },
+      { openrouter: false, groq: false, nim: false, kilo: true, opencodeZen: true },
+    );
+    expect(issues.some((i) => i.code === "free_routes_providers_enabled_mismatch")).toBe(true);
+  });
+
+  it("requires subscription billing on anthropic subscription groups", () => {
+    const m = makeManifest({
+      routeGroups: {
+        ...MANIFEST.routeGroups,
+        "anthropic-subscription-opus-4-7-high": {
+          target: "anthropic-subscription-opus-4-7-high",
+          hidden: true,
+          fallbacks: [],
+        },
+      },
+    });
+    const issues = validateManifest(m);
+    expect(issues.some((i) => i.code === "subscription_group_billing_class")).toBe(true);
   });
 });

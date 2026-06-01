@@ -2,6 +2,38 @@
   "version": "switchboard-static-2026-05-24",
   "generatedAt": "1970-01-01T00:00:00.000Z",
   "aliases": {
+    "free": "free",
+    "freemium": "free",
+    "baidu/cobuddy:free": "free",
+    "deepseek/deepseek-v4-flash:free": "free",
+    "kilo-auto/free": "free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": "free",
+    "nvidia/nemotron-3-super-120b-a12b:free": "free",
+    "openrouter/free": "free",
+    "openrouter/owl-alpha": "free",
+    "poolside/laguna-m.1:free": "free",
+    "poolside/laguna-xs.2:free": "free",
+    "x-ai/grok-code-fast-1:optimized:free": "free",
+    "deepseek-v4-flash-free": "free",
+    "nemotron-3-super-free": "free",
+    "arcee-ai/trinity-large-thinking:free": "free",
+    "cognitivecomputations/dolphin-mistral-24b-venice-edition:free": "free",
+    "google/gemma-4-26b-a4b-it:free": "free",
+    "google/gemma-4-31b-it:free": "free",
+    "liquid/lfm-2.5-1.2b-instruct:free": "free",
+    "liquid/lfm-2.5-1.2b-thinking:free": "free",
+    "meta-llama/llama-3.2-3b-instruct:free": "free",
+    "meta-llama/llama-3.3-70b-instruct:free": "free",
+    "minimax/minimax-m2.5:free": "free",
+    "nousresearch/hermes-3-llama-3.1-405b:free": "free",
+    "nvidia/nemotron-3-nano-30b-a3b:free": "free",
+    "nvidia/nemotron-nano-12b-v2-vl:free": "free",
+    "nvidia/nemotron-nano-9b-v2:free": "free",
+    "openai/gpt-oss-120b:free": "free",
+    "openai/gpt-oss-20b:free": "free",
+    "qwen/qwen3-coder:free": "free",
+    "qwen/qwen3-next-80b-a3b-instruct:free": "free",
+    "z-ai/glm-4.5-air:free": "free",
     "anthropic-subscription-opus-4-7-low": "anthropic-subscription-opus-4-7-low",
     "anthropic-subscription-opus-4-7-medium": "anthropic-subscription-opus-4-7-medium",
     "anthropic-subscription-opus-4-7-high": "anthropic-subscription-opus-4-7-high",
@@ -146,9 +178,45 @@
     "custom:nvidia-minimax-m2.5-proxy-7": "nim-minimax-m2.7"
   },
   "routeGroups": {
+    "free": {
+      "target": "free-kilo",
+      "hidden": false,
+      "fallbacks": [
+        "free-opencode-zen",
+        "free-openrouter",
+        "nim-deepseek-v4-pro",
+        "nim-kimi-k2.5",
+        "nim-minimax-m2.7",
+        "nim-primary",
+        "nim-tool-primary"
+      ],
+      "billingClass": "free"
+    },
+    "free-kilo": {
+      "target": "free-kilo",
+      "hidden": false,
+      "fallbacks": [],
+      "billingClass": "free",
+      "modelPassthrough": true
+    },
+    "free-opencode-zen": {
+      "target": "free-opencode-zen",
+      "hidden": false,
+      "fallbacks": [],
+      "billingClass": "free",
+      "modelPassthrough": true
+    },
+    "free-openrouter": {
+      "target": "free-openrouter",
+      "hidden": false,
+      "fallbacks": [],
+      "billingClass": "free",
+      "modelPassthrough": true
+    },
     "smart-route-worker": {
       "target": "zai-glm-5.1",
       "hidden": false,
+      "billingClass": "subscription",
       "fallbacks": [
         "nim-primary",
         "nim-deepseek-v4-pro",
@@ -174,11 +242,13 @@
     "zai-glm-5.1-terminal-fallback": {
       "target": "zai-glm-5.1",
       "hidden": true,
-      "fallbacks": []
+      "fallbacks": [],
+      "billingClass": "subscription"
     },
     "nim-tool-primary": {
       "target": "nim-gemma-4-31b-it",
       "hidden": false,
+      "billingClass": "free",
       "dedicatedToolLane": true,
       "fallbacks": [
         "nim-secondary",
@@ -203,6 +273,7 @@
     "nim-secondary": {
       "target": "nim-minimax-m2.7",
       "hidden": false,
+      "billingClass": "free",
       "dedicatedToolLane": true,
       "fallbacks": [
         "nim-primary",
@@ -213,6 +284,7 @@
     "nim-primary": {
       "target": "nim-primary",
       "hidden": false,
+      "billingClass": "free",
       "fallbacks": [
         "nim-deepseek-v4-pro",
         "nim-kimi-k2.5",
@@ -239,6 +311,7 @@
     "nim-deepseek-v4-pro": {
       "target": "nim-deepseek-v4-pro",
       "hidden": false,
+      "billingClass": "free",
       "fallbacks": [
         "nim-minimax-m2.7",
         "zai-glm-5.1-terminal-fallback"
@@ -247,6 +320,7 @@
     "nim-kimi-k2.5": {
       "target": "nim-kimi-k2.5",
       "hidden": false,
+      "billingClass": "free",
       "fallbacks": [
         "nim-minimax-m2.7",
         "zai-glm-5.1-terminal-fallback"
@@ -255,6 +329,7 @@
     "nim-minimax-m2.7": {
       "target": "nim-minimax-m2.7",
       "hidden": false,
+      "billingClass": "free",
       "fallbacks": [
         "zai-glm-5.1-terminal-fallback"
       ]
@@ -262,66 +337,79 @@
     "anthropic-subscription-opus-4-7-low": {
       "target": "anthropic-subscription-opus-4-7-low",
       "hidden": true,
-      "fallbacks": []
+      "fallbacks": [],
+      "billingClass": "subscription"
     },
     "anthropic-subscription-opus-4-7-medium": {
       "target": "anthropic-subscription-opus-4-7-medium",
       "hidden": true,
-      "fallbacks": []
+      "fallbacks": [],
+      "billingClass": "subscription"
     },
     "anthropic-subscription-opus-4-7-high": {
       "target": "anthropic-subscription-opus-4-7-high",
       "hidden": true,
-      "fallbacks": []
+      "fallbacks": [],
+      "billingClass": "subscription"
     },
     "anthropic-subscription-opus-4-7-xhigh": {
       "target": "anthropic-subscription-opus-4-7-xhigh",
       "hidden": true,
-      "fallbacks": []
+      "fallbacks": [],
+      "billingClass": "subscription"
     },
     "anthropic-subscription-opus-4-7-max": {
       "target": "anthropic-subscription-opus-4-7-max",
       "hidden": true,
-      "fallbacks": []
+      "fallbacks": [],
+      "billingClass": "subscription"
     },
     "anthropic-subscription-sonnet-4-6-low": {
       "target": "anthropic-subscription-sonnet-4-6-low",
       "hidden": true,
-      "fallbacks": []
+      "fallbacks": [],
+      "billingClass": "subscription"
     },
     "anthropic-subscription-sonnet-4-6-medium": {
       "target": "anthropic-subscription-sonnet-4-6-medium",
       "hidden": true,
-      "fallbacks": []
+      "fallbacks": [],
+      "billingClass": "subscription"
     },
     "anthropic-subscription-sonnet-4-6-high": {
       "target": "anthropic-subscription-sonnet-4-6-high",
       "hidden": true,
-      "fallbacks": []
+      "fallbacks": [],
+      "billingClass": "subscription"
     },
     "anthropic-subscription-sonnet-4-6-max": {
       "target": "anthropic-subscription-sonnet-4-6-max",
       "hidden": true,
-      "fallbacks": []
+      "fallbacks": [],
+      "billingClass": "subscription"
     },
     "chatgpt-subscription-gpt-5.5-none": {
       "target": "chatgpt-subscription-gpt-5.5-none",
       "hidden": true,
-      "fallbacks": []
+      "fallbacks": [],
+      "billingClass": "subscription"
     },
     "chatgpt-subscription-gpt-5.5-minimal": {
       "target": "chatgpt-subscription-gpt-5.5-minimal",
       "hidden": true,
-      "fallbacks": []
+      "fallbacks": [],
+      "billingClass": "subscription"
     },
     "chatgpt-subscription-gpt-5.5-low": {
       "target": "chatgpt-subscription-gpt-5.5-low",
       "hidden": true,
-      "fallbacks": []
+      "fallbacks": [],
+      "billingClass": "subscription"
     },
     "chatgpt-subscription-gpt-5.5-medium": {
       "target": "chatgpt-subscription-gpt-5.5-medium",
       "hidden": true,
+      "billingClass": "subscription",
       "fallbacks": [
         "chatgpt-subscription-gpt-5.5-high",
         "chatgpt-subscription-gpt-5.5-low"
@@ -339,15 +427,457 @@
     "chatgpt-subscription-gpt-5.5-high": {
       "target": "chatgpt-subscription-gpt-5.5-high",
       "hidden": true,
-      "fallbacks": []
+      "fallbacks": [],
+      "billingClass": "subscription"
     },
     "chatgpt-subscription-gpt-5.5-xhigh": {
       "target": "chatgpt-subscription-gpt-5.5-xhigh",
       "hidden": true,
-      "fallbacks": []
+      "fallbacks": [],
+      "billingClass": "subscription"
     }
   },
   "policies": {
+    "free": {
+      "request": {
+        "unsupportedParams": [
+          "logit_bias",
+          "logprobs",
+          "top_logprobs",
+          "stream_options",
+          "ignore_eos",
+          "parallel_tool_calls",
+          "response_format"
+        ],
+        "supportedSurfaces": [
+          "chat_completions"
+        ],
+        "supportedOperations": [
+          "chat",
+          "chat_stream",
+          "tool",
+          "tool_stream",
+          "strict_tool",
+          "strict_tool_stream"
+        ],
+        "allowedContentClasses": [
+          "empty",
+          "text",
+          "multimodal",
+          "tool_result"
+        ],
+        "rejectStreamingTools": false,
+        "stripReasoningFromSuccess": true,
+        "minRequestTokens": 512,
+        "maxRequestTokens": null,
+        "enableReasoning": true
+      },
+      "deadline": {
+        "attemptTimeoutSeconds": 45,
+        "firstTokenTimeoutSeconds": 15,
+        "streamIdleTimeoutSeconds": 30,
+        "streamHardTimeoutSeconds": 120,
+        "totalTimeoutSeconds": 240
+      },
+      "retry": {
+        "transportRetries": 0,
+        "semanticRetries": 0,
+        "retryableFailureClasses": [
+          "transport_error",
+          "transport_timeout",
+          "server_5xx",
+          "rate_limit_overload",
+          "semantic_failure",
+          "truncated_response",
+          "tool_contract_failure"
+        ],
+        "backoffBaseMs": 250,
+        "backoffMaxMs": 2000,
+        "hedge": {
+          "enabled": false,
+          "maxCandidates": 1,
+          "onlyWhenSuspect": true,
+          "hedgeDelayMs": 0
+        }
+      },
+      "health": {
+        "circuitFailureThreshold": 5,
+        "circuitDurationSeconds": 300,
+        "transportCooldownThreshold": 2,
+        "transportCooldownSeconds": 90,
+        "semanticCooldownThreshold": 1,
+        "rateLimitCooldownThreshold": 1,
+        "halfOpenPenalty": 2.5,
+        "circuitSuccessThreshold": 3,
+        "probeMaxInflight": 1,
+        "suspectThresholdFraction": 0.6,
+        "suspectMaxParallelDivisor": 2,
+        "latencyPenaltyFactor": 5,
+        "latencyEmaAlpha": 0.3,
+        "latencyWarmupSamples": 5
+      },
+      "budget": {
+        "scopeMode": "per_key",
+        "rpmLimit": 20,
+        "maxParallelRequests": 2,
+        "learnedConcurrencyEnabled": true,
+        "learnedConcurrencyTtlSeconds": 60,
+        "staleInflightSeconds": 120,
+        "tokenBudgetPerMinute": null
+      }
+    },
+    "free-kilo": {
+      "request": {
+        "unsupportedParams": [
+          "logit_bias",
+          "logprobs",
+          "top_logprobs",
+          "stream_options",
+          "ignore_eos",
+          "parallel_tool_calls",
+          "response_format"
+        ],
+        "supportedSurfaces": [
+          "chat_completions"
+        ],
+        "supportedOperations": [
+          "chat",
+          "chat_stream",
+          "tool",
+          "tool_stream",
+          "strict_tool",
+          "strict_tool_stream"
+        ],
+        "allowedContentClasses": [
+          "empty",
+          "text",
+          "multimodal",
+          "tool_result"
+        ],
+        "rejectStreamingTools": false,
+        "stripReasoningFromSuccess": true,
+        "minRequestTokens": 512,
+        "maxRequestTokens": null,
+        "enableReasoning": true
+      },
+      "deadline": {
+        "attemptTimeoutSeconds": 45,
+        "firstTokenTimeoutSeconds": 15,
+        "streamIdleTimeoutSeconds": 30,
+        "streamHardTimeoutSeconds": 120,
+        "totalTimeoutSeconds": 240
+      },
+      "retry": {
+        "transportRetries": 0,
+        "semanticRetries": 0,
+        "retryableFailureClasses": [
+          "transport_error",
+          "transport_timeout",
+          "server_5xx",
+          "rate_limit_overload",
+          "semantic_failure",
+          "truncated_response",
+          "tool_contract_failure"
+        ],
+        "backoffBaseMs": 250,
+        "backoffMaxMs": 2000,
+        "hedge": {
+          "enabled": false,
+          "maxCandidates": 1,
+          "onlyWhenSuspect": true,
+          "hedgeDelayMs": 0
+        }
+      },
+      "health": {
+        "circuitFailureThreshold": 5,
+        "circuitDurationSeconds": 300,
+        "transportCooldownThreshold": 2,
+        "transportCooldownSeconds": 90,
+        "semanticCooldownThreshold": 1,
+        "rateLimitCooldownThreshold": 1,
+        "halfOpenPenalty": 2.5,
+        "circuitSuccessThreshold": 3,
+        "probeMaxInflight": 1,
+        "suspectThresholdFraction": 0.6,
+        "suspectMaxParallelDivisor": 2,
+        "latencyPenaltyFactor": 5,
+        "latencyEmaAlpha": 0.3,
+        "latencyWarmupSamples": 5
+      },
+      "budget": {
+        "scopeMode": "per_key",
+        "rpmLimit": 20,
+        "maxParallelRequests": 2,
+        "learnedConcurrencyEnabled": true,
+        "learnedConcurrencyTtlSeconds": 60,
+        "staleInflightSeconds": 120,
+        "tokenBudgetPerMinute": null
+      }
+    },
+    "free-opencode-zen": {
+      "request": {
+        "unsupportedParams": [
+          "logit_bias",
+          "logprobs",
+          "top_logprobs",
+          "stream_options",
+          "ignore_eos",
+          "parallel_tool_calls",
+          "response_format"
+        ],
+        "supportedSurfaces": [
+          "chat_completions"
+        ],
+        "supportedOperations": [
+          "chat",
+          "chat_stream",
+          "tool",
+          "tool_stream",
+          "strict_tool",
+          "strict_tool_stream"
+        ],
+        "allowedContentClasses": [
+          "empty",
+          "text",
+          "multimodal",
+          "tool_result"
+        ],
+        "rejectStreamingTools": false,
+        "stripReasoningFromSuccess": true,
+        "minRequestTokens": 512,
+        "maxRequestTokens": null,
+        "enableReasoning": true
+      },
+      "deadline": {
+        "attemptTimeoutSeconds": 45,
+        "firstTokenTimeoutSeconds": 15,
+        "streamIdleTimeoutSeconds": 30,
+        "streamHardTimeoutSeconds": 120,
+        "totalTimeoutSeconds": 240
+      },
+      "retry": {
+        "transportRetries": 0,
+        "semanticRetries": 0,
+        "retryableFailureClasses": [
+          "transport_error",
+          "transport_timeout",
+          "server_5xx",
+          "rate_limit_overload",
+          "semantic_failure",
+          "truncated_response",
+          "tool_contract_failure"
+        ],
+        "backoffBaseMs": 250,
+        "backoffMaxMs": 2000,
+        "hedge": {
+          "enabled": false,
+          "maxCandidates": 1,
+          "onlyWhenSuspect": true,
+          "hedgeDelayMs": 0
+        }
+      },
+      "health": {
+        "circuitFailureThreshold": 5,
+        "circuitDurationSeconds": 300,
+        "transportCooldownThreshold": 2,
+        "transportCooldownSeconds": 90,
+        "semanticCooldownThreshold": 1,
+        "rateLimitCooldownThreshold": 1,
+        "halfOpenPenalty": 2.5,
+        "circuitSuccessThreshold": 3,
+        "probeMaxInflight": 1,
+        "suspectThresholdFraction": 0.6,
+        "suspectMaxParallelDivisor": 2,
+        "latencyPenaltyFactor": 5,
+        "latencyEmaAlpha": 0.3,
+        "latencyWarmupSamples": 5
+      },
+      "budget": {
+        "scopeMode": "per_key",
+        "rpmLimit": 20,
+        "maxParallelRequests": 2,
+        "learnedConcurrencyEnabled": true,
+        "learnedConcurrencyTtlSeconds": 60,
+        "staleInflightSeconds": 120,
+        "tokenBudgetPerMinute": null
+      }
+    },
+    "free-openrouter": {
+      "request": {
+        "unsupportedParams": [
+          "logit_bias",
+          "logprobs",
+          "top_logprobs",
+          "stream_options",
+          "ignore_eos",
+          "parallel_tool_calls",
+          "response_format"
+        ],
+        "supportedSurfaces": [
+          "chat_completions"
+        ],
+        "supportedOperations": [
+          "chat",
+          "chat_stream",
+          "tool",
+          "tool_stream",
+          "strict_tool",
+          "strict_tool_stream"
+        ],
+        "allowedContentClasses": [
+          "empty",
+          "text",
+          "multimodal",
+          "tool_result"
+        ],
+        "rejectStreamingTools": false,
+        "stripReasoningFromSuccess": true,
+        "minRequestTokens": 512,
+        "maxRequestTokens": null,
+        "enableReasoning": true
+      },
+      "deadline": {
+        "attemptTimeoutSeconds": 45,
+        "firstTokenTimeoutSeconds": 15,
+        "streamIdleTimeoutSeconds": 30,
+        "streamHardTimeoutSeconds": 120,
+        "totalTimeoutSeconds": 240
+      },
+      "retry": {
+        "transportRetries": 0,
+        "semanticRetries": 0,
+        "retryableFailureClasses": [
+          "transport_error",
+          "transport_timeout",
+          "server_5xx",
+          "rate_limit_overload",
+          "semantic_failure",
+          "truncated_response",
+          "tool_contract_failure"
+        ],
+        "backoffBaseMs": 250,
+        "backoffMaxMs": 2000,
+        "hedge": {
+          "enabled": false,
+          "maxCandidates": 1,
+          "onlyWhenSuspect": true,
+          "hedgeDelayMs": 0
+        }
+      },
+      "health": {
+        "circuitFailureThreshold": 5,
+        "circuitDurationSeconds": 300,
+        "transportCooldownThreshold": 2,
+        "transportCooldownSeconds": 90,
+        "semanticCooldownThreshold": 1,
+        "rateLimitCooldownThreshold": 1,
+        "halfOpenPenalty": 2.5,
+        "circuitSuccessThreshold": 3,
+        "probeMaxInflight": 1,
+        "suspectThresholdFraction": 0.6,
+        "suspectMaxParallelDivisor": 2,
+        "latencyPenaltyFactor": 5,
+        "latencyEmaAlpha": 0.3,
+        "latencyWarmupSamples": 5
+      },
+      "budget": {
+        "scopeMode": "per_key",
+        "rpmLimit": 20,
+        "maxParallelRequests": 2,
+        "learnedConcurrencyEnabled": true,
+        "learnedConcurrencyTtlSeconds": 60,
+        "staleInflightSeconds": 120,
+        "tokenBudgetPerMinute": null
+      }
+    },
+    "free-groq": {
+      "request": {
+        "unsupportedParams": [
+          "logit_bias",
+          "logprobs",
+          "top_logprobs",
+          "stream_options",
+          "ignore_eos",
+          "parallel_tool_calls",
+          "response_format"
+        ],
+        "supportedSurfaces": [
+          "chat_completions"
+        ],
+        "supportedOperations": [
+          "chat",
+          "chat_stream",
+          "tool",
+          "tool_stream",
+          "strict_tool",
+          "strict_tool_stream"
+        ],
+        "allowedContentClasses": [
+          "empty",
+          "text",
+          "multimodal",
+          "tool_result"
+        ],
+        "rejectStreamingTools": false,
+        "stripReasoningFromSuccess": true,
+        "minRequestTokens": 512,
+        "maxRequestTokens": null,
+        "enableReasoning": true
+      },
+      "deadline": {
+        "attemptTimeoutSeconds": 45,
+        "firstTokenTimeoutSeconds": 15,
+        "streamIdleTimeoutSeconds": 30,
+        "streamHardTimeoutSeconds": 120,
+        "totalTimeoutSeconds": 240
+      },
+      "retry": {
+        "transportRetries": 0,
+        "semanticRetries": 0,
+        "retryableFailureClasses": [
+          "transport_error",
+          "transport_timeout",
+          "server_5xx",
+          "rate_limit_overload",
+          "semantic_failure",
+          "truncated_response",
+          "tool_contract_failure"
+        ],
+        "backoffBaseMs": 250,
+        "backoffMaxMs": 2000,
+        "hedge": {
+          "enabled": false,
+          "maxCandidates": 1,
+          "onlyWhenSuspect": true,
+          "hedgeDelayMs": 0
+        }
+      },
+      "health": {
+        "circuitFailureThreshold": 5,
+        "circuitDurationSeconds": 300,
+        "transportCooldownThreshold": 2,
+        "transportCooldownSeconds": 90,
+        "semanticCooldownThreshold": 1,
+        "rateLimitCooldownThreshold": 1,
+        "halfOpenPenalty": 2.5,
+        "circuitSuccessThreshold": 3,
+        "probeMaxInflight": 1,
+        "suspectThresholdFraction": 0.6,
+        "suspectMaxParallelDivisor": 2,
+        "latencyPenaltyFactor": 5,
+        "latencyEmaAlpha": 0.3,
+        "latencyWarmupSamples": 5
+      },
+      "budget": {
+        "scopeMode": "per_key",
+        "rpmLimit": 20,
+        "maxParallelRequests": 2,
+        "learnedConcurrencyEnabled": true,
+        "learnedConcurrencyTtlSeconds": 60,
+        "staleInflightSeconds": 120,
+        "tokenBudgetPerMinute": null
+      }
+    },
     "smart-route-worker": {
       "request": {
         "unsupportedParams": [
@@ -2355,6 +2885,842 @@
     }
   },
   "deployments": [
+    {
+      "id": "free-kilo-baidu-cobuddy-free",
+      "group": "free-kilo",
+      "provider": "openai",
+      "model": "baidu-cobuddy-free",
+      "providerModel": "baidu/cobuddy:free",
+      "apiBase": "https://api.kilo.ai/api/gateway",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-kilo-deepseek-deepseek-v4-flash-free",
+      "group": "free-kilo",
+      "provider": "openai",
+      "model": "deepseek-deepseek-v4-flash-free",
+      "providerModel": "deepseek/deepseek-v4-flash:free",
+      "apiBase": "https://api.kilo.ai/api/gateway",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-kilo-kilo-auto-free",
+      "group": "free-kilo",
+      "provider": "openai",
+      "model": "kilo-auto-free",
+      "providerModel": "kilo-auto/free",
+      "apiBase": "https://api.kilo.ai/api/gateway",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-kilo-nvidia-nemotron-3-nano-omni-30b-a3b-reasoning-free",
+      "group": "free-kilo",
+      "provider": "openai",
+      "model": "nvidia-nemotron-3-nano-omni-30b-a3b-reasoning-free",
+      "providerModel": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+      "apiBase": "https://api.kilo.ai/api/gateway",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-kilo-nvidia-nemotron-3-super-120b-a12b-free",
+      "group": "free-kilo",
+      "provider": "openai",
+      "model": "nvidia-nemotron-3-super-120b-a12b-free",
+      "providerModel": "nvidia/nemotron-3-super-120b-a12b:free",
+      "apiBase": "https://api.kilo.ai/api/gateway",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-kilo-openrouter-free",
+      "group": "free-kilo",
+      "provider": "openai",
+      "model": "openrouter-free",
+      "providerModel": "openrouter/free",
+      "apiBase": "https://api.kilo.ai/api/gateway",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-kilo-openrouter-owl-alpha",
+      "group": "free-kilo",
+      "provider": "openai",
+      "model": "openrouter-owl-alpha",
+      "providerModel": "openrouter/owl-alpha",
+      "apiBase": "https://api.kilo.ai/api/gateway",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-kilo-poolside-laguna-m-1-free",
+      "group": "free-kilo",
+      "provider": "openai",
+      "model": "poolside-laguna-m-1-free",
+      "providerModel": "poolside/laguna-m.1:free",
+      "apiBase": "https://api.kilo.ai/api/gateway",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-kilo-poolside-laguna-xs-2-free",
+      "group": "free-kilo",
+      "provider": "openai",
+      "model": "poolside-laguna-xs-2-free",
+      "providerModel": "poolside/laguna-xs.2:free",
+      "apiBase": "https://api.kilo.ai/api/gateway",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-kilo-x-ai-grok-code-fast-1-optimized-free",
+      "group": "free-kilo",
+      "provider": "openai",
+      "model": "x-ai-grok-code-fast-1-optimized-free",
+      "providerModel": "x-ai/grok-code-fast-1:optimized:free",
+      "apiBase": "https://api.kilo.ai/api/gateway",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-zen-deepseek-v4-flash-free",
+      "group": "free-opencode-zen",
+      "provider": "openai",
+      "model": "deepseek-v4-flash-free",
+      "providerModel": "deepseek-v4-flash-free",
+      "apiBase": "https://opencode.ai/zen/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-zen-nemotron-3-super-free",
+      "group": "free-opencode-zen",
+      "provider": "openai",
+      "model": "nemotron-3-super-free",
+      "providerModel": "nemotron-3-super-free",
+      "apiBase": "https://opencode.ai/zen/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-arcee-ai-trinity-large-thinking-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "arcee-ai-trinity-large-thinking-free",
+      "providerModel": "arcee-ai/trinity-large-thinking:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-baidu-cobuddy-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "baidu-cobuddy-free",
+      "providerModel": "baidu/cobuddy:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-cognitivecomputations-dolphin-mistral-24b-venice-edition-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "cognitivecomputations-dolphin-mistral-24b-venice-edition-free",
+      "providerModel": "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-deepseek-deepseek-v4-flash-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "deepseek-deepseek-v4-flash-free",
+      "providerModel": "deepseek/deepseek-v4-flash:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-google-gemma-4-26b-a4b-it-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "google-gemma-4-26b-a4b-it-free",
+      "providerModel": "google/gemma-4-26b-a4b-it:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-google-gemma-4-31b-it-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "google-gemma-4-31b-it-free",
+      "providerModel": "google/gemma-4-31b-it:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-liquid-lfm-2-5-1-2b-instruct-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "liquid-lfm-2-5-1-2b-instruct-free",
+      "providerModel": "liquid/lfm-2.5-1.2b-instruct:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-liquid-lfm-2-5-1-2b-thinking-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "liquid-lfm-2-5-1-2b-thinking-free",
+      "providerModel": "liquid/lfm-2.5-1.2b-thinking:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-meta-llama-llama-3-2-3b-instruct-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "meta-llama-llama-3-2-3b-instruct-free",
+      "providerModel": "meta-llama/llama-3.2-3b-instruct:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-meta-llama-llama-3-3-70b-instruct-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "meta-llama-llama-3-3-70b-instruct-free",
+      "providerModel": "meta-llama/llama-3.3-70b-instruct:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-minimax-minimax-m2-5-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "minimax-minimax-m2-5-free",
+      "providerModel": "minimax/minimax-m2.5:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-nousresearch-hermes-3-llama-3-1-405b-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "nousresearch-hermes-3-llama-3-1-405b-free",
+      "providerModel": "nousresearch/hermes-3-llama-3.1-405b:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-nvidia-nemotron-3-nano-30b-a3b-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "nvidia-nemotron-3-nano-30b-a3b-free",
+      "providerModel": "nvidia/nemotron-3-nano-30b-a3b:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-nvidia-nemotron-3-nano-omni-30b-a3b-reasoning-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "nvidia-nemotron-3-nano-omni-30b-a3b-reasoning-free",
+      "providerModel": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-nvidia-nemotron-3-super-120b-a12b-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "nvidia-nemotron-3-super-120b-a12b-free",
+      "providerModel": "nvidia/nemotron-3-super-120b-a12b:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-nvidia-nemotron-nano-12b-v2-vl-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "nvidia-nemotron-nano-12b-v2-vl-free",
+      "providerModel": "nvidia/nemotron-nano-12b-v2-vl:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "native"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-nvidia-nemotron-nano-9b-v2-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "nvidia-nemotron-nano-9b-v2-free",
+      "providerModel": "nvidia/nemotron-nano-9b-v2:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-openai-gpt-oss-120b-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "openai-gpt-oss-120b-free",
+      "providerModel": "openai/gpt-oss-120b:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-openai-gpt-oss-20b-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "openai-gpt-oss-20b-free",
+      "providerModel": "openai/gpt-oss-20b:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-openrouter-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "openrouter-free",
+      "providerModel": "openrouter/free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-openrouter-owl-alpha",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "openrouter-owl-alpha",
+      "providerModel": "openrouter/owl-alpha",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-poolside-laguna-m-1-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "poolside-laguna-m-1-free",
+      "providerModel": "poolside/laguna-m.1:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-poolside-laguna-xs-2-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "poolside-laguna-xs-2-free",
+      "providerModel": "poolside/laguna-xs.2:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-qwen-qwen3-coder-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "qwen-qwen3-coder-free",
+      "providerModel": "qwen/qwen3-coder:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-qwen-qwen3-next-80b-a3b-instruct-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "qwen-qwen3-next-80b-a3b-instruct-free",
+      "providerModel": "qwen/qwen3-next-80b-a3b-instruct:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
+    {
+      "id": "free-or-z-ai-glm-4-5-air-free",
+      "group": "free-openrouter",
+      "provider": "openai",
+      "model": "z-ai-glm-4-5-air-free",
+      "providerModel": "z-ai/glm-4.5-air:free",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "rpm": 20,
+      "maxParallelRequests": 1,
+      "timeout": 500,
+      "streamTimeout": 500,
+      "supportsStreaming": true,
+      "capabilities": {
+        "toolCalling": "best_effort",
+        "streamingWithTools": "best_effort",
+        "jsonMode": "native",
+        "reasoning": "none",
+        "multimodal": "none"
+      },
+      "contextWindow": 128000,
+      "hidden": false
+    },
     {
       "id": "zai-glm-5.1-key-1",
       "group": "smart-route-worker",

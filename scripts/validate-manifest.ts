@@ -4,10 +4,20 @@
 
 import { readFileSync } from "node:fs";
 import { MANIFEST, ROUTE_MANIFEST_VERSION } from "../src/config/manifest.ts";
-import { ROUTING_ONLY_ROUTE_GROUPS, validateManifest } from "../src/config/validate-manifest.ts";
+import { FREE_ROUTES_FINGERPRINT, FREE_ROUTES_PROVIDERS_ENABLED } from "../src/config/free-routes.generated.ts";
+import {
+  ROUTING_ONLY_ROUTE_GROUPS,
+  validateApiKeyCredentialEnv,
+  validateFreeRoutesFingerprint,
+  validateFreeRoutesProvidersEnabled,
+  validateManifest,
+} from "../src/config/validate-manifest.ts";
+import type { FreeCatalogSuggestions } from "../src/ops/sync-free-models.ts";
 import { buildManifestSnapshot, canonicalJson } from "./manifest-snapshot.ts";
 import { loadLocalSecretEnv, validateChatGPTStructuredAuthSurface } from "./chatgpt-auth-secrets.ts";
 import { collectFreeModelSuggestions, FREE_MODEL_ENDPOINTS } from "../src/ops/sync-free-models.ts";
+import { parseTeamLimits, validateSegmentAliases } from "../src/http/team-limits.ts";
+import { validateUsagePricingCoverage } from "../src/config/usage-pricing.ts";
 
 interface ValidationError {
   severity: "error" | "warning";
@@ -34,6 +44,56 @@ for (const issue of validateManifest(MANIFEST)) {
   const message = issue.detail ? `${issue.message} — ${issue.detail}` : issue.message;
   if (issue.kind === "error") error(`[${issue.code}] ${message}`);
   else warn(`[${issue.code}] ${message}`);
+}
+
+for (const issue of validateUsagePricingCoverage(MANIFEST)) {
+  const message = issue.detail ? `${issue.message} — ${issue.detail}` : issue.message;
+  warn(`[${issue.code}] ${message}`);
+}
+
+const localSecrets = loadLocalSecretEnv();
+for (const issue of validateApiKeyCredentialEnv(localSecrets.values)) {
+  const message = issue.detail ? `${issue.message} — ${issue.detail}` : issue.message;
+  if (issue.kind === "error") error(`[${issue.code}] ${message}`);
+  else warn(`[${issue.code}] ${message}`);
+}
+
+const suggestionsPath = "config/sync-free-models-suggestions.json";
+try {
+  const suggestionsRaw = JSON.parse(readFileSync(suggestionsPath, "utf8")) as Pick<
+    FreeCatalogSuggestions,
+    "fingerprint" | "providersEnabled"
+  >;
+  for (const issue of validateFreeRoutesFingerprint(suggestionsRaw.fingerprint, FREE_ROUTES_FINGERPRINT)) {
+    const message = issue.detail ? `${issue.message} — ${issue.detail}` : issue.message;
+    if (issue.kind === "error") error(`[${issue.code}] ${message}`);
+    else warn(`[${issue.code}] ${message}`);
+  }
+  for (const issue of validateFreeRoutesProvidersEnabled(
+    suggestionsRaw.providersEnabled,
+    FREE_ROUTES_PROVIDERS_ENABLED,
+  )) {
+    const message = issue.detail ? `${issue.message} — ${issue.detail}` : issue.message;
+    if (issue.kind === "error") error(`[${issue.code}] ${message}`);
+    else warn(`[${issue.code}] ${message}`);
+  }
+} catch (err) {
+  if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+    error(`[free_routes] missing ${suggestionsPath}; run pnpm sync-free-models and commit the catalog`);
+  } else {
+    warn(`[free_routes] unable to read ${suggestionsPath}: ${(err as Error).message}`);
+  }
+}
+
+const clientKeysFixturePath = "config/fixtures/client-keys.ci.json";
+try {
+  const clientKeysRaw = readFileSync(clientKeysFixturePath, "utf8");
+  const teams = parseTeamLimits(clientKeysRaw);
+  for (const issue of validateSegmentAliases(clientKeysRaw, teams)) {
+    warn(`[${issue.code}] ${issue.message}`);
+  }
+} catch {
+  // Fixture optional outside CI
 }
 
 // Visible alias targets have deployments (unless known routing-only groups)

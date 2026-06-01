@@ -3,6 +3,15 @@
 
 import type { RouteManifest, Policy, Deployment, PolicyProfile } from "./schema";
 
+const NIM_FREE_BILLING = { billingClass: "free" as const, freeTier: "nim_api" as const };
+const SUBSCRIPTION_BILLING = { billingClass: "subscription" as const };
+import {
+  FREE_ROUTE_ALIASES,
+  FREE_ROUTE_DEPLOYMENTS,
+  FREE_ROUTE_GROUPS,
+  FREE_ROUTE_POLICY_NAMES,
+} from "./free-routes.generated";
+
 export const ROUTE_MANIFEST_VERSION = "switchboard-static-2026-05-24";
 
 // ─── Default policy ───────────────────────────────────────────────
@@ -196,7 +205,22 @@ function anthropicMessages(): Policy {
   return composePolicy(["anthropic-messages"]);
 }
 
+function freeMultiplexPolicy(): Policy {
+  return composePolicy(["nim-openai-chat"], {
+    request: {
+      allowedContentClasses: ["empty", "text", "multimodal", "tool_result"],
+    },
+    retry: { hedge: { enabled: false, maxCandidates: 1, onlyWhenSuspect: true, hedgeDelayMs: 0 } },
+    budget: { rpmLimit: 20, maxParallelRequests: 2 },
+  });
+}
+
+const freeRoutePolicies = Object.fromEntries(
+  FREE_ROUTE_POLICY_NAMES.map((name) => [name, freeMultiplexPolicy()]),
+) as Record<string, Policy>;
+
 const policies: Record<string, Policy> = {
+  ...freeRoutePolicies,
   "smart-route-worker": composePolicy(["reasoning-enabled"]),
   "zai-glm-5.1-terminal-fallback": composePolicy(["reasoning-enabled"]),
   "chatgpt-subscription-gpt-5.5-none": chatgptResponses(),
@@ -233,6 +257,7 @@ export const MANIFEST: RouteManifest = {
   },
 
   aliases: {
+    ...FREE_ROUTE_ALIASES,
     "anthropic-subscription-opus-4-7-low": "anthropic-subscription-opus-4-7-low",
     "anthropic-subscription-opus-4-7-medium": "anthropic-subscription-opus-4-7-medium",
     "anthropic-subscription-opus-4-7-high": "anthropic-subscription-opus-4-7-high",
@@ -261,7 +286,6 @@ export const MANIFEST: RouteManifest = {
     "claude-opus-4-20250514": "anthropic-subscription-opus-4-7-high",
     "claude-opus-4-6": "anthropic-subscription-opus-4-7-high",
     "claude-opus-4-6-fast": "anthropic-subscription-opus-4-7-high",
-    // VibeProxy GHCP / editor IDs (ModelAliasMapper.swift)
     "ghcp-op-46": "anthropic-subscription-opus-4-7-high",
     "ghcp-son-46": "anthropic-subscription-sonnet-4-6-high",
     "ghcp-haik-45": "anthropic-subscription-sonnet-4-6-low",
@@ -392,8 +416,9 @@ export const MANIFEST: RouteManifest = {
   oauthExcludedModels: {},
 
   routeGroups: {
+    ...FREE_ROUTE_GROUPS,
     "smart-route-worker": {
-      target: "zai-glm-5.1", hidden: false,
+      target: "zai-glm-5.1", hidden: false, billingClass: "subscription",
       fallbacks: ["nim-primary", "nim-deepseek-v4-pro", "nim-kimi-k2.5", "nim-minimax-m2.7"],
       fallbackByProfile: {
         context_window: ["nim-primary"],
@@ -402,10 +427,10 @@ export const MANIFEST: RouteManifest = {
       planner: { toolGroup: "nim-tool-primary", strictToolGroup: "nim-tool-primary" },
     },
     "zai-glm-5.1-terminal-fallback": {
-      target: "zai-glm-5.1", hidden: true, fallbacks: [],
+      target: "zai-glm-5.1", hidden: true, fallbacks: [], billingClass: "subscription",
     },
     "nim-tool-primary": {
-      target: "nim-gemma-4-31b-it", hidden: false, dedicatedToolLane: true,
+      target: "nim-gemma-4-31b-it", hidden: false, billingClass: "free", dedicatedToolLane: true,
       fallbacks: ["nim-secondary", "nim-primary", "smart-route-worker"],
       fallbackByProfile: {
         context_window: ["nim-primary", "zai-glm-5.1-terminal-fallback"],
@@ -414,11 +439,11 @@ export const MANIFEST: RouteManifest = {
       },
     },
     "nim-secondary": {
-      target: "nim-minimax-m2.7", hidden: false, dedicatedToolLane: true,
+      target: "nim-minimax-m2.7", hidden: false, billingClass: "free", dedicatedToolLane: true,
       fallbacks: ["nim-primary", "nim-deepseek-v4-pro", "zai-glm-5.1-terminal-fallback"],
     },
     "nim-primary": {
-      target: "nim-primary", hidden: false,
+      target: "nim-primary", hidden: false, billingClass: "free",
       fallbacks: ["nim-deepseek-v4-pro", "nim-kimi-k2.5", "nim-minimax-m2.7", "zai-glm-5.1-terminal-fallback"],
       fallbackByProfile: {
         context_window: ["zai-glm-5.1-terminal-fallback", "nim-deepseek-v4-pro"],
@@ -427,47 +452,49 @@ export const MANIFEST: RouteManifest = {
       },
     },
     "nim-deepseek-v4-pro": {
-      target: "nim-deepseek-v4-pro", hidden: false,
+      target: "nim-deepseek-v4-pro", hidden: false, billingClass: "free",
       fallbacks: ["nim-minimax-m2.7", "zai-glm-5.1-terminal-fallback"],
     },
     "nim-kimi-k2.5": {
-      target: "nim-kimi-k2.5", hidden: false,
+      target: "nim-kimi-k2.5", hidden: false, billingClass: "free",
       fallbacks: ["nim-minimax-m2.7", "zai-glm-5.1-terminal-fallback"],
     },
     "nim-minimax-m2.7": {
-      target: "nim-minimax-m2.7", hidden: false,
+      target: "nim-minimax-m2.7", hidden: false, billingClass: "free",
       fallbacks: ["zai-glm-5.1-terminal-fallback"],
     },
-    "anthropic-subscription-opus-4-7-low": { target: "anthropic-subscription-opus-4-7-low", hidden: true, fallbacks: [] },
-    "anthropic-subscription-opus-4-7-medium": { target: "anthropic-subscription-opus-4-7-medium", hidden: true, fallbacks: [] },
-    "anthropic-subscription-opus-4-7-high": { target: "anthropic-subscription-opus-4-7-high", hidden: true, fallbacks: [] },
-    "anthropic-subscription-opus-4-7-xhigh": { target: "anthropic-subscription-opus-4-7-xhigh", hidden: true, fallbacks: [] },
-    "anthropic-subscription-opus-4-7-max": { target: "anthropic-subscription-opus-4-7-max", hidden: true, fallbacks: [] },
-    "anthropic-subscription-sonnet-4-6-low": { target: "anthropic-subscription-sonnet-4-6-low", hidden: true, fallbacks: [] },
-    "anthropic-subscription-sonnet-4-6-medium": { target: "anthropic-subscription-sonnet-4-6-medium", hidden: true, fallbacks: [] },
-    "anthropic-subscription-sonnet-4-6-high": { target: "anthropic-subscription-sonnet-4-6-high", hidden: true, fallbacks: [] },
-    "anthropic-subscription-sonnet-4-6-max": { target: "anthropic-subscription-sonnet-4-6-max", hidden: true, fallbacks: [] },
-    "chatgpt-subscription-gpt-5.5-none": { target: "chatgpt-subscription-gpt-5.5-none", hidden: true, fallbacks: [] },
-    "chatgpt-subscription-gpt-5.5-minimal": { target: "chatgpt-subscription-gpt-5.5-minimal", hidden: true, fallbacks: [] },
-    "chatgpt-subscription-gpt-5.5-low": { target: "chatgpt-subscription-gpt-5.5-low", hidden: true, fallbacks: [] },
+    "anthropic-subscription-opus-4-7-low": { target: "anthropic-subscription-opus-4-7-low", hidden: true, fallbacks: [], billingClass: "subscription" },
+    "anthropic-subscription-opus-4-7-medium": { target: "anthropic-subscription-opus-4-7-medium", hidden: true, fallbacks: [], billingClass: "subscription" },
+    "anthropic-subscription-opus-4-7-high": { target: "anthropic-subscription-opus-4-7-high", hidden: true, fallbacks: [], billingClass: "subscription" },
+    "anthropic-subscription-opus-4-7-xhigh": { target: "anthropic-subscription-opus-4-7-xhigh", hidden: true, fallbacks: [], billingClass: "subscription" },
+    "anthropic-subscription-opus-4-7-max": { target: "anthropic-subscription-opus-4-7-max", hidden: true, fallbacks: [], billingClass: "subscription" },
+    "anthropic-subscription-sonnet-4-6-low": { target: "anthropic-subscription-sonnet-4-6-low", hidden: true, fallbacks: [], billingClass: "subscription" },
+    "anthropic-subscription-sonnet-4-6-medium": { target: "anthropic-subscription-sonnet-4-6-medium", hidden: true, fallbacks: [], billingClass: "subscription" },
+    "anthropic-subscription-sonnet-4-6-high": { target: "anthropic-subscription-sonnet-4-6-high", hidden: true, fallbacks: [], billingClass: "subscription" },
+    "anthropic-subscription-sonnet-4-6-max": { target: "anthropic-subscription-sonnet-4-6-max", hidden: true, fallbacks: [], billingClass: "subscription" },
+    "chatgpt-subscription-gpt-5.5-none": { target: "chatgpt-subscription-gpt-5.5-none", hidden: true, fallbacks: [], billingClass: "subscription" },
+    "chatgpt-subscription-gpt-5.5-minimal": { target: "chatgpt-subscription-gpt-5.5-minimal", hidden: true, fallbacks: [], billingClass: "subscription" },
+    "chatgpt-subscription-gpt-5.5-low": { target: "chatgpt-subscription-gpt-5.5-low", hidden: true, fallbacks: [], billingClass: "subscription" },
     "chatgpt-subscription-gpt-5.5-medium": {
-      target: "chatgpt-subscription-gpt-5.5-medium", hidden: true,
+      target: "chatgpt-subscription-gpt-5.5-medium", hidden: true, billingClass: "subscription",
       fallbacks: ["chatgpt-subscription-gpt-5.5-high", "chatgpt-subscription-gpt-5.5-low"],
       fallbackByProfile: {
         context_window: ["chatgpt-subscription-gpt-5.5-low"],
         general: ["chatgpt-subscription-gpt-5.5-high", "chatgpt-subscription-gpt-5.5-low"],
       },
     },
-    "chatgpt-subscription-gpt-5.5-high": { target: "chatgpt-subscription-gpt-5.5-high", hidden: true, fallbacks: [] },
-    "chatgpt-subscription-gpt-5.5-xhigh": { target: "chatgpt-subscription-gpt-5.5-xhigh", hidden: true, fallbacks: [] },
+    "chatgpt-subscription-gpt-5.5-high": { target: "chatgpt-subscription-gpt-5.5-high", hidden: true, fallbacks: [], billingClass: "subscription" },
+    "chatgpt-subscription-gpt-5.5-xhigh": { target: "chatgpt-subscription-gpt-5.5-xhigh", hidden: true, fallbacks: [], billingClass: "subscription" },
   },
 
   deployments: [
+    ...FREE_ROUTE_DEPLOYMENTS,
     // Z.AI
     {
       id: "zai-glm-5.1-key-1", group: "smart-route-worker",
       provider: "openai", model: "glm-5.1", providerModel: "glm-5.1",
       keyRef: "ZAI_KEY_1", apiBase: "https://api.z.ai/api/coding/paas/v4",
+      ...SUBSCRIPTION_BILLING,
       rpm: 30, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true,
       capabilities: { toolCalling: "best_effort", streamingWithTools: "best_effort", jsonMode: "native", reasoning: "native", multimodal: "none" },
@@ -478,6 +505,7 @@ export const MANIFEST: RouteManifest = {
     ...Array.from({ length: 9 }, (_, i) => ({
       id: `nim-primary-key-${i + 1}`, group: "nim-primary",
       provider: "nvidia_nim" as const, model: "glm-5.1", providerModel: "z-ai/glm-5.1",
+      ...NIM_FREE_BILLING,
       keyRef: `NIM_KEY_${i + 1}`, apiBase: "https://integrate.api.nvidia.com/v1",
       rpm: 35, maxParallelRequests: 2, timeout: 500, streamTimeout: 500,
       supportsStreaming: true,
@@ -489,6 +517,7 @@ export const MANIFEST: RouteManifest = {
     ...Array.from({ length: 9 }, (_, i) => ({
       id: `nim-deepseek-v4-pro-key-${i + 1}`, group: "nim-deepseek-v4-pro",
       provider: "nvidia_nim" as const, model: "deepseek-v4-pro", providerModel: "deepseek-ai/deepseek-v4-pro",
+      ...NIM_FREE_BILLING,
       keyRef: `NIM_KEY_${i + 1}`, apiBase: "https://integrate.api.nvidia.com/v1",
       rpm: 35, maxParallelRequests: 2, timeout: 500, streamTimeout: 500,
       supportsStreaming: true,
@@ -500,6 +529,7 @@ export const MANIFEST: RouteManifest = {
     ...Array.from({ length: 9 }, (_, i) => ({
       id: `nim-kimi-k2.5-key-${i + 1}`, group: "nim-kimi-k2.5",
       provider: "nvidia_nim" as const, model: "kimi-k2.5", providerModel: "moonshotai/kimi-k2.5",
+      ...NIM_FREE_BILLING,
       keyRef: `NIM_KEY_${i + 1}`, apiBase: "https://integrate.api.nvidia.com/v1",
       rpm: 35, maxParallelRequests: 2, timeout: 500, streamTimeout: 500,
       supportsStreaming: true,
@@ -511,6 +541,7 @@ export const MANIFEST: RouteManifest = {
     ...Array.from({ length: 9 }, (_, i) => ({
       id: `nim-gemma-4-31b-it-key-${i + 1}`, group: "nim-tool-primary",
       provider: "nvidia_nim" as const, model: "gemma-4-31b-it", providerModel: "google/gemma-4-31b-it",
+      ...NIM_FREE_BILLING,
       keyRef: `NIM_KEY_${i + 1}`, apiBase: "https://integrate.api.nvidia.com/v1",
       rpm: 35, maxParallelRequests: 2, timeout: 500, streamTimeout: 500,
       supportsStreaming: true,
@@ -522,6 +553,7 @@ export const MANIFEST: RouteManifest = {
     ...Array.from({ length: 9 }, (_, i) => ({
       id: `nim-minimax-m2.7-key-${i + 1}`, group: "nim-minimax-m2.7",
       provider: "nvidia_nim" as const, model: "minimax-m2.7", providerModel: "minimaxai/minimax-m2.7",
+      ...NIM_FREE_BILLING,
       keyRef: `NIM_KEY_${i + 1}`, apiBase: "https://integrate.api.nvidia.com/v1",
       rpm: 35, maxParallelRequests: 2, timeout: 500, streamTimeout: 500,
       supportsStreaming: true,
@@ -533,7 +565,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "chatgpt-subscription-gpt-5.5-none-key-1", group: "chatgpt-subscription-gpt-5.5-none",
       provider: "chatgpt", model: "gpt-5.5", providerModel: "gpt-5.5",
-      keyRef: "CHATGPT_AUTH_JSON", rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
+      keyRef: "CHATGPT_AUTH_JSON", ...SUBSCRIPTION_BILLING, rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true, mode: "responses", reasoningEffort: "none",
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
       contextWindow: 400000, hidden: true,
@@ -541,7 +573,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "chatgpt-subscription-gpt-5.5-minimal-key-1", group: "chatgpt-subscription-gpt-5.5-minimal",
       provider: "chatgpt", model: "gpt-5.5", providerModel: "gpt-5.5",
-      keyRef: "CHATGPT_AUTH_JSON", rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
+      keyRef: "CHATGPT_AUTH_JSON", ...SUBSCRIPTION_BILLING, rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true, mode: "responses", reasoningEffort: "minimal",
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
       contextWindow: 400000, hidden: true,
@@ -549,7 +581,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "chatgpt-subscription-gpt-5.5-low-key-1", group: "chatgpt-subscription-gpt-5.5-low",
       provider: "chatgpt", model: "gpt-5.5", providerModel: "gpt-5.5",
-      keyRef: "CHATGPT_AUTH_JSON", rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
+      keyRef: "CHATGPT_AUTH_JSON", ...SUBSCRIPTION_BILLING, rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true, mode: "responses", reasoningEffort: "low",
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
       contextWindow: 400000, hidden: true,
@@ -557,7 +589,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "chatgpt-subscription-gpt-5.5-medium-key-1", group: "chatgpt-subscription-gpt-5.5-medium",
       provider: "chatgpt", model: "gpt-5.5", providerModel: "gpt-5.5",
-      keyRef: "CHATGPT_AUTH_JSON", rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
+      keyRef: "CHATGPT_AUTH_JSON", ...SUBSCRIPTION_BILLING, rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true, mode: "responses", reasoningEffort: "medium",
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
       contextWindow: 400000, hidden: true,
@@ -565,7 +597,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "chatgpt-subscription-gpt-5.5-high-key-1", group: "chatgpt-subscription-gpt-5.5-high",
       provider: "chatgpt", model: "gpt-5.5", providerModel: "gpt-5.5",
-      keyRef: "CHATGPT_AUTH_JSON", rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
+      keyRef: "CHATGPT_AUTH_JSON", ...SUBSCRIPTION_BILLING, rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true, mode: "responses", reasoningEffort: "high",
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
       contextWindow: 400000, hidden: true,
@@ -573,7 +605,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "chatgpt-subscription-gpt-5.5-xhigh-key-1", group: "chatgpt-subscription-gpt-5.5-xhigh",
       provider: "chatgpt", model: "gpt-5.5", providerModel: "gpt-5.5",
-      keyRef: "CHATGPT_AUTH_JSON", rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
+      keyRef: "CHATGPT_AUTH_JSON", ...SUBSCRIPTION_BILLING, rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true, mode: "responses", reasoningEffort: "xhigh",
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
       contextWindow: 400000, hidden: true,
@@ -582,7 +614,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "anthropic-subscription-opus-4-7-low-key-1", group: "anthropic-subscription-opus-4-7-low",
       provider: "anthropic_subscription", model: "claude-opus-4-7", providerModel: "claude-opus-4-7",
-      keyRef: "ANTHROPIC_OAUTH_ACCOUNT", apiBase: "https://api.anthropic.com",
+      keyRef: "ANTHROPIC_OAUTH_ACCOUNT", ...SUBSCRIPTION_BILLING, apiBase: "https://api.anthropic.com",
       rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true,
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
@@ -592,7 +624,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "anthropic-subscription-opus-4-7-medium-key-1", group: "anthropic-subscription-opus-4-7-medium",
       provider: "anthropic_subscription", model: "claude-opus-4-7", providerModel: "claude-opus-4-7",
-      keyRef: "ANTHROPIC_OAUTH_ACCOUNT", apiBase: "https://api.anthropic.com",
+      keyRef: "ANTHROPIC_OAUTH_ACCOUNT", ...SUBSCRIPTION_BILLING, apiBase: "https://api.anthropic.com",
       rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true,
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
@@ -602,7 +634,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "anthropic-subscription-opus-4-7-high-key-1", group: "anthropic-subscription-opus-4-7-high",
       provider: "anthropic_subscription", model: "claude-opus-4-7", providerModel: "claude-opus-4-7",
-      keyRef: "ANTHROPIC_OAUTH_ACCOUNT", apiBase: "https://api.anthropic.com",
+      keyRef: "ANTHROPIC_OAUTH_ACCOUNT", ...SUBSCRIPTION_BILLING, apiBase: "https://api.anthropic.com",
       rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true,
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
@@ -612,7 +644,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "anthropic-subscription-opus-4-7-xhigh-key-1", group: "anthropic-subscription-opus-4-7-xhigh",
       provider: "anthropic_subscription", model: "claude-opus-4-7", providerModel: "claude-opus-4-7",
-      keyRef: "ANTHROPIC_OAUTH_ACCOUNT", apiBase: "https://api.anthropic.com",
+      keyRef: "ANTHROPIC_OAUTH_ACCOUNT", ...SUBSCRIPTION_BILLING, apiBase: "https://api.anthropic.com",
       rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true,
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
@@ -622,7 +654,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "anthropic-subscription-opus-4-7-max-key-1", group: "anthropic-subscription-opus-4-7-max",
       provider: "anthropic_subscription", model: "claude-opus-4-7", providerModel: "claude-opus-4-7",
-      keyRef: "ANTHROPIC_OAUTH_ACCOUNT", apiBase: "https://api.anthropic.com",
+      keyRef: "ANTHROPIC_OAUTH_ACCOUNT", ...SUBSCRIPTION_BILLING, apiBase: "https://api.anthropic.com",
       rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true,
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
@@ -632,7 +664,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "anthropic-subscription-sonnet-4-6-low-key-1", group: "anthropic-subscription-sonnet-4-6-low",
       provider: "anthropic_subscription", model: "claude-sonnet-4-6", providerModel: "claude-sonnet-4-6",
-      keyRef: "ANTHROPIC_OAUTH_ACCOUNT", apiBase: "https://api.anthropic.com",
+      keyRef: "ANTHROPIC_OAUTH_ACCOUNT", ...SUBSCRIPTION_BILLING, apiBase: "https://api.anthropic.com",
       rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true,
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
@@ -642,7 +674,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "anthropic-subscription-sonnet-4-6-medium-key-1", group: "anthropic-subscription-sonnet-4-6-medium",
       provider: "anthropic_subscription", model: "claude-sonnet-4-6", providerModel: "claude-sonnet-4-6",
-      keyRef: "ANTHROPIC_OAUTH_ACCOUNT", apiBase: "https://api.anthropic.com",
+      keyRef: "ANTHROPIC_OAUTH_ACCOUNT", ...SUBSCRIPTION_BILLING, apiBase: "https://api.anthropic.com",
       rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true,
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
@@ -652,7 +684,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "anthropic-subscription-sonnet-4-6-high-key-1", group: "anthropic-subscription-sonnet-4-6-high",
       provider: "anthropic_subscription", model: "claude-sonnet-4-6", providerModel: "claude-sonnet-4-6",
-      keyRef: "ANTHROPIC_OAUTH_ACCOUNT", apiBase: "https://api.anthropic.com",
+      keyRef: "ANTHROPIC_OAUTH_ACCOUNT", ...SUBSCRIPTION_BILLING, apiBase: "https://api.anthropic.com",
       rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true,
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
@@ -662,7 +694,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "anthropic-subscription-sonnet-4-6-max-key-1", group: "anthropic-subscription-sonnet-4-6-max",
       provider: "anthropic_subscription", model: "claude-sonnet-4-6", providerModel: "claude-sonnet-4-6",
-      keyRef: "ANTHROPIC_OAUTH_ACCOUNT", apiBase: "https://api.anthropic.com",
+      keyRef: "ANTHROPIC_OAUTH_ACCOUNT", ...SUBSCRIPTION_BILLING, apiBase: "https://api.anthropic.com",
       rpm: 10, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true,
       capabilities: { toolCalling: "native", streamingWithTools: "native", jsonMode: "native", reasoning: "native", multimodal: "native" },
@@ -673,7 +705,7 @@ export const MANIFEST: RouteManifest = {
     {
       id: "zai-glm-5.1-terminal-fallback-key-1", group: "zai-glm-5.1-terminal-fallback",
       provider: "openai", model: "glm-5.1", providerModel: "glm-5.1",
-      keyRef: "ZAI_KEY_1", apiBase: "https://api.z.ai/api/coding/paas/v4",
+      keyRef: "ZAI_KEY_1", ...SUBSCRIPTION_BILLING, apiBase: "https://api.z.ai/api/coding/paas/v4",
       rpm: 30, maxParallelRequests: 1, timeout: 500, streamTimeout: 500,
       supportsStreaming: true,
       capabilities: { toolCalling: "best_effort", streamingWithTools: "best_effort", jsonMode: "native", reasoning: "native", multimodal: "none" },

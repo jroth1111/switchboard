@@ -57,6 +57,23 @@ export interface ProviderCooldownProfile {
   ambiguousCooldownSeconds?: number;
 }
 
+export type CredentialRotationStrategy = "sequential_exhaust" | "spread" | "none";
+
+export interface CredentialRotationSettings {
+  enabled?: boolean;
+  strategy?: CredentialRotationStrategy;
+  maxAttempts?: number;
+  rateLimitCooldownSeconds?: number;
+  authFailureCooldownSeconds?: number;
+  subscriptionLimitCooldownSeconds?: number;
+  networkRetryAttempts?: number;
+  rotateOnStatus?: number[];
+  rotateOnFailureClass?: FailureClass[];
+}
+
+export type BillingClass = "free" | "subscription";
+export type FreeTier = "catalog_zero" | "rate_limited" | "nim_api" | "kilo_gateway" | "opencode_zen" | "future";
+
 export interface Deployment {
   id: string;
   group: string;
@@ -64,8 +81,15 @@ export interface Deployment {
   model: string;
   providerModel: string;
   keyRef: string;
+  /** When true, attempt loop may proceed without env secret (keyless free-tier upstream). */
+  credentialOptional?: boolean;
+  billingClass?: BillingClass;
+  freeTier?: FreeTier;
   /** Optional extra OAuth account ids for round-robin (merged with env ANTHROPIC_OAUTH_ACCOUNTS). */
   accountIds?: string[];
+  /** Extra credentials of the same kind as keyRef (OAuth account ids or env key names). */
+  credentialPool?: string[];
+  credentialRotation?: CredentialRotationSettings;
   apiBase?: string;
   rpm: number;
   maxParallelRequests: number;
@@ -96,6 +120,9 @@ export interface RouteGroup {
   fallbacks: string[];
   fallbackByProfile?: Partial<Record<FallbackProfile, string[]>>;
   dedicatedToolLane?: boolean;
+  billingClass?: BillingClass;
+  /** When true, filter deployments to those matching envelope.originalModel vs providerModel. */
+  modelPassthrough?: boolean;
   planner?: {
     toolGroup?: string;
     strictToolGroup?: string;
@@ -182,6 +209,9 @@ export interface Policy {
     learnedConcurrencyTtlSeconds: number;
     staleInflightSeconds: number;
     tokenBudgetPerMinute: number | null;
+  };
+  credentialRotation?: CredentialRotationSettings & {
+    byProvider?: Partial<Record<ProviderType, CredentialRotationSettings>>;
   };
 }
 

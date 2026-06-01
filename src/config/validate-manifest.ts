@@ -12,6 +12,13 @@ import type {
   RouteManifest,
   Surface,
 } from "./schema";
+import type { FreeCatalogSuggestions } from "../ops/sync-free-models";
+import {
+  API_KEY_PROVIDER_CONFIG,
+  discoverNumberedKeyRefs,
+  type ApiKeyProviderId,
+} from "../credentials/discover-api-keys";
+import { FREE_ROUTES_PROVIDERS_ENABLED } from "./free-routes.generated";
 
 export interface ValidationIssue {
   kind: "error" | "warning";
@@ -21,7 +28,7 @@ export interface ValidationIssue {
 }
 
 /** Route groups that forward to other groups and intentionally own no deployments. */
-export const ROUTING_ONLY_ROUTE_GROUPS = new Set(["nim-secondary"]);
+export const ROUTING_ONLY_ROUTE_GROUPS = new Set(["nim-secondary", "free"]);
 
 export function validateManifest(m: RouteManifest): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
@@ -32,7 +39,216 @@ export function validateManifest(m: RouteManifest): ValidationIssue[] {
   validateDeploymentsByGroup(m, issues);
   validatePolicies(m, issues);
   validateOAuthExcludedModels(m, issues);
+  validateBillingClasses(m, issues);
 
+  return issues;
+}
+
+const SUBSCRIPTION_ROUTE_GROUP_PREFIXES = [
+  "anthropic-subscription-",
+  "chatgpt-subscription-",
+] as const;
+const SUBSCRIPTION_ROUTE_GROUPS = new Set(["smart-route-worker"]);
+const OAUTH_SUBSCRIPTION_KEY_REFS = new Set(["CHATGPT_AUTH_JSON", "ANTHROPIC_OAUTH_ACCOUNT"]);
+
+function isSubscriptionRouteGroup(name: string): boolean {
+  if (SUBSCRIPTION_ROUTE_GROUPS.has(name)) return true;
+  return SUBSCRIPTION_ROUTE_GROUP_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
+
+/** Ensures free multiplex groups/deployments stay tagged and modelPassthrough is scoped. */
+function validateBillingClasses(m: RouteManifest, issues: ValidationIssue[]): void {
+  const freeGroups = new Set<string>();
+
+  for (const [name, rg] of Object.entries(m.routeGroups)) {
+    const inferredFree = name === "free" || name.startsWith("free-");
+    const billing = rg.billingClass ?? (inferredFree ? "free" : undefined);
+    if (billing === "free") freeGroups.add(name);
+    if (isSubscriptionRouteGroup(name) && billing !== "subscription") {
+      issues.push({
+        kind: "error",
+        code: "subscription_group_billing_class",
+        message: `Route group "${name}" must have billingClass "subscription"`,
+      });
+    }
+    if (rg.modelPassthrough && billing !== "free") {
+      issues.push({
+        kind: "error",
+        code: "model_passthrough_requires_free_billing",
+        message: `Route group "${name}" has modelPassthrough but billingClass is not "free"`,
+      });
+    }
+    if (name === "free" && billing !== "free") {
+      issues.push({
+        kind: "error",
+        code: "free_route_billing_class",
+        message: 'Parent route group "free" must have billingClass "free"',
+      });
+    }
+  }
+
+  const freeParent = m.routeGroups.free;
+  if (freeParent && (freeParent.fallbacks?.length ?? 0) === 0) {
+    issues.push({
+      kind: "warning",
+      code: "free_route_no_fallbacks",
+      message: 'Route group "free" has no provider fallbacks enabled (run sync-free-models with API keys or keyless probes)',
+    });
+  }
+  validateFreeRouteNimFallbacks(m, issues);
+
+  for (const d of m.deployments) {
+    const routeGroup = m.routeGroups[d.group];
+    if (routeGroup?.billingClass === "free" && d.billingClass !== "free") {
+      issues.push({
+        kind: "error",
+        code: "free_route_group_deployment_billing",
+        message: `Deployment "${d.id}" in free route group "${d.group}" must have billingClass "free"`,
+      });
+    }
+    if (d.group.startsWith("free-") && d.billingClass !== "free") {
+      issues.push({
+        kind: "error",
+        code: "free_generated_deployment_billing",
+        message: `Deployment "${d.id}" in group "${d.group}" must have billingClass "free"`,
+      });
+    }
+    if (d.billingClass === "subscription" && d.group.startsWith("free-")) {
+      issues.push({
+        kind: "error",
+        code: "subscription_on_free_group",
+        message: `Deployment "${d.id}" must not be billingClass "subscription" in free multiplex group "${d.group}"`,
+      });
+    }
+    if (OAUTH_SUBSCRIPTION_KEY_REFS.has(d.keyRef) && d.billingClass === "free") {
+      issues.push({
+        kind: "error",
+        code: "oauth_deployment_not_free",
+        message: `Deployment "${d.id}" uses OAuth keyRef "${d.keyRef}" and cannot be billingClass "free"`,
+      });
+    }
+    if (OAUTH_SUBSCRIPTION_KEY_REFS.has(d.keyRef) && d.billingClass !== "subscription") {
+      issues.push({
+        kind: "error",
+        code: "oauth_deployment_requires_subscription",
+        message: `Deployment "${d.id}" with OAuth keyRef "${d.keyRef}" must have billingClass "subscription"`,
+      });
+    }
+    if (d.provider === "anthropic_subscription" || (d.provider === "chatgpt" && d.mode === "responses")) {
+      if (d.billingClass !== "subscription") {
+        issues.push({
+          kind: "error",
+          code: "subscription_provider_billing_class",
+          message: `Deployment "${d.id}" provider "${d.provider}" must have billingClass "subscription"`,
+        });
+      }
+    }
+    if (d.billingClass === "free" && d.id.startsWith("free-") && !d.freeTier) {
+      issues.push({
+        kind: "warning",
+        code: "free_deployment_missing_tier",
+        message: `Deployment "${d.id}" is billingClass free but missing freeTier (observability)`,
+      });
+    }
+    if (d.billingClass === "free" && !freeGroups.has(d.group) && !d.group.startsWith("nim-")) {
+      issues.push({
+        kind: "warning",
+        code: "free_deployment_group_mismatch",
+        message: `Deployment "${d.id}" is billingClass free but group "${d.group}" is not tagged free`,
+      });
+    }
+    if (d.credentialOptional && d.billingClass !== "free") {
+      issues.push({
+        kind: "error",
+        code: "credential_optional_requires_free",
+        message: `Deployment "${d.id}" credentialOptional is only valid for billingClass "free"`,
+      });
+    }
+  }
+}
+
+/** NIM groups may appear in `free` fallbacks only when NIM keys enabled at codegen. */
+export function validateFreeRouteNimFallbacks(m: RouteManifest, issues: ValidationIssue[]): void {
+  const freeParent = m.routeGroups.free;
+  if (!freeParent) return;
+  const chain = [freeParent.target, ...(freeParent.fallbacks ?? [])];
+  const nimInChain = chain.filter((g) => g.startsWith("nim-"));
+  if (nimInChain.length === 0) return;
+  if (FREE_ROUTES_PROVIDERS_ENABLED.nim === false) {
+    issues.push({
+      kind: "error",
+      code: "free_route_nim_without_keys",
+      message: 'Route group "free" lists NIM fallbacks but providersEnabled.nim is false',
+      detail: nimInChain.join(", "),
+    });
+  }
+}
+
+export function validateFreeRoutesProvidersEnabled(
+  suggestionsEnabled: FreeCatalogSuggestions["providersEnabled"] | undefined,
+  generatedEnabled: FreeCatalogSuggestions["providersEnabled"] | undefined,
+): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  if (!suggestionsEnabled || !generatedEnabled) return issues;
+  const keys = ["openrouter", "groq", "nim", "kilo", "opencodeZen"] as const;
+  for (const key of keys) {
+    if (suggestionsEnabled[key] !== generatedEnabled[key]) {
+      issues.push({
+        kind: "error",
+        code: "free_routes_providers_enabled_mismatch",
+        message: `providersEnabled.${key} mismatch between suggestions and generated free routes`,
+        detail: `suggestions=${String(suggestionsEnabled[key])} generated=${String(generatedEnabled[key])}`,
+      });
+    }
+  }
+  return issues;
+}
+
+function envString(env: Record<string, unknown>, key: string): string {
+  const value = env[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/** Warn when local bootstrap CSV is used in CI without numbered canonical keys. */
+export function validateApiKeyCredentialEnv(env: Record<string, unknown>): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const providers: ApiKeyProviderId[] = ["openrouter", "groq", "kilo", "opencode_zen"];
+  for (const providerId of providers) {
+    const config = API_KEY_PROVIDER_CONFIG[providerId];
+    const hasNumbered = discoverNumberedKeyRefs(env, config.numberedPrefix).length > 0;
+    if (config.bootstrapPlural && envString(env, config.bootstrapPlural) && !hasNumbered && process.env.CI === "true") {
+      issues.push({
+        kind: "warning",
+        code: "bootstrap_api_keys_in_ci",
+        message: `${config.bootstrapPlural} is set in CI without ${config.primaryKeyRef}; use Wrangler secrets ${config.numberedPrefix}_1, … in production`,
+      });
+    }
+  }
+  return issues;
+}
+
+export function validateFreeRoutesFingerprint(
+  suggestionsFingerprint: string | undefined,
+  generatedFingerprint: string,
+): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  if (!suggestionsFingerprint) return issues;
+  if (generatedFingerprint === "bootstrap-empty") {
+    issues.push({
+      kind: "warning",
+      code: "free_routes_bootstrap",
+      message: "free-routes.generated.ts is bootstrap placeholder; run pnpm sync-free-models",
+    });
+    return issues;
+  }
+  if (suggestionsFingerprint !== generatedFingerprint) {
+    issues.push({
+      kind: "error",
+      code: "free_routes_fingerprint_mismatch",
+      message: "sync-free-models-suggestions.json fingerprint does not match free-routes.generated.ts",
+      detail: `suggestions=${suggestionsFingerprint} generated=${generatedFingerprint}`,
+    });
+  }
   return issues;
 }
 
@@ -391,6 +607,30 @@ function validateDeploymentShape(d: Deployment, issues: ValidationIssue[]): void
       }
     }
   }
+
+  if (d.credentialPool !== undefined) {
+    stringList(
+      d.credentialPool,
+      `Deployment "${d.id}" credentialPool`,
+      "deployment_credential_pool_invalid",
+      issues,
+    );
+  }
+  if (d.accountIds !== undefined) {
+    stringList(
+      d.accountIds,
+      `Deployment "${d.id}" accountIds`,
+      "deployment_account_ids_invalid",
+      issues,
+    );
+  }
+  if (d.credentialRotation !== undefined) {
+    validateCredentialRotationSettings(
+      `Deployment "${d.id}" credentialRotation`,
+      d.credentialRotation,
+      issues,
+    );
+  }
 }
 
 function validateDeploymentsByGroup(m: RouteManifest, issues: ValidationIssue[]): void {
@@ -599,6 +839,65 @@ function validatePolicy(name: string, policy: Policy, issues: ValidationIssue[])
     booleanValue(budget.learnedConcurrencyEnabled, `${name}.budget.learnedConcurrencyEnabled`, "policy_budget_invalid", issues);
     positiveInteger(budget.learnedConcurrencyTtlSeconds, `${name}.budget.learnedConcurrencyTtlSeconds`, "policy_budget_filter_invalid", issues);
     positiveInteger(budget.staleInflightSeconds, `${name}.budget.staleInflightSeconds`, "policy_budget_filter_invalid", issues);
+  }
+
+  if (policy.credentialRotation !== undefined) {
+    validateCredentialRotationSettings(name, policy.credentialRotation, issues);
+    if (isPlainRecord(policy.credentialRotation.byProvider)) {
+      for (const [provider, settings] of Object.entries(policy.credentialRotation.byProvider)) {
+        if (!PROVIDERS.has(provider as ProviderType)) {
+          issues.push({
+            kind: "error",
+            code: "policy_credential_rotation_invalid",
+            message: `${name}.credentialRotation.byProvider has unknown provider "${provider}"`,
+          });
+          continue;
+        }
+        validateCredentialRotationSettings(`${name}.credentialRotation.byProvider.${provider}`, settings, issues);
+      }
+    }
+  }
+}
+
+const CREDENTIAL_ROTATION_STRATEGIES = ["sequential_exhaust", "spread", "none"] as const;
+
+function validateCredentialRotationSettings(
+  name: string,
+  settings: unknown,
+  issues: ValidationIssue[],
+): void {
+  if (!isPlainRecord(settings)) {
+    issues.push({
+      kind: "error",
+      code: "policy_credential_rotation_invalid",
+      message: `${name} must be an object`,
+    });
+    return;
+  }
+  if (settings.strategy !== undefined && !CREDENTIAL_ROTATION_STRATEGIES.includes(settings.strategy as typeof CREDENTIAL_ROTATION_STRATEGIES[number])) {
+    issues.push({
+      kind: "error",
+      code: "policy_credential_rotation_invalid",
+      message: `${name}.strategy must be sequential_exhaust, spread, or none`,
+    });
+  }
+  if (settings.enabled !== undefined) {
+    booleanValue(settings.enabled, `${name}.enabled`, "policy_credential_rotation_invalid", issues);
+  }
+  if (settings.maxAttempts !== undefined) {
+    positiveInteger(settings.maxAttempts, `${name}.maxAttempts`, "policy_credential_rotation_invalid", issues);
+  }
+  if (settings.rateLimitCooldownSeconds !== undefined) {
+    positiveNumber(settings.rateLimitCooldownSeconds, `${name}.rateLimitCooldownSeconds`, "policy_credential_rotation_invalid", issues);
+  }
+  if (settings.authFailureCooldownSeconds !== undefined) {
+    positiveNumber(settings.authFailureCooldownSeconds, `${name}.authFailureCooldownSeconds`, "policy_credential_rotation_invalid", issues);
+  }
+  if (settings.subscriptionLimitCooldownSeconds !== undefined) {
+    positiveNumber(settings.subscriptionLimitCooldownSeconds, `${name}.subscriptionLimitCooldownSeconds`, "policy_credential_rotation_invalid", issues);
+  }
+  if (settings.networkRetryAttempts !== undefined) {
+    nonNegativeInteger(settings.networkRetryAttempts, `${name}.networkRetryAttempts`, "policy_credential_rotation_invalid", issues);
   }
 }
 
